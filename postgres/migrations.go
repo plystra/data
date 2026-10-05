@@ -13,8 +13,6 @@ import (
 	"github.com/plystra/data/migration"
 )
 
-const migrationHistoryTable = "plystra_data_migrations"
-
 var (
 	ErrMigrationArtifact = errors.New("invalid migration artifact")
 	ErrPlanApproval      = errors.New("migration plan approval required")
