@@ -32,6 +32,40 @@ type AffectedRows struct {
 	Set       bool
 }
 
+// ValueKind is the closed scalar vocabulary exchanged with a backend.
+type ValueKind string
+
+const (
+	ValueNull    ValueKind = "null"
+	ValueString  ValueKind = "string"
+	ValueInt64   ValueKind = "int64"
+	ValueFloat64 ValueKind = "float64"
+	ValueBool    ValueKind = "bool"
+	ValueBytes   ValueKind = "bytes"
+)
+
+// Argument is one typed parameter supplied to a generated statement.
+type Argument struct {
+	Kind    ValueKind
+	String  string
+	Int64   int64
+	Float64 float64
+	Bool    bool
+	Bytes   []byte
+}
+
+func StringArgument(value string) Argument   { return Argument{Kind: ValueString, String: value} }
+func Int64Argument(value int64) Argument     { return Argument{Kind: ValueInt64, Int64: value} }
+func Float64Argument(value float64) Argument { return Argument{Kind: ValueFloat64, Float64: value} }
+func BoolArgument(value bool) Argument       { return Argument{Kind: ValueBool, Bool: value} }
+func BytesArgument(value []byte) Argument {
+	return Argument{Kind: ValueBytes, Bytes: append([]byte(nil), value...)}
+}
+func NullArgument() Argument { return Argument{Kind: ValueNull} }
+
+// Value is one typed scalar returned by a generated query.
+type Value = Argument
+
 // ExactAffectedRows creates an assertion for one exact mutation count.
 func ExactAffectedRows(count uint64) AffectedRows {
 	return AffectedRows{Min: count, Max: count, Set: true}
@@ -56,7 +90,7 @@ func (a AffectedRows) accepts(count uint64) bool {
 type Statement struct {
 	ID          string
 	SQL         string
-	Args        []any
+	Args        []Argument
 	ReturnsRows bool
 	Cardinality Cardinality
 	Affected    AffectedRows
@@ -64,7 +98,7 @@ type Statement struct {
 
 // StatementResult contains only the result of one statement in the plan.
 type StatementResult struct {
-	Rows         [][]any
+	Rows         [][]Value
 	AffectedRows uint64
 }
 

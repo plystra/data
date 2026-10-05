@@ -169,7 +169,7 @@ func (provider *Database) Exec(ctx context.Context, plan db.Plan) (db.Result, er
 			result.Statements = append(result.Statements, statementResult)
 			continue
 		}
-		tag, err := tx.Exec(ctx, statement.SQL, statement.Args...)
+		tag, err := tx.Exec(ctx, statement.SQL, driverArguments(statement.Args)...)
 		if err != nil {
 			return db.Result{}, normalizeError(err, false)
 		}
@@ -186,16 +186,23 @@ func (provider *Database) Exec(ctx context.Context, plan db.Plan) (db.Result, er
 }
 
 func queryStatement(ctx context.Context, tx pgx.Tx, statement db.Statement) (db.StatementResult, error) {
-	rows, err := tx.Query(ctx, statement.SQL, statement.Args...)
+	rows, err := tx.Query(ctx, statement.SQL, driverArguments(statement.Args)...)
 	if err != nil {
 		return db.StatementResult{}, err
 	}
 	defer rows.Close()
-	var values [][]any
+	var values [][]db.Value
 	for rows.Next() {
-		row, err := rows.Values()
+		raw, err := rows.Values()
 		if err != nil {
 			return db.StatementResult{}, err
+		}
+		row := make([]db.Value, len(raw))
+		for index, value := range raw {
+			row[index], err = resultValue(value)
+			if err != nil {
+				return db.StatementResult{}, err
+			}
 		}
 		values = append(values, row)
 	}
@@ -217,6 +224,48 @@ func queryStatement(ctx context.Context, tx pgx.Tx, statement db.Statement) (db.
 		return db.StatementResult{}, fmt.Errorf("%w: row cardinality", db.ErrBackend)
 	}
 	return db.StatementResult{Rows: values}, nil
+}
+
+func driverArguments(arguments []db.Argument) []any {
+	values := make([]any, len(arguments))
+	for index, argument := range arguments {
+		switch argument.Kind {
+		case db.ValueNull:
+			values[index] = nil
+		case db.ValueString:
+			values[index] = argument.String
+		case db.ValueInt64:
+			values[index] = argument.Int64
+		case db.ValueFloat64:
+			values[index] = argument.Float64
+		case db.ValueBool:
+			values[index] = argument.Bool
+		case db.ValueBytes:
+			values[index] = argument.Bytes
+		}
+	}
+	return values
+}
+
+func resultValue(value any) (db.Value, error) {
+	switch typed := value.(type) {
+	case nil:
+		return db.NullArgument(), nil
+	case string:
+		return db.StringArgument(typed), nil
+	case []byte:
+		return db.BytesArgument(typed), nil
+	case int64:
+		return db.Int64Argument(typed), nil
+	case int32:
+		return db.Int64Argument(int64(typed)), nil
+	case float64:
+		return db.Float64Argument(typed), nil
+	case bool:
+		return db.BoolArgument(typed), nil
+	default:
+		return db.Value{}, fmt.Errorf("%w: unsupported result value", db.ErrBackend)
+	}
 }
 
 func (provider *Database) currentPool() (*pgxpool.Pool, error) {
