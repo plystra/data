@@ -17,7 +17,10 @@ The repository contains the first independently verifiable Data verticals:
 the shared PostgreSQL Resource and the immutable migration planner. Backend
 providers own execution; the planner validates migration identity, predecessor
 ordering, applied-history drift, and a canonical plan digest without opening a
-database connection.
+database connection. PostgreSQL also exposes explicit `MigrationPlan` and
+`ApplyMigrations` operations. Apply requires the exact plan digest, takes a
+target-scoped transaction lock, records append-only history, and never retries
+an indeterminate commit implicitly.
 
 ## Module
 
