@@ -22,6 +22,14 @@ database connection. PostgreSQL also exposes explicit `MigrationPlan` and
 target-scoped transaction lock, records append-only history, and never retries
 an indeterminate commit implicitly.
 
+The `declaration` package provides the first compiler-facing logical model:
+typed `Member[Access]` roots, tables, columns, constraints, indexes, queries,
+atomic plans, migrations, and explicit references. `Normalize` validates the
+closed model and returns a stable sorted copy; `Digest` binds that normalized
+logical model without including the access Resource value or runtime secrets.
+The package is Data-owned and has no dependency on Core CLI implementation
+packages.
+
 ## Module
 
 The module path is `github.com/plystra/data`.

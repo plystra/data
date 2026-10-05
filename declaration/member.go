@@ -1,0 +1,673 @@
+// Package declaration defines the closed, literal-friendly Data declaration
+// model consumed by the Data compiler.
+package declaration
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+	"unicode/utf8"
+)
+
+const (
+	MaximumNodes       = 65536
+	MaximumImports     = 1024
+	MaximumSymbolBytes = 128
+	MaximumNesting     = 64
+)
+
+var (
+	ErrInvalid       = errors.New("invalid Data declaration")
+	ErrInvalidID     = errors.New("invalid Data declaration ID")
+	ErrDuplicate     = errors.New("duplicate Data declaration symbol")
+	ErrReference     = errors.New("invalid Data declaration reference")
+	ErrLimit         = errors.New("Data declaration limit exceeded")
+	ErrUnsupported   = errors.New("unsupported Data declaration value")
+	ErrInvalidSchema = errors.New("invalid relational schema")
+)
+
+// NoAccess marks a migration-only member. It is intentionally a concrete type
+// so the compiler can recognize declaration.Member[declaration.NoAccess].
+type NoAccess struct{}
+
+// Ref identifies a member-local symbol. Member is empty for a local reference
+// and must name an explicit import for a cross-member reference.
+type Ref struct {
+	Member string `json:"member,omitempty"`
+	Symbol string `json:"symbol"`
+}
+
+// Member is the root literal for one versioned Data member. Access is a type
+// parameter rather than a runtime value; the compiler obtains its canonical
+// Resource identity from the type-checked declaration.
+type Member[Access any] struct {
+	Namespace  string      `json:"namespace"`
+	Imports    []string    `json:"imports,omitempty"`
+	Tables     []Table     `json:"tables,omitempty"`
+	Queries    []Query     `json:"queries,omitempty"`
+	Plans      []Plan      `json:"plans,omitempty"`
+	Migrations []Migration `json:"migrations,omitempty"`
+	Access     Access      `json:"-"`
+}
+
+// Model is the normalized, access-independent representation of a member.
+// Slices returned by Normalize and Model accessors are owned by the result.
+type Model struct {
+	Namespace  string      `json:"namespace"`
+	Imports    []string    `json:"imports,omitempty"`
+	Tables     []Table     `json:"tables,omitempty"`
+	Queries    []Query     `json:"queries,omitempty"`
+	Plans      []Plan      `json:"plans,omitempty"`
+	Migrations []Migration `json:"migrations,omitempty"`
+}
+
+// ScalarType is the initial backend-independent scalar vocabulary.
+type ScalarType string
+
+const (
+	TypeBool      ScalarType = "bool"
+	TypeBytes     ScalarType = "bytes"
+	TypeFloat64   ScalarType = "float64"
+	TypeInt64     ScalarType = "int64"
+	TypeString    ScalarType = "string"
+	TypeTimestamp ScalarType = "timestamp"
+	TypeUint64    ScalarType = "uint64"
+	TypeUUID      ScalarType = "uuid"
+)
+
+// Value is a closed literal value used by defaults and predicates.
+type Value struct {
+	Kind    ScalarType `json:"kind"`
+	Set     bool       `json:"set"`
+	String  string     `json:"string,omitempty"`
+	Int64   int64      `json:"int64,omitempty"`
+	Uint64  uint64     `json:"uint64,omitempty"`
+	Float64 float64    `json:"float64,omitempty"`
+	Bool    bool       `json:"bool,omitempty"`
+	Bytes   string     `json:"bytes,omitempty"`
+}
+
+func String(value string) Value   { return Value{Kind: TypeString, Set: true, String: value} }
+func Int64(value int64) Value     { return Value{Kind: TypeInt64, Set: true, Int64: value} }
+func Uint64(value uint64) Value   { return Value{Kind: TypeUint64, Set: true, Uint64: value} }
+func Float64(value float64) Value { return Value{Kind: TypeFloat64, Set: true, Float64: value} }
+func Bool(value bool) Value       { return Value{Kind: TypeBool, Set: true, Bool: value} }
+func Bytes(value string) Value    { return Value{Kind: TypeBytes, Set: true, Bytes: value} }
+
+// Table is one logical relational table.
+type Table struct {
+	ID          string       `json:"id"`
+	Columns     []Column     `json:"columns,omitempty"`
+	Constraints []Constraint `json:"constraints,omitempty"`
+	Indexes     []Index      `json:"indexes,omitempty"`
+}
+
+// Column is one named table column.
+type Column struct {
+	ID       string     `json:"id"`
+	Type     ScalarType `json:"type"`
+	Nullable bool       `json:"nullable,omitempty"`
+	Default  Value      `json:"default,omitempty"`
+}
+
+type ConstraintKind string
+
+const (
+	ConstraintPrimaryKey ConstraintKind = "primary-key"
+	ConstraintUnique     ConstraintKind = "unique"
+	ConstraintForeignKey ConstraintKind = "foreign-key"
+)
+
+// Constraint describes one logical table constraint.
+type Constraint struct {
+	ID              string         `json:"id"`
+	Kind            ConstraintKind `json:"kind"`
+	Columns         []string       `json:"columns"`
+	ReferencedTable Ref            `json:"referenced_table,omitempty"`
+	ReferencedCols  []string       `json:"referenced_columns,omitempty"`
+}
+
+// Index describes one logical index.
+type Index struct {
+	ID      string   `json:"id"`
+	Columns []string `json:"columns"`
+	Unique  bool     `json:"unique,omitempty"`
+}
+
+type OperationKind string
+
+const (
+	OperationSelect OperationKind = "select"
+	OperationInsert OperationKind = "insert"
+	OperationUpdate OperationKind = "update"
+	OperationDelete OperationKind = "delete"
+)
+
+// Query is deterministic typed query intent. SQL text is deliberately absent.
+type Query struct {
+	ID         string        `json:"id"`
+	Operation  OperationKind `json:"operation"`
+	Table      Ref           `json:"table"`
+	Projection []Projection  `json:"projection,omitempty"`
+	Predicate  Predicate     `json:"predicate,omitempty"`
+	Ordering   []Ordering    `json:"ordering,omitempty"`
+	Limit      uint64        `json:"limit,omitempty"`
+	HasLimit   bool          `json:"has_limit,omitempty"`
+	Offset     uint64        `json:"offset,omitempty"`
+	HasOffset  bool          `json:"has_offset,omitempty"`
+}
+
+type Projection struct {
+	Column string `json:"column"`
+	Alias  string `json:"alias,omitempty"`
+}
+
+type PredicateKind string
+
+const (
+	PredicateEqual        PredicateKind = "equal"
+	PredicateNotEqual     PredicateKind = "not-equal"
+	PredicateLess         PredicateKind = "less"
+	PredicateLessEqual    PredicateKind = "less-equal"
+	PredicateGreater      PredicateKind = "greater"
+	PredicateGreaterEqual PredicateKind = "greater-equal"
+	PredicateIsNull       PredicateKind = "is-null"
+	PredicateAnd          PredicateKind = "and"
+	PredicateOr           PredicateKind = "or"
+)
+
+type Predicate struct {
+	Kind  PredicateKind `json:"kind"`
+	Left  string        `json:"left,omitempty"`
+	Right string        `json:"right,omitempty"`
+	Value Value         `json:"value,omitempty"`
+	Items []Predicate   `json:"items,omitempty"`
+}
+
+type OrderingDirection string
+
+const (
+	OrderingAscending  OrderingDirection = "asc"
+	OrderingDescending OrderingDirection = "desc"
+)
+
+type Ordering struct {
+	Column    string            `json:"column"`
+	Direction OrderingDirection `json:"direction"`
+}
+
+// Plan is one ordered atomic statement plan.
+type Plan struct {
+	ID         string          `json:"id"`
+	Statements []PlanStatement `json:"statements"`
+}
+
+type PlanStatement struct {
+	ID          string       `json:"id"`
+	Query       Ref          `json:"query"`
+	Cardinality Cardinality  `json:"cardinality"`
+	Affected    AffectedRows `json:"affected,omitempty"`
+}
+
+type Cardinality string
+
+const (
+	CardinalityNone       Cardinality = "none"
+	CardinalityExactlyOne Cardinality = "exactly_one"
+	CardinalityZeroOrOne  Cardinality = "zero_or_one"
+	CardinalityMany       Cardinality = "many"
+)
+
+type AffectedRows struct {
+	Set       bool   `json:"set"`
+	Min       uint64 `json:"min"`
+	Max       uint64 `json:"max,omitempty"`
+	Unbounded bool   `json:"unbounded,omitempty"`
+}
+
+// Migration is immutable logical migration intent.
+type Migration struct {
+	ID           string               `json:"id"`
+	Version      uint64               `json:"version"`
+	Predecessors []Ref                `json:"predecessors,omitempty"`
+	Operations   []MigrationOperation `json:"operations"`
+}
+
+type MigrationOperationKind string
+
+const (
+	MigrationCreateTable MigrationOperationKind = "create-table"
+	MigrationAddColumn   MigrationOperationKind = "add-column"
+	MigrationCreateIndex MigrationOperationKind = "create-index"
+)
+
+type MigrationOperation struct {
+	Kind   MigrationOperationKind `json:"kind"`
+	Table  Ref                    `json:"table"`
+	Column Column                 `json:"column,omitempty"`
+	Index  Index                  `json:"index,omitempty"`
+}
+
+// Normalize validates the closed model and returns a deterministic copy.
+func (m Member[Access]) Normalize() (Model, error) {
+	model := Model{
+		Namespace:  m.Namespace,
+		Imports:    append([]string(nil), m.Imports...),
+		Tables:     append([]Table(nil), m.Tables...),
+		Queries:    append([]Query(nil), m.Queries...),
+		Plans:      append([]Plan(nil), m.Plans...),
+		Migrations: append([]Migration(nil), m.Migrations...),
+	}
+	if err := validateModel(&model); err != nil {
+		return Model{}, err
+	}
+	sort.Strings(model.Imports)
+	sort.Slice(model.Tables, func(i, j int) bool { return model.Tables[i].ID < model.Tables[j].ID })
+	sort.Slice(model.Queries, func(i, j int) bool { return model.Queries[i].ID < model.Queries[j].ID })
+	sort.Slice(model.Plans, func(i, j int) bool { return model.Plans[i].ID < model.Plans[j].ID })
+	sort.Slice(model.Migrations, func(i, j int) bool {
+		if model.Migrations[i].Version != model.Migrations[j].Version {
+			return model.Migrations[i].Version < model.Migrations[j].Version
+		}
+		return model.Migrations[i].ID < model.Migrations[j].ID
+	})
+	for i := range model.Tables {
+		sort.Slice(model.Tables[i].Columns, func(a, b int) bool { return model.Tables[i].Columns[a].ID < model.Tables[i].Columns[b].ID })
+		sort.Slice(model.Tables[i].Constraints, func(a, b int) bool { return model.Tables[i].Constraints[a].ID < model.Tables[i].Constraints[b].ID })
+		sort.Slice(model.Tables[i].Indexes, func(a, b int) bool { return model.Tables[i].Indexes[a].ID < model.Tables[i].Indexes[b].ID })
+	}
+	for i := range model.Migrations {
+		sort.Slice(model.Migrations[i].Predecessors, func(a, b int) bool {
+			return refKey(model.Migrations[i].Predecessors[a]) < refKey(model.Migrations[i].Predecessors[b])
+		})
+	}
+	return model, nil
+}
+
+// Digest returns a domain-separated digest of the normalized member model.
+func (m Member[Access]) Digest() (string, error) {
+	model, err := m.Normalize()
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.Marshal(model)
+	if err != nil {
+		return "", fmt.Errorf("%w: marshal normalized model: %v", ErrInvalid, err)
+	}
+	sum := sha256.Sum256(append([]byte("plystra.data.logical-model/v1\x00"), payload...))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func validateModel(model *Model) error {
+	if !validNamespace(model.Namespace) {
+		return fmt.Errorf("%w: namespace %q", ErrInvalidSchema, model.Namespace)
+	}
+	if len(model.Imports) > MaximumImports {
+		return ErrLimit
+	}
+	imports := make(map[string]struct{}, len(model.Imports))
+	for _, imported := range model.Imports {
+		if !validMemberID(imported) || imported == model.Namespace {
+			return fmt.Errorf("%w: import %q", ErrInvalidID, imported)
+		}
+		if _, exists := imports[imported]; exists {
+			return fmt.Errorf("%w: import %q", ErrDuplicate, imported)
+		}
+		imports[imported] = struct{}{}
+	}
+	if nodeCount(*model) > MaximumNodes {
+		return ErrLimit
+	}
+	symbols := map[string]string{}
+	tables := make(map[string]struct{}, len(model.Tables))
+	for _, table := range model.Tables {
+		if err := addSymbol(symbols, table.ID, "table"); err != nil {
+			return err
+		}
+		tables[table.ID] = struct{}{}
+		if err := validateTable(table); err != nil {
+			return err
+		}
+	}
+	queries := make(map[string]struct{}, len(model.Queries))
+	for _, query := range model.Queries {
+		if err := addSymbol(symbols, query.ID, "query"); err != nil {
+			return err
+		}
+		queries[query.ID] = struct{}{}
+		if err := validateQuery(query, imports, tables); err != nil {
+			return err
+		}
+	}
+	for _, plan := range model.Plans {
+		if err := addSymbol(symbols, plan.ID, "plan"); err != nil {
+			return err
+		}
+		if err := validatePlan(plan, imports, queries); err != nil {
+			return err
+		}
+	}
+	for _, migration := range model.Migrations {
+		if err := addSymbol(symbols, migration.ID, "migration"); err != nil {
+			return err
+		}
+		if migration.Version == 0 || len(migration.Operations) == 0 {
+			return fmt.Errorf("%w: migration %q", ErrInvalidSchema, migration.ID)
+		}
+		for _, predecessor := range migration.Predecessors {
+			if err := validateRef(predecessor, imports); err != nil {
+				return err
+			}
+		}
+		for _, predecessor := range migration.Predecessors {
+			if predecessor.Member == "" {
+				if _, exists := symbols[predecessor.Symbol]; !exists {
+					return fmt.Errorf("%w: migration %q", ErrReference, predecessor.Symbol)
+				}
+			}
+		}
+		for _, operation := range migration.Operations {
+			if operation.Kind != MigrationCreateTable && operation.Kind != MigrationAddColumn && operation.Kind != MigrationCreateIndex {
+				return fmt.Errorf("%w: migration operation %q", ErrUnsupported, operation.Kind)
+			}
+			if err := validateRef(operation.Table, imports); err != nil {
+				return err
+			}
+			if operation.Table.Member == "" {
+				if _, exists := tables[operation.Table.Symbol]; !exists {
+					return fmt.Errorf("%w: migration table %q", ErrReference, operation.Table.Symbol)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateTable(table Table) error {
+	if !validSymbol(table.ID) {
+		return fmt.Errorf("%w: table %q", ErrInvalidID, table.ID)
+	}
+	columns := map[string]struct{}{}
+	for _, column := range table.Columns {
+		if !validSymbol(column.ID) || !validScalar(column.Type) {
+			return fmt.Errorf("%w: column %q", ErrInvalidSchema, column.ID)
+		}
+		if _, exists := columns[column.ID]; exists {
+			return fmt.Errorf("%w: column %q", ErrDuplicate, column.ID)
+		}
+		columns[column.ID] = struct{}{}
+		if err := validateValue(column.Default); err != nil {
+			return err
+		}
+	}
+	for _, constraint := range table.Constraints {
+		if !validSymbol(constraint.ID) || len(constraint.Columns) == 0 {
+			return fmt.Errorf("%w: constraint %q", ErrInvalidSchema, constraint.ID)
+		}
+		if constraint.Kind != ConstraintPrimaryKey && constraint.Kind != ConstraintUnique && constraint.Kind != ConstraintForeignKey {
+			return fmt.Errorf("%w: constraint %q", ErrUnsupported, constraint.Kind)
+		}
+		for _, column := range constraint.Columns {
+			if _, exists := columns[column]; !exists {
+				return fmt.Errorf("%w: constraint column %q", ErrReference, column)
+			}
+		}
+		if constraint.Kind == ConstraintForeignKey {
+			if err := validateRef(constraint.ReferencedTable, nil); err != nil || len(constraint.ReferencedCols) == 0 {
+				return fmt.Errorf("%w: foreign key %q", ErrReference, constraint.ID)
+			}
+		}
+	}
+	for _, index := range table.Indexes {
+		if !validSymbol(index.ID) || len(index.Columns) == 0 {
+			return fmt.Errorf("%w: index %q", ErrInvalidSchema, index.ID)
+		}
+		for _, column := range index.Columns {
+			if _, exists := columns[column]; !exists {
+				return fmt.Errorf("%w: index column %q", ErrReference, column)
+			}
+		}
+	}
+	return nil
+}
+
+func validateQuery(query Query, imports map[string]struct{}, tables map[string]struct{}) error {
+	if !validSymbol(query.ID) || !validOperation(query.Operation) || query.Table.Symbol == "" {
+		return fmt.Errorf("%w: query %q", ErrInvalidSchema, query.ID)
+	}
+	if err := validateRef(query.Table, imports); err != nil {
+		return err
+	}
+	if query.Table.Member == "" {
+		if _, exists := tables[query.Table.Symbol]; !exists {
+			return fmt.Errorf("%w: table %q", ErrReference, query.Table.Symbol)
+		}
+	}
+	for _, projection := range query.Projection {
+		if !validSymbol(projection.Column) || projection.Alias != "" && !validSymbol(projection.Alias) {
+			return fmt.Errorf("%w: query projection %q", ErrInvalidSchema, projection.Column)
+		}
+	}
+	if err := validatePredicate(query.Predicate, imports, 0); err != nil {
+		return err
+	}
+	for _, ordering := range query.Ordering {
+		if !validSymbol(ordering.Column) || ordering.Direction != OrderingAscending && ordering.Direction != OrderingDescending {
+			return fmt.Errorf("%w: query ordering %q", ErrInvalidSchema, ordering.Column)
+		}
+	}
+	return nil
+}
+
+func validatePlan(plan Plan, imports map[string]struct{}, queries map[string]struct{}) error {
+	if !validSymbol(plan.ID) || len(plan.Statements) == 0 || len(plan.Statements) > 64 {
+		return fmt.Errorf("%w: plan %q", ErrInvalidSchema, plan.ID)
+	}
+	seen := map[string]struct{}{}
+	for _, statement := range plan.Statements {
+		if !validSymbol(statement.ID) {
+			return fmt.Errorf("%w: plan statement %q", ErrInvalidID, statement.ID)
+		}
+		if _, exists := seen[statement.ID]; exists {
+			return fmt.Errorf("%w: plan statement %q", ErrDuplicate, statement.ID)
+		}
+		seen[statement.ID] = struct{}{}
+		if err := validateRef(statement.Query, imports); err != nil {
+			return err
+		}
+		if statement.Query.Member == "" {
+			if _, exists := queries[statement.Query.Symbol]; !exists {
+				return fmt.Errorf("%w: query %q", ErrReference, statement.Query.Symbol)
+			}
+		}
+		if statement.Cardinality != CardinalityNone && statement.Cardinality != CardinalityExactlyOne && statement.Cardinality != CardinalityZeroOrOne && statement.Cardinality != CardinalityMany {
+			return fmt.Errorf("%w: cardinality %q", ErrUnsupported, statement.Cardinality)
+		}
+		if statement.Affected.Set && !statement.Affected.Unbounded && statement.Affected.Min > statement.Affected.Max {
+			return fmt.Errorf("%w: affected row range", ErrInvalidSchema)
+		}
+	}
+	return nil
+}
+
+func validatePredicate(predicate Predicate, imports map[string]struct{}, depth int) error {
+	if predicate.Kind == "" {
+		return nil
+	}
+	if depth > MaximumNesting {
+		return ErrLimit
+	}
+	switch predicate.Kind {
+	case PredicateEqual, PredicateNotEqual, PredicateLess, PredicateLessEqual, PredicateGreater, PredicateGreaterEqual:
+		if !validSymbol(predicate.Left) {
+			return fmt.Errorf("%w: predicate column %q", ErrReference, predicate.Left)
+		}
+		return validateValue(predicate.Value)
+	case PredicateIsNull:
+		if !validSymbol(predicate.Left) {
+			return fmt.Errorf("%w: predicate column %q", ErrReference, predicate.Left)
+		}
+	case PredicateAnd, PredicateOr:
+		if len(predicate.Items) < 2 {
+			return fmt.Errorf("%w: predicate requires two items", ErrInvalidSchema)
+		}
+		for _, item := range predicate.Items {
+			if err := validatePredicate(item, imports, depth+1); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("%w: predicate %q", ErrUnsupported, predicate.Kind)
+	}
+	return nil
+}
+
+func validateValue(value Value) error {
+	if !value.Set {
+		return nil
+	}
+	if !validScalar(value.Kind) || value.Kind == TypeUUID || value.Kind == TypeTimestamp {
+		return fmt.Errorf("%w: value kind %q", ErrUnsupported, value.Kind)
+	}
+	if value.Kind == TypeString && !utf8.ValidString(value.String) {
+		return fmt.Errorf("%w: value is not UTF-8", ErrInvalidSchema)
+	}
+	return nil
+}
+
+func validateRef(ref Ref, imports map[string]struct{}) error {
+	if !validSymbol(ref.Symbol) {
+		return fmt.Errorf("%w: symbol %q", ErrReference, ref.Symbol)
+	}
+	if ref.Member != "" {
+		if !validMemberID(ref.Member) {
+			return fmt.Errorf("%w: member %q", ErrReference, ref.Member)
+		}
+		if imports != nil {
+			if _, ok := imports[ref.Member]; !ok {
+				return fmt.Errorf("%w: member %q is not imported", ErrReference, ref.Member)
+			}
+		}
+	}
+	return nil
+}
+
+func addSymbol(symbols map[string]string, value, kind string) error {
+	if !validSymbol(value) {
+		return fmt.Errorf("%w: %s %q", ErrInvalidID, kind, value)
+	}
+	if previous, exists := symbols[value]; exists {
+		return fmt.Errorf("%w: %q is both %s and %s", ErrDuplicate, value, previous, kind)
+	}
+	symbols[value] = kind
+	return nil
+}
+
+func nodeCount(model Model) int {
+	count := 1 + len(model.Imports) + len(model.Tables) + len(model.Queries) + len(model.Plans) + len(model.Migrations)
+	for _, table := range model.Tables {
+		count += len(table.Columns) + len(table.Constraints) + len(table.Indexes)
+	}
+	for _, query := range model.Queries {
+		count += len(query.Projection) + len(query.Ordering) + predicateCount(query.Predicate)
+	}
+	for _, plan := range model.Plans {
+		count += len(plan.Statements)
+	}
+	for _, migration := range model.Migrations {
+		count += len(migration.Predecessors) + len(migration.Operations)
+	}
+	return count
+}
+
+func predicateCount(predicate Predicate) int {
+	count := 0
+	for _, item := range predicate.Items {
+		count += 1 + predicateCount(item)
+	}
+	if predicate.Kind != "" {
+		count++
+	}
+	return count
+}
+
+func validOperation(value OperationKind) bool {
+	return value == OperationSelect || value == OperationInsert || value == OperationUpdate || value == OperationDelete
+}
+
+func validScalar(value ScalarType) bool {
+	switch value {
+	case TypeBool, TypeBytes, TypeFloat64, TypeInt64, TypeString, TypeTimestamp, TypeUint64, TypeUUID:
+		return true
+	default:
+		return false
+	}
+}
+
+func validMemberID(value string) bool {
+	name, version, ok := strings.Cut(value, "/v")
+	if !ok || name == "" || version == "" || strings.HasPrefix(version, "0") {
+		return false
+	}
+	if _, err := strconv.ParseUint(version, 10, 64); err != nil {
+		return false
+	}
+	segments := strings.Split(name, ".")
+	if len(segments) < 2 {
+		return false
+	}
+	for _, segment := range segments {
+		if !validSegment(segment) {
+			return false
+		}
+	}
+	return true
+}
+
+func validNamespace(value string) bool {
+	if value == "" || len(value) > 63 || !utf8.ValidString(value) || value[0] < 'a' || value[0] > 'z' {
+		return false
+	}
+	for _, character := range value[1:] {
+		if character != '_' && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validSymbol(value string) bool {
+	if value == "" || len(value) > MaximumSymbolBytes || value[0] < 'a' || value[0] > 'z' {
+		return false
+	}
+	for _, part := range strings.Split(value, "-") {
+		if part == "" || (part[0] < 'a' || part[0] > 'z') && (part[0] < '0' || part[0] > '9') {
+			return false
+		}
+		for _, character := range part[1:] {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validSegment(value string) bool {
+	if value == "" || value[0] < 'a' || value[0] > 'z' {
+		return false
+	}
+	for _, character := range value[1:] {
+		if character != '-' && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func refKey(ref Ref) string { return ref.Member + "\x00" + ref.Symbol }
