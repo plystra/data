@@ -13,9 +13,11 @@ generic:
 - `github.com/plystra/data` consumes those public contracts; Core does not
   import this repository or contain Data product code.
 
-The repository is intentionally initialized without a product implementation.
-The first Data feature should be added here as a complete, independently
-verifiable vertical change with its own tests and documentation.
+The repository contains the first independently verifiable Data verticals:
+the shared PostgreSQL Resource and the immutable migration planner. Backend
+providers own execution; the planner validates migration identity, predecessor
+ordering, applied-history drift, and a canonical plan digest without opening a
+database connection.
 
 ## Module
 
