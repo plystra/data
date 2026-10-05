@@ -258,10 +258,10 @@ func (m Member[Access]) Normalize() (Model, error) {
 	model := Model{
 		Namespace:  m.Namespace,
 		Imports:    append([]string(nil), m.Imports...),
-		Tables:     append([]Table(nil), m.Tables...),
-		Queries:    append([]Query(nil), m.Queries...),
-		Plans:      append([]Plan(nil), m.Plans...),
-		Migrations: append([]Migration(nil), m.Migrations...),
+		Tables:     cloneTables(m.Tables),
+		Queries:    cloneQueries(m.Queries),
+		Plans:      clonePlans(m.Plans),
+		Migrations: cloneMigrations(m.Migrations),
 	}
 	if err := validateModel(&model); err != nil {
 		return Model{}, err
@@ -295,12 +295,84 @@ func (m Member[Access]) Digest() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return DigestModel(model)
+}
+
+// DigestModel returns a domain-separated digest of an already normalized
+// logical model. Callers should prefer Member.Digest when they have a root.
+func DigestModel(model Model) (string, error) {
 	payload, err := json.Marshal(model)
 	if err != nil {
 		return "", fmt.Errorf("%w: marshal normalized model: %v", ErrInvalid, err)
 	}
 	sum := sha256.Sum256(append([]byte("plystra.data.logical-model/v1\x00"), payload...))
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func cloneTables(tables []Table) []Table {
+	result := make([]Table, len(tables))
+	for i, table := range tables {
+		result[i] = table
+		result[i].Columns = append([]Column(nil), table.Columns...)
+		for column := range result[i].Columns {
+			result[i].Columns[column].Default.Bytes = table.Columns[column].Default.Bytes
+		}
+		result[i].Constraints = make([]Constraint, len(table.Constraints))
+		for constraint, value := range table.Constraints {
+			result[i].Constraints[constraint] = value
+			result[i].Constraints[constraint].Columns = append([]string(nil), value.Columns...)
+			result[i].Constraints[constraint].ReferencedCols = append([]string(nil), value.ReferencedCols...)
+		}
+		result[i].Indexes = make([]Index, len(table.Indexes))
+		for index, value := range table.Indexes {
+			result[i].Indexes[index] = value
+			result[i].Indexes[index].Columns = append([]string(nil), value.Columns...)
+		}
+	}
+	return result
+}
+
+func cloneQueries(queries []Query) []Query {
+	result := make([]Query, len(queries))
+	for i, query := range queries {
+		result[i] = query
+		result[i].Projection = append([]Projection(nil), query.Projection...)
+		result[i].Ordering = append([]Ordering(nil), query.Ordering...)
+		result[i].Predicate = clonePredicate(query.Predicate)
+	}
+	return result
+}
+
+func clonePredicate(predicate Predicate) Predicate {
+	predicate.Items = make([]Predicate, len(predicate.Items))
+	for i, item := range predicate.Items {
+		predicate.Items[i] = clonePredicate(item)
+	}
+	return predicate
+}
+
+func clonePlans(plans []Plan) []Plan {
+	result := make([]Plan, len(plans))
+	for i, plan := range plans {
+		result[i] = plan
+		result[i].Statements = append([]PlanStatement(nil), plan.Statements...)
+	}
+	return result
+}
+
+func cloneMigrations(migrations []Migration) []Migration {
+	result := make([]Migration, len(migrations))
+	for i, migration := range migrations {
+		result[i] = migration
+		result[i].Predecessors = append([]Ref(nil), migration.Predecessors...)
+		result[i].Operations = make([]MigrationOperation, len(migration.Operations))
+		for operation, value := range migration.Operations {
+			result[i].Operations[operation] = value
+			result[i].Operations[operation].Column.Default.Bytes = value.Column.Default.Bytes
+			result[i].Operations[operation].Index.Columns = append([]string(nil), value.Index.Columns...)
+		}
+	}
+	return result
 }
 
 func validateModel(model *Model) error {

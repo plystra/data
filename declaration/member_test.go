@@ -74,12 +74,12 @@ func TestNormalizeDoesNotMutateAuthoredSlices(t *testing.T) {
 	member := declaration.Member[access]{
 		Namespace: "authn",
 		Imports:   []string{"z.audit/v1", "a.authz/v1"},
-		Tables:    []declaration.Table{{ID: "z-table"}, {ID: "a-table"}},
+		Tables:    []declaration.Table{{ID: "z-table", Columns: []declaration.Column{{ID: "z-column", Type: declaration.TypeString}, {ID: "a-column", Type: declaration.TypeString}}}, {ID: "a-table"}},
 	}
 	if _, err := member.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	if member.Imports[0] != "z.audit/v1" || member.Tables[0].ID != "z-table" {
+	if member.Imports[0] != "z.audit/v1" || member.Tables[0].ID != "z-table" || member.Tables[0].Columns[0].ID != "z-column" {
 		t.Fatal("Normalize mutated authored slices")
 	}
 }
