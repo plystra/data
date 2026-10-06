@@ -527,6 +527,20 @@ var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
 	}
 }
 
+func TestAnalyzeMemberIDDoesNotConsumeLocalSymbolLimit(t *testing.T) {
+	id := strings.Repeat("a", 124) + ".b/v1"
+	snapshot := sourceSnapshot("package model\n\nimport \"github.com/plystra/data/declaration\"\n\n//plystra:data "+id+"\nvar Accounts = declaration.Member[declaration.NoAccess]{Namespace: \"accounts\"}\n", analyzer.ResourceContract{})
+	result, err := analyzer.Analyze(snapshot)
+	if err != nil || !result.Valid || len(result.Roots) != 1 || result.Roots[0].MemberID != id {
+		t.Fatalf("long member ID analysis = %#v, %v", result, err)
+	}
+	invalid := sourceSnapshot("package model\n\nimport \"github.com/plystra/data/declaration\"\n\n//plystra:data accounts.user/v18446744073709551616\nvar Accounts = declaration.Member[declaration.NoAccess]{Namespace: \"accounts\"}\n", analyzer.ResourceContract{})
+	result, err = analyzer.Analyze(invalid)
+	if err != nil || result.Valid || !hasCode(result, analyzer.CodeInvalidID) {
+		t.Fatalf("overflow member ID analysis = %#v, %v", result, err)
+	}
+}
+
 func TestAnalyzeTruncatesDiagnosticsByDeclaredBounds(t *testing.T) {
 	snapshot := sourceSnapshot(`package model
 

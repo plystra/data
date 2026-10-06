@@ -484,7 +484,7 @@ func parseDirective(text string) (string, bool) {
 		return "", false
 	}
 	fields := strings.Fields(strings.TrimPrefix(value, "//"))
-	if len(fields) != 2 || fields[0] != "plystra:data" || !memberIDPattern.MatchString(fields[1]) {
+	if len(fields) != 2 || fields[0] != "plystra:data" || !declaration.ValidMemberID(fields[1]) {
 		return "", false
 	}
 	return fields[1], true
@@ -534,10 +534,6 @@ func (a *analysis) inspectRoot(pkg *parsedPackage, file *ast.File, spec *ast.Val
 	}
 	if checker.imports > a.limits.MaxImports {
 		a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeLimitExceeded, "Data member import limit exceeded", "Reduce the member Imports list to the advertised analysis limit.", memberID, name.Name)
-		return
-	}
-	if len([]byte(memberID)) > a.limits.MaxSymbolBytes {
-		a.addDiagnosticWithMember(pkg, fileName(pkg, file), comment, CodeLimitExceeded, "Data member identity exceeds the symbol limit", "Shorten the member identity to the advertised UTF-8 byte limit.", memberID, name.Name)
 		return
 	}
 	if previous, exists := a.seenRoots[memberID]; exists {

@@ -354,6 +354,23 @@ func TestEmitRejectsInvalidMemberIDBeforePathConstruction(t *testing.T) {
 	}
 }
 
+func TestEmitAcceptsMemberIDBeyondLocalSymbolLimit(t *testing.T) {
+	request := validEmitRequest(t)
+	id := strings.Repeat("a", 124) + ".b/v1"
+	request.Analyze.Roots[0].MemberID = id
+	request.Assignments[0].MemberID = id
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded {
+		t.Fatalf("long member ID emit = %#v", response)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatalf("long member ID response: %v", err)
+	}
+}
+
 func TestValidateEmitResponseRejectsSelfConsistentQueryMetadataTamper(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model
