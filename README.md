@@ -90,7 +90,8 @@ separate consumer of Kernel's Secret contract.
 
 The `protocol` package and `cmd/plystra-data-compiler` provide the bounded
 `plystra.data-analyze/v1` phase. Requests carry an exact compiler identity,
-Go build context, limits, and an input digest binding both the build context
+including the selected Go Module `h1:` checksum and raw distribution-manifest
+digest, Go build context, limits, and an input digest binding both the build context
 and self-contained source snapshot;
 responses contain normalized member models with their roots, provenance,
 diagnostics, and output digests.

@@ -88,6 +88,48 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	}
 }
 
+func TestCompilerCommandAnalyzesOneBoundedFrame(t *testing.T) {
+	snapshot := analyzer.Snapshot{}
+	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
+	digest, err := protocol.AnalyzeInputDigest(snapshot, build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.AnalyzeRequest{
+		Schema: protocol.AnalyzeSchema, Phase: protocol.AnalyzePhase, RequestID: "public-analyze",
+		Compiler: protocol.CompilerIdentity{
+			ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test",
+			ModuleChecksum:    "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32)),
+			ManifestDigest:    "sha256:" + strings.Repeat("2", 64),
+			CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema,
+			EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage,
+			GoToolchain: "go1.26",
+		},
+		Build: build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
+	}
+	var input bytes.Buffer
+	if err := protocol.WriteFrame(&input, request); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "run", ".")
+	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Stdin = &input
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil || stderr.Len() != 0 {
+		t.Fatalf("compiler analyze failed: %v; stderr=%q", err, stderr.String())
+	}
+	var response protocol.AnalyzeResponse
+	if err := protocol.ReadFrame(&stdout, &response); err != nil || stdout.Len() != 0 {
+		t.Fatalf("analyze response frame = %#v, %v; remaining=%d", response, err, stdout.Len())
+	}
+	if response.Status != protocol.StatusSucceeded || response.RequestID != request.RequestID || response.InputDigest != request.InputDigest || !response.Output.Valid || response.OutputDigest == "" || len(response.Diagnostics) != 0 {
+		t.Fatalf("analyze response = %#v", response)
+	}
+}
+
 func TestCompilerCommandDoesNotDependOnCorePackages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
