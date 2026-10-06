@@ -3,7 +3,7 @@ package protocol_test
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -107,25 +107,67 @@ func TestDistributionManifestMatchesProtocolIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var manifest struct {
-		Schema              string `json:"schema"`
-		ModulePath          string `json:"module_path"`
-		CommandImportPath   string `json:"command_import_path"`
-		AnalyzeProtocol     string `json:"analyze_protocol"`
-		EmitProtocol        string `json:"emit_protocol"`
-		DeclarationLanguage string `json:"declaration_language"`
-		Limits              struct {
-			MaxFrameBytes        int `json:"max_frame_bytes"`
-			MaxArtifacts         int `json:"max_artifacts"`
-			MaxArtifactBytes     int `json:"max_artifact_bytes"`
-			MaxArtifactPathBytes int `json:"max_artifact_path_bytes"`
-		} `json:"limits"`
-	}
-	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+	manifest, sourceDigest, err := protocol.ParseDistributionManifest(manifestBytes)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Schema != protocol.DistributionSchema || manifest.ModulePath != protocol.ModulePath || manifest.CommandImportPath != protocol.CommandImportPath || manifest.AnalyzeProtocol != protocol.AnalyzeSchema || manifest.EmitProtocol != protocol.EmitSchema || manifest.DeclarationLanguage != protocol.DeclarationLanguage || manifest.Limits.MaxFrameBytes != protocol.MaxFrameBytes || manifest.Limits.MaxArtifacts != protocol.MaxArtifacts || manifest.Limits.MaxArtifactBytes != protocol.MaxArtifactBytes || manifest.Limits.MaxArtifactPathBytes != protocol.MaxArtifactPathBytes {
+	if err := protocol.ValidateDistributionManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Limits != (protocol.DistributionLimits{
+		MaxRoots: protocol.MaxRoots, MaxNodes: protocol.MaxNodes, MaxImports: protocol.MaxImports,
+		MaxNesting: protocol.MaxNesting, MaxSymbolBytes: protocol.MaxSymbolBytes,
+		MaxDiagnostics: protocol.MaxDiagnostics, MaxDiagnosticBytes: protocol.MaxDiagnosticBytes,
+		MaxFrameBytes: protocol.MaxFrameBytes, MaxArtifacts: protocol.MaxArtifacts,
+		MaxArtifactBytes: protocol.MaxArtifactBytes, MaxArtifactPathBytes: protocol.MaxArtifactPathBytes,
+	}) {
 		t.Fatalf("manifest = %#v", manifest)
+	}
+	first, err := protocol.DistributionManifestDigest(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manifest.Digest()
+	if err != nil || first != second {
+		t.Fatalf("manifest digest = %q, %v", second, err)
+	}
+	if len(first) != len("sha256:")+64 || strings.Contains(first, string(manifestBytes)) {
+		t.Fatalf("manifest digest exposes source content: %q", first)
+	}
+	if len(sourceDigest) != len("sha256:")+64 || sourceDigest == first {
+		t.Fatalf("source digest = %q, canonical digest = %q", sourceDigest, first)
+	}
+	compact := bytes.ReplaceAll(manifestBytes, []byte("\n"), nil)
+	_, compactDigest, err := protocol.ParseDistributionManifest(compact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if compactDigest == sourceDigest {
+		t.Fatal("source digest ignored published manifest bytes")
+	}
+}
+
+func TestParseDistributionManifestRejectsInvalidContract(t *testing.T) {
+	valid := `{"schema":"plystra.data-compiler-distribution/v1","module_path":"github.com/plystra/data","command_import_path":"github.com/plystra/data/cmd/plystra-data-compiler","analyze_protocol":"plystra.data-analyze/v1","emit_protocol":"plystra.data-emit/v1","declaration_language":"plystra.data-declaration/v1","limits":{"max_roots":1024,"max_nodes":65536,"max_imports":1024,"max_nesting":64,"max_symbol_bytes":128,"max_diagnostics":256,"max_diagnostic_bytes":262144,"max_frame_bytes":16777216,"max_artifacts":4096,"max_artifact_bytes":4194304,"max_artifact_path_bytes":512}}`
+	tests := []struct {
+		name string
+		data string
+	}{
+		{name: "unknown identity", data: strings.Replace(valid, `"schema":`, `"unknown":`, 1)},
+		{name: "unknown limit", data: strings.Replace(valid, `"max_roots":`, `"unknown":`, 1)},
+		{name: "missing identity", data: strings.Replace(valid, `"schema":"plystra.data-compiler-distribution/v1",`, "", 1)},
+		{name: "wrong identity", data: strings.Replace(valid, "plystra.data-emit/v1", "plystra.data-emit/v2", 1)},
+		{name: "zero bound", data: strings.Replace(valid, `"max_roots":1024`, `"max_roots":0`, 1)},
+		{name: "out of range bound", data: strings.Replace(valid, `"max_nodes":65536`, `"max_nodes":65537`, 1)},
+		{name: "trailing json", data: valid + ` {}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := protocol.ParseDistributionManifest([]byte(test.data))
+			if !errors.Is(err, protocol.ErrInvalidDistributionManifest) {
+				t.Fatalf("error = %v", err)
+			}
+		})
 	}
 }
 
