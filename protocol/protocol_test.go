@@ -48,6 +48,27 @@ func TestValidateAnalyzeRequestRejectsDigestMismatch(t *testing.T) {
 	}
 }
 
+func TestAnalyzeInputDigestBindsBuildContext(t *testing.T) {
+	request := validRequest(t)
+	first, err := protocol.AnalyzeInputDigest(request.Snapshot, request.Build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Build.GOOS = "linux"
+	second, err := protocol.AnalyzeInputDigest(request.Snapshot, request.Build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("build context did not change the analyze input digest")
+	}
+	request.InputDigest = first
+	response := protocol.HandleAnalyze(request)
+	if response.Status != protocol.StatusRejected {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestAnalyzeFramePreservesMemberReferenceDiagnostics(t *testing.T) {
 	request := validRequest(t)
 	request.Snapshot.Packages[1].Files[0].Content = []byte(`package model
@@ -55,7 +76,7 @@ import "github.com/plystra/data/declaration"
 //plystra:data accounts.user/v1
 var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts", Imports: []string{"orders.audit/v1"}}
 `)
-	digest, err := analyzer.SnapshotDigest(request.Snapshot)
+	digest, err := protocol.AnalyzeInputDigest(request.Snapshot, request.Build)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +137,8 @@ var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
 `)}}},
 		},
 	}
-	digest, err := analyzer.SnapshotDigest(snapshot)
+	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
+	digest, err := protocol.AnalyzeInputDigest(snapshot, build)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +148,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
 			ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "sha256:" + strings.Repeat("1", 64), ManifestDigest: "sha256:" + strings.Repeat("2", 64),
 			CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26",
 		},
-		Build: protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
+		Build: build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
 	}
 }
 

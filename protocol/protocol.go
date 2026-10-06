@@ -3,12 +3,14 @@ package protocol
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/plystra/data/analyzer"
@@ -158,8 +160,35 @@ func ReadFrame(r io.Reader, value any) error {
 	return nil
 }
 
+// AnalyzeInputDigest binds the immutable source snapshot to the exact selected
+// Go build context. Build tags are treated as a set for deterministic identity.
+func AnalyzeInputDigest(snapshot analyzer.Snapshot, build BuildContext) (string, error) {
+	snapshotDigest, err := analyzer.SnapshotDigest(snapshot)
+	if err != nil {
+		return "", err
+	}
+	tags := append([]string(nil), build.BuildTags...)
+	sort.Strings(tags)
+	payload, err := json.Marshal(struct {
+		SnapshotDigest string       `json:"snapshot_digest"`
+		Build          BuildContext `json:"build"`
+	}{
+		SnapshotDigest: snapshotDigest,
+		Build: BuildContext{
+			GOOS:      build.GOOS,
+			GOARCH:    build.GOARCH,
+			BuildTags: tags,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("analyze input digest: %w", err)
+	}
+	sum := sha256.Sum256(append([]byte("plystra.data.analyze-input/v1\x00"), payload...))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
 // ValidateAnalyzeRequest checks protocol identity and binds the request to its
-// exact source snapshot before any source analysis starts.
+// exact source snapshot and Go build context before analysis starts.
 func ValidateAnalyzeRequest(request AnalyzeRequest) error {
 	if request.Schema != AnalyzeSchema || request.Phase != AnalyzePhase {
 		return fmt.Errorf("unsupported analyze schema or phase")
@@ -177,7 +206,7 @@ func ValidateAnalyzeRequest(request AnalyzeRequest) error {
 	if strings.TrimSpace(request.Build.GOOS) == "" || strings.TrimSpace(request.Build.GOARCH) == "" {
 		return fmt.Errorf("Go build context is incomplete")
 	}
-	expected, err := analyzer.SnapshotDigest(request.Snapshot)
+	expected, err := AnalyzeInputDigest(request.Snapshot, request.Build)
 	if err != nil {
 		return err
 	}
