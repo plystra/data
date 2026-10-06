@@ -1,0 +1,268 @@
+package analyzer
+
+import (
+	"sort"
+
+	"github.com/plystra/data/declaration"
+)
+
+type memberSymbols struct {
+	tables     map[string]declaration.Table
+	queries    map[string]struct{}
+	plans      map[string]struct{}
+	migrations map[string]struct{}
+}
+
+func (member memberSymbols) hasSymbol(symbol string) bool {
+	if _, ok := member.tables[symbol]; ok {
+		return true
+	}
+	if _, ok := member.queries[symbol]; ok {
+		return true
+	}
+	if _, ok := member.plans[symbol]; ok {
+		return true
+	}
+	_, ok := member.migrations[symbol]
+	return ok
+}
+
+func (a *analysis) validateReferences() {
+	roots := append([]Root(nil), a.result.Roots...)
+	sort.Slice(roots, func(i, j int) bool { return roots[i].MemberID < roots[j].MemberID })
+
+	symbols := make(map[string]memberSymbols, len(roots))
+	for _, root := range roots {
+		member := memberSymbols{
+			tables:     make(map[string]declaration.Table, len(root.Model.Tables)),
+			queries:    make(map[string]struct{}, len(root.Model.Queries)),
+			plans:      make(map[string]struct{}, len(root.Model.Plans)),
+			migrations: make(map[string]struct{}, len(root.Model.Migrations)),
+		}
+		for _, table := range root.Model.Tables {
+			member.tables[table.ID] = table
+		}
+		for _, query := range root.Model.Queries {
+			member.queries[query.ID] = struct{}{}
+		}
+		for _, plan := range root.Model.Plans {
+			member.plans[plan.ID] = struct{}{}
+		}
+		for _, migration := range root.Model.Migrations {
+			member.migrations[migration.ID] = struct{}{}
+		}
+		symbols[root.MemberID] = member
+	}
+
+	imports := make(map[string][]string, len(roots))
+	for _, root := range roots {
+		for _, memberID := range root.Model.Imports {
+			if _, exists := symbols[memberID]; !exists {
+				a.referenceDiagnostic(root, CodeUnresolvedReference, "Data member import target is not present in the analyzed package inventory", "Add the imported Data member to the selected module graph or remove the import.", memberID)
+				continue
+			}
+			imports[root.MemberID] = append(imports[root.MemberID], memberID)
+		}
+		a.validateMemberReferences(root, symbols)
+	}
+	a.validateImportCycles(roots, imports)
+}
+
+func (a *analysis) validateMemberReferences(root Root, symbols map[string]memberSymbols) {
+	for _, table := range root.Model.Tables {
+		for _, constraint := range table.Constraints {
+			if constraint.Kind != declaration.ConstraintForeignKey {
+				continue
+			}
+			target, ok := a.resolveTable(root, constraint.ReferencedTable, symbols)
+			if ok {
+				a.validateColumns(root, target, constraint.ReferencedCols)
+			}
+		}
+	}
+	for _, query := range root.Model.Queries {
+		target, ok := a.resolveTable(root, query.Table, symbols)
+		if !ok {
+			continue
+		}
+		for _, projection := range query.Projection {
+			a.validateColumn(root, target, projection.Column)
+		}
+		for _, ordering := range query.Ordering {
+			a.validateColumn(root, target, ordering.Column)
+		}
+		a.validatePredicate(root, target, query.Predicate)
+	}
+	for _, plan := range root.Model.Plans {
+		for _, statement := range plan.Statements {
+			a.resolveKind(root, statement.Query, "query", symbols)
+		}
+	}
+	for _, migration := range root.Model.Migrations {
+		for _, predecessor := range migration.Predecessors {
+			a.resolveKind(root, predecessor, "migration", symbols)
+		}
+		for _, operation := range migration.Operations {
+			a.resolveKind(root, operation.Table, "table", symbols)
+		}
+	}
+}
+
+func (a *analysis) resolveTable(root Root, ref declaration.Ref, symbols map[string]memberSymbols) (declaration.Table, bool) {
+	memberID := root.MemberID
+	if ref.Member != "" {
+		memberID = ref.Member
+	}
+	member, exists := symbols[memberID]
+	if !exists {
+		a.referenceDiagnostic(root, CodeUnresolvedReference, "Data reference target member is not present in the analyzed package inventory", "Add the referenced Data member to the selected module graph.", ref.Symbol)
+		return declaration.Table{}, false
+	}
+	table, exists := member.tables[ref.Symbol]
+	if !exists {
+		code := CodeUnresolvedReference
+		message := "Data reference symbol is not present in the target member"
+		action := "Declare the referenced Data symbol or correct the reference."
+		if member.hasSymbol(ref.Symbol) {
+			code = CodeReferenceKindMismatch
+			message = "Data reference does not name a table in the target member"
+			action = "Use the symbol of a declared table for this reference."
+		}
+		a.referenceDiagnostic(root, code, message, action, ref.Symbol)
+		return declaration.Table{}, false
+	}
+	return table, true
+}
+
+func (a *analysis) resolveKind(root Root, ref declaration.Ref, kind string, symbols map[string]memberSymbols) bool {
+	memberID := root.MemberID
+	if ref.Member != "" {
+		memberID = ref.Member
+	}
+	member, exists := symbols[memberID]
+	if !exists {
+		a.referenceDiagnostic(root, CodeUnresolvedReference, "Data reference target member is not present in the analyzed package inventory", "Add the referenced Data member to the selected module graph.", ref.Symbol)
+		return false
+	}
+	var found bool
+	switch kind {
+	case "query":
+		_, found = member.queries[ref.Symbol]
+	case "plan":
+		_, found = member.plans[ref.Symbol]
+	case "migration":
+		_, found = member.migrations[ref.Symbol]
+	case "table":
+		_, found = member.tables[ref.Symbol]
+	}
+	if !found {
+		code := CodeUnresolvedReference
+		message := "Data reference symbol is not present in the target member"
+		action := "Declare the referenced Data symbol or correct the reference."
+		if member.hasSymbol(ref.Symbol) {
+			code = CodeReferenceKindMismatch
+			message = "Data reference does not name the required symbol kind in the target member"
+			action = "Use a symbol declared by the required Data node type."
+		}
+		a.referenceDiagnostic(root, code, message, action, ref.Symbol)
+	}
+	return found
+}
+
+func (a *analysis) validateColumns(root Root, table declaration.Table, columns []string) {
+	for _, column := range columns {
+		a.validateColumn(root, table, column)
+	}
+}
+
+func (a *analysis) validateColumn(root Root, table declaration.Table, column string) {
+	for _, candidate := range table.Columns {
+		if candidate.ID == column {
+			return
+		}
+	}
+	a.referenceDiagnostic(root, CodeUnresolvedReference, "Data reference does not name a column in the target table", "Use a declared column from the referenced table.", column)
+}
+
+func (a *analysis) validatePredicate(root Root, table declaration.Table, predicate declaration.Predicate) {
+	if predicate.Kind == "" {
+		return
+	}
+	if predicate.Left != "" {
+		a.validateColumn(root, table, predicate.Left)
+	}
+	if predicate.Right != "" {
+		a.validateColumn(root, table, predicate.Right)
+	}
+	for _, item := range predicate.Items {
+		a.validatePredicate(root, table, item)
+	}
+}
+
+func (a *analysis) validateImportCycles(roots []Root, imports map[string][]string) {
+	state := make(map[string]uint8, len(roots))
+	reported := make(map[string]struct{})
+	stack := make([]string, 0, len(roots))
+	var visit func(string)
+	visit = func(memberID string) {
+		state[memberID] = 1
+		stack = append(stack, memberID)
+		dependencies := append([]string(nil), imports[memberID]...)
+		sort.Strings(dependencies)
+		for _, dependency := range dependencies {
+			switch state[dependency] {
+			case 0:
+				visit(dependency)
+			case 1:
+				start := 0
+				for index, item := range stack {
+					if item == dependency {
+						start = index
+						break
+					}
+				}
+				for _, cycleMember := range stack[start:] {
+					if _, exists := reported[cycleMember]; exists {
+						continue
+					}
+					reported[cycleMember] = struct{}{}
+					a.referenceDiagnosticByMember(cycleMember, CodeImportCycle, "Data member imports contain a cycle", "Remove one import edge so Data member imports form an acyclic graph.", cycleMember)
+				}
+			}
+		}
+		stack = stack[:len(stack)-1]
+		state[memberID] = 2
+	}
+	ids := make([]string, 0, len(roots))
+	for _, root := range roots {
+		ids = append(ids, root.MemberID)
+	}
+	sort.Strings(ids)
+	for _, memberID := range ids {
+		if state[memberID] == 0 {
+			visit(memberID)
+		}
+	}
+}
+
+func (a *analysis) referenceDiagnostic(root Root, code DiagnosticCode, message, action, symbol string) {
+	a.result.Diagnostics = append(a.result.Diagnostics, Diagnostic{
+		Code:        code,
+		Message:     message,
+		Action:      action,
+		PackagePath: root.PackagePath,
+		FilePath:    root.FilePath,
+		MemberID:    root.MemberID,
+		Symbol:      symbol,
+		Span:        root.DeclarationPos,
+	})
+}
+
+func (a *analysis) referenceDiagnosticByMember(memberID string, code DiagnosticCode, message, action, symbol string) {
+	for _, root := range a.result.Roots {
+		if root.MemberID == memberID {
+			a.referenceDiagnostic(root, code, message, action, symbol)
+			return
+		}
+	}
+}

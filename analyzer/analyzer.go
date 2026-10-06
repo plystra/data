@@ -116,6 +116,8 @@ const (
 	CodeInvalidID              DiagnosticCode = "invalid-id"
 	CodeDuplicateSymbol        DiagnosticCode = "duplicate-symbol"
 	CodeUnresolvedReference    DiagnosticCode = "unresolved-reference"
+	CodeReferenceKindMismatch  DiagnosticCode = "reference-kind-mismatch"
+	CodeImportCycle            DiagnosticCode = "import-cycle"
 	CodeAccessContractMismatch DiagnosticCode = "access-contract-mismatch"
 	CodeLimitExceeded          DiagnosticCode = "limit-exceeded"
 	CodeTypeCheck              DiagnosticCode = "type-check"
@@ -177,6 +179,7 @@ func Analyze(snapshot Snapshot) (Result, error) {
 	a.parsePackages()
 	a.typeCheckPackages()
 	a.discoverRoots()
+	a.validateReferences()
 	a.finish()
 	return a.result, nil
 }

@@ -56,9 +56,8 @@ func TestAnalyzeDecodesAndNormalizesModel(t *testing.T) {
 import "github.com/plystra/data/declaration"
 
 //plystra:data accounts.user/v1
-var Accounts = declaration.Member[declaration.NoAccess]{
+	var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts",
-	Imports: []string{"orders.audit/v1"},
 	Tables: []declaration.Table{
 		{ID: "z-users", Columns: []declaration.Column{{ID: "id", Type: "uuid"}, {ID: "email", Type: "string"}}},
 		{ID: "a-users", Columns: []declaration.Column{{ID: "id", Type: "uuid"}}},
@@ -86,7 +85,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		t.Fatalf("result = %#v", result)
 	}
 	model := result.Roots[0].Model
-	if model.Namespace != "accounts" || len(model.Imports) != 1 || model.Imports[0] != "orders.audit/v1" {
+	if model.Namespace != "accounts" || len(model.Imports) != 0 {
 		t.Fatalf("model identity = %#v", model)
 	}
 	if len(model.Tables) != 2 || model.Tables[0].ID != "a-users" || model.Tables[1].ID != "z-users" {
@@ -103,6 +102,91 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 	if len(model.Migrations) != 1 || model.Migrations[0].Version != 1 || model.Migrations[0].Operations[0].Table.Symbol != "a-users" {
 		t.Fatalf("decoded migration = %#v", model.Migrations)
+	}
+}
+
+func TestAnalyzeResolvesImportedReferences(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Imports: []string{"orders.audit/v1"},
+	Queries: []declaration.Query{{
+		ID: "audit-events",
+		Operation: "select",
+		Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"},
+		Projection: []declaration.Projection{{Column: "id"}},
+	}},
+}
+
+//plystra:data orders.audit/v1
+var Audit = declaration.Member[declaration.NoAccess]{
+	Namespace: "orders",
+	Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "uuid"}}}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || len(result.Roots) != 2 || len(result.Diagnostics) != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestAnalyzeRejectsMissingImportedMember(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Imports: []string{"orders.audit/v1"},
+	Queries: []declaration.Query{{ID: "events", Operation: "select", Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"}}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Valid || !hasCode(result, analyzer.CodeUnresolvedReference) {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestAnalyzeRejectsReferenceKindMismatchAndImportCycle(t *testing.T) {
+	mismatch, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts", Imports: []string{"orders.audit/v1"}, Queries: []declaration.Query{{ID: "read", Operation: "select", Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "find"}}}}
+
+//plystra:data orders.audit/v1
+var Audit = declaration.Member[declaration.NoAccess]{Namespace: "orders", Queries: []declaration.Query{{ID: "find", Operation: "select", Table: declaration.Ref{Symbol: "local"}}}, Tables: []declaration.Table{{ID: "local"}}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mismatch.Valid || !hasCode(mismatch, analyzer.CodeReferenceKindMismatch) {
+		t.Fatalf("mismatch result = %#v", mismatch)
+	}
+
+	cycle, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts", Imports: []string{"orders.audit/v1"}}
+
+//plystra:data orders.audit/v1
+var Audit = declaration.Member[declaration.NoAccess]{Namespace: "orders", Imports: []string{"accounts.user/v1"}}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cycle.Valid || !hasCode(cycle, analyzer.CodeImportCycle) {
+		t.Fatalf("cycle result = %#v", cycle)
 	}
 }
 
