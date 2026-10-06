@@ -17,14 +17,18 @@ import (
 )
 
 const (
-	DistributionSchema  = "plystra.data-compiler-distribution/v1"
-	AnalyzeSchema       = "plystra.data-analyze/v1"
-	EmitSchema          = "plystra.data-emit/v1"
-	DeclarationLanguage = "plystra.data-declaration/v1"
-	AnalyzePhase        = "analyze"
-	ModulePath          = "github.com/plystra/data"
-	CommandImportPath   = "github.com/plystra/data/cmd/plystra-data-compiler"
-	MaxFrameBytes       = 16 * 1024 * 1024
+	DistributionSchema   = "plystra.data-compiler-distribution/v1"
+	AnalyzeSchema        = "plystra.data-analyze/v1"
+	EmitSchema           = "plystra.data-emit/v1"
+	DeclarationLanguage  = "plystra.data-declaration/v1"
+	AnalyzePhase         = "analyze"
+	EmitPhase            = "emit"
+	ModulePath           = "github.com/plystra/data"
+	CommandImportPath    = "github.com/plystra/data/cmd/plystra-data-compiler"
+	MaxFrameBytes        = 16 * 1024 * 1024
+	MaxArtifacts         = 4096
+	MaxArtifactBytes     = 4 * 1024 * 1024
+	MaxArtifactPathBytes = 512
 )
 
 var (
@@ -196,15 +200,8 @@ func ValidateAnalyzeRequest(request AnalyzeRequest) error {
 	if strings.TrimSpace(request.RequestID) == "" {
 		return fmt.Errorf("request ID is required")
 	}
-	identity := request.Compiler
-	if identity.ModulePath != ModulePath || strings.TrimSpace(identity.ModuleVersion) == "" || identity.CommandImportPath != CommandImportPath || identity.AnalyzeProtocol != AnalyzeSchema || identity.EmitProtocol != EmitSchema || identity.DeclarationLanguage != DeclarationLanguage || strings.TrimSpace(identity.GoToolchain) == "" {
-		return fmt.Errorf("compiler identity is incomplete or incompatible")
-	}
-	if !validDigest(identity.ModuleChecksum) || !validDigest(identity.ManifestDigest) {
-		return fmt.Errorf("compiler identity digest is invalid")
-	}
-	if strings.TrimSpace(request.Build.GOOS) == "" || strings.TrimSpace(request.Build.GOARCH) == "" {
-		return fmt.Errorf("Go build context is incomplete")
+	if err := validateCompilerAndBuild(request.Compiler, request.Build); err != nil {
+		return err
 	}
 	expected, err := AnalyzeInputDigest(request.Snapshot, request.Build)
 	if err != nil {
@@ -248,18 +245,67 @@ func HandleAnalyze(request AnalyzeRequest) AnalyzeResponse {
 // Run serves length-delimited requests until stdin reaches EOF.
 func Run(in io.Reader, out io.Writer) error {
 	for {
-		var request AnalyzeRequest
-		err := ReadFrame(in, &request)
+		var raw json.RawMessage
+		err := ReadFrame(in, &raw)
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
-		if err := WriteFrame(out, HandleAnalyze(request)); err != nil {
+		var envelope struct {
+			Phase string `json:"phase"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return fmt.Errorf("%w: phase: %v", ErrInvalidFrame, err)
+		}
+		var response any
+		switch envelope.Phase {
+		case AnalyzePhase:
+			var request AnalyzeRequest
+			if err := decodeRequest(raw, &request); err != nil {
+				return err
+			}
+			response = HandleAnalyze(request)
+		case EmitPhase:
+			var request EmitRequest
+			if err := decodeRequest(raw, &request); err != nil {
+				return err
+			}
+			response = HandleEmit(request)
+		default:
+			return fmt.Errorf("%w: unsupported phase", ErrInvalidFrame)
+		}
+		if err := WriteFrame(out, response); err != nil {
 			return err
 		}
 	}
+}
+
+func decodeRequest(payload []byte, value any) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return fmt.Errorf("%w: decode request: %v", ErrInvalidFrame, err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("%w: trailing request JSON", ErrInvalidFrame)
+	}
+	return nil
+}
+
+func validateCompilerAndBuild(identity CompilerIdentity, build BuildContext) error {
+	if identity.ModulePath != ModulePath || strings.TrimSpace(identity.ModuleVersion) == "" || identity.CommandImportPath != CommandImportPath || identity.AnalyzeProtocol != AnalyzeSchema || identity.EmitProtocol != EmitSchema || identity.DeclarationLanguage != DeclarationLanguage || strings.TrimSpace(identity.GoToolchain) == "" {
+		return fmt.Errorf("compiler identity is incomplete or incompatible")
+	}
+	if !validDigest(identity.ModuleChecksum) || !validDigest(identity.ManifestDigest) {
+		return fmt.Errorf("compiler identity digest is invalid")
+	}
+	if strings.TrimSpace(build.GOOS) == "" || strings.TrimSpace(build.GOARCH) == "" {
+		return fmt.Errorf("Go build context is incomplete")
+	}
+	return nil
 }
 
 func validDigest(value string) bool {

@@ -122,6 +122,10 @@ const (
 	CodeLimitExceeded          DiagnosticCode = "limit-exceeded"
 	CodeTypeCheck              DiagnosticCode = "type-check"
 	CodeInvalidSnapshot        DiagnosticCode = "invalid-snapshot"
+	CodeEmitInput              DiagnosticCode = "emit-input"
+	CodeEmitPath               DiagnosticCode = "emit-path"
+	CodeEmitBackend            DiagnosticCode = "emit-backend"
+	CodeEmitArtifact           DiagnosticCode = "emit-artifact"
 )
 
 // Diagnostic is a bounded, deterministic explanation of an authored source
@@ -940,15 +944,23 @@ func (a *analysis) finish() {
 		return left.Symbol < right.Symbol
 	})
 	a.trimDiagnostics()
+	a.result.Digest, _ = ResultDigest(a.result.Roots, a.result.Diagnostics, a.result.Truncated)
+	// A truncated diagnostic set still represents a rejected declaration. The
+	// caller must not treat an omitted diagnostic as proof that analysis passed.
+	a.result.Valid = len(a.result.Diagnostics) == 0 && !a.result.Truncated
+}
+
+// ResultDigest returns the stable identity of one complete analysis result.
+// Emit requests use it to prove that the accepted pre-Freeze result was not
+// replaced while the frozen application inputs were being prepared.
+func ResultDigest(roots []Root, diagnostics []Diagnostic, truncated bool) (string, error) {
 	payload, err := json.Marshal(struct {
 		Roots       []Root       `json:"roots"`
 		Diagnostics []Diagnostic `json:"diagnostics"`
 		Truncated   bool         `json:"truncated"`
-	}{a.result.Roots, a.result.Diagnostics, a.result.Truncated})
-	if err == nil {
-		a.result.Digest = digestBytes(append([]byte("plystra.data.analyze/v1\x00"), payload...))
+	}{roots, diagnostics, truncated})
+	if err != nil {
+		return "", err
 	}
-	// A truncated diagnostic set still represents a rejected declaration. The
-	// caller must not treat an omitted diagnostic as proof that analysis passed.
-	a.result.Valid = len(a.result.Diagnostics) == 0 && !a.result.Truncated
+	return digestBytes(append([]byte("plystra.data.analyze/v1\x00"), payload...)), nil
 }

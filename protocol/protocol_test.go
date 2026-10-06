@@ -114,11 +114,17 @@ func TestDistributionManifestMatchesProtocolIdentity(t *testing.T) {
 		AnalyzeProtocol     string `json:"analyze_protocol"`
 		EmitProtocol        string `json:"emit_protocol"`
 		DeclarationLanguage string `json:"declaration_language"`
+		Limits              struct {
+			MaxFrameBytes        int `json:"max_frame_bytes"`
+			MaxArtifacts         int `json:"max_artifacts"`
+			MaxArtifactBytes     int `json:"max_artifact_bytes"`
+			MaxArtifactPathBytes int `json:"max_artifact_path_bytes"`
+		} `json:"limits"`
 	}
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Schema != protocol.DistributionSchema || manifest.ModulePath != protocol.ModulePath || manifest.CommandImportPath != protocol.CommandImportPath || manifest.AnalyzeProtocol != protocol.AnalyzeSchema || manifest.EmitProtocol != protocol.EmitSchema || manifest.DeclarationLanguage != protocol.DeclarationLanguage {
+	if manifest.Schema != protocol.DistributionSchema || manifest.ModulePath != protocol.ModulePath || manifest.CommandImportPath != protocol.CommandImportPath || manifest.AnalyzeProtocol != protocol.AnalyzeSchema || manifest.EmitProtocol != protocol.EmitSchema || manifest.DeclarationLanguage != protocol.DeclarationLanguage || manifest.Limits.MaxFrameBytes != protocol.MaxFrameBytes || manifest.Limits.MaxArtifacts != protocol.MaxArtifacts || manifest.Limits.MaxArtifactBytes != protocol.MaxArtifactBytes || manifest.Limits.MaxArtifactPathBytes != protocol.MaxArtifactPathBytes {
 		t.Fatalf("manifest = %#v", manifest)
 	}
 }

@@ -54,6 +54,28 @@ diagnostics, and output digests.
 The command writes no generated files and emits no non-protocol stdout. The
 distribution contract is recorded in `plystra-data-compiler.json`.
 
+The command also implements `plystra.data-emit/v1` for the currently supported
+PostgreSQL schema and migration SQL. An emit request carries the accepted
+analyze-result digest, the frozen application-model digest, and explicit active
+member assignments to selected `data.database/v1` Resource instances and
+`postgres/v1` backends. The input digest binds these facts to the exact compiler
+identity and Go build context. For each selected instance, the compiler returns
+in-memory staged `schema/schema.sql`, immutable migration SQL, and a
+`manifest.json` under its allowed `generated/data/<instance>/` root. Every
+artifact includes mode, bytes, SHA-256 digest, owning members, Resource,
+provider, backend, compiler, and frozen-model provenance. The manifest binds
+logical member digests and the instance's artifact inventory. The response
+validator checks identity, output digest, paths, ownership, byte digests, and
+manifest consistency before any caller installs output. Frames are limited to
+16 MiB, with at most 4,096 artifacts, 4 MiB per artifact, and 512 bytes per
+artifact path. The compiler does not read source files or write generated files
+during emit.
+
+This emit phase does not yet generate query SQL, typed access providers or
+codecs, or install staged files in Core CLI. CLI compiler acquisition, member
+activation, graph projection, transactional installation, and drift checks
+remain separate unfinished integration work.
+
 ## Module
 
 The module path is `github.com/plystra/data`.
