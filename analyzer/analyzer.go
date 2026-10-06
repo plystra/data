@@ -49,11 +49,21 @@ type SourceFile struct {
 	Content []byte `json:"content"`
 }
 
-// Package is one finite source package supplied by the Core CLI. The analyzer
-// does not discover additional files or packages from disk.
+// RootEligibility declares whether a source package may contribute Data roots.
+type RootEligibility string
+
+const (
+	RootEligible RootEligibility = "eligible"
+	RootSupport  RootEligibility = "support"
+)
+
+// Package is one finite source package supplied by the Core CLI. Support
+// packages provide types and imports but cannot contribute Data roots. The
+// analyzer does not discover additional files or packages from disk.
 type Package struct {
-	ImportPath string       `json:"import_path"`
-	Files      []SourceFile `json:"files"`
+	ImportPath      string          `json:"import_path"`
+	RootEligibility RootEligibility `json:"root_eligibility"`
+	Files           []SourceFile    `json:"files"`
 }
 
 // ResourceContract is a Resource contract already validated by the caller's
@@ -174,7 +184,7 @@ type sourceImporter struct {
 }
 
 // Analyze parses and type-checks only the files supplied in snapshot, then
-// discovers directive-bound declaration roots in deterministic order.
+// discovers directive-bound declaration roots only in eligible packages.
 func Analyze(snapshot Snapshot) (Result, error) {
 	a, err := newAnalysis(snapshot)
 	if err != nil {
@@ -189,8 +199,8 @@ func Analyze(snapshot Snapshot) (Result, error) {
 }
 
 // SnapshotDigest returns the identity of the validated snapshot inputs. It
-// binds source content digests, package/file paths, Resource identities, and
-// effective limits without embedding source bytes in the digest payload.
+// binds source content digests, package/file paths, root eligibility, Resource
+// identities, and effective limits without embedding source bytes.
 func SnapshotDigest(snapshot Snapshot) (string, error) {
 	a, err := newAnalysis(snapshot)
 	if err != nil {
@@ -202,12 +212,13 @@ func SnapshotDigest(snapshot Snapshot) (string, error) {
 		Bytes  int    `json:"bytes"`
 	}
 	type packageIdentity struct {
-		ImportPath string         `json:"import_path"`
-		Files      []fileIdentity `json:"files"`
+		ImportPath      string          `json:"import_path"`
+		RootEligibility RootEligibility `json:"root_eligibility"`
+		Files           []fileIdentity  `json:"files"`
 	}
 	packages := make([]packageIdentity, 0, len(snapshot.Packages))
 	for _, pkg := range snapshot.Packages {
-		identity := packageIdentity{ImportPath: pkg.ImportPath, Files: make([]fileIdentity, 0, len(pkg.Files))}
+		identity := packageIdentity{ImportPath: pkg.ImportPath, RootEligibility: pkg.RootEligibility, Files: make([]fileIdentity, 0, len(pkg.Files))}
 		for _, file := range pkg.Files {
 			identity.Files = append(identity.Files, fileIdentity{Path: file.Path, Digest: digestBytes(file.Content), Bytes: len(file.Content)})
 		}
@@ -272,6 +283,9 @@ func newAnalysis(snapshot Snapshot) (*analysis, error) {
 	for _, pkg := range snapshot.Packages {
 		if pkg.ImportPath == "" || a.packages[pkg.ImportPath] != nil {
 			return nil, fmt.Errorf("%w: package %q", ErrInvalidSnapshot, pkg.ImportPath)
+		}
+		if pkg.RootEligibility != RootEligible && pkg.RootEligibility != RootSupport {
+			return nil, fmt.Errorf("%w: package %q has invalid root eligibility", ErrInvalidSnapshot, pkg.ImportPath)
 		}
 		if len(pkg.Files) == 0 {
 			return nil, fmt.Errorf("%w: package %q has no files", ErrInvalidSnapshot, pkg.ImportPath)
@@ -398,11 +412,17 @@ func (i *sourceImporter) Import(importPath string) (*types.Package, error) {
 
 func (a *analysis) discoverRoots() {
 	for _, pkg := range a.packages {
+		if pkg.source.RootEligibility != RootEligible {
+			continue
+		}
 		for _, file := range pkg.files {
 			a.discoverFile(pkg, file)
 		}
 	}
 	for _, pkg := range a.packages {
+		if pkg.source.RootEligibility != RootEligible {
+			continue
+		}
 		for _, file := range pkg.files {
 			for _, group := range file.Comments {
 				for _, comment := range group.List {

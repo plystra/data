@@ -76,13 +76,17 @@ Staged query artifacts and their manifest entries include the declaring query
 operation, parameters in PostgreSQL positional order, and typed result
 metadata.
 The `analyzer` package statically discovers directive-bound declaration roots
-from a caller-supplied, module-relative source snapshot. It type-checks the
-snapshot without executing package initialization, accepts only the closed
-literal grammar, records deterministic source provenance, validates discovered
-Resource or `NoAccess` types, decodes and normalizes the complete member model,
-validates imported member targets, reference kinds, and acyclic member imports,
-and returns bounded structured diagnostics. It
-does not read the host filesystem, import the Core CLI, or write generated
+from a caller-supplied, module-relative source snapshot. Every package has a
+required closed `root_eligibility` value: `eligible` packages may contribute
+roots, while `support` packages provide declarations and imports for type
+checking but cannot contribute roots, even if they contain Data directives.
+The marker is part of the snapshot and analyze input digests. The analyzer
+type-checks the snapshot without executing package initialization, accepts
+only the closed literal grammar, records deterministic source provenance,
+validates discovered Resource or `NoAccess` types, decodes and normalizes the
+complete member model, validates imported member targets, reference kinds, and
+acyclic member imports, and returns bounded structured diagnostics. It does not
+read the host filesystem, import the Core CLI, or write generated
 artifacts. The packages are Data-owned and have no dependency on Core CLI
 implementation packages.
 

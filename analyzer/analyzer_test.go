@@ -501,6 +501,62 @@ var Alpha = declaration.Member[declaration.NoAccess]{Namespace: "alpha"}
 	}
 }
 
+func TestAnalyzeSupportPackageCannotContributeRoots(t *testing.T) {
+	snapshot := sourceSnapshot(`package model
+
+import (
+	_ "example.com/support"
+	"github.com/plystra/data/declaration"
+)
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
+`)
+	snapshot.Packages = append(snapshot.Packages, analyzer.Package{
+		ImportPath: "example.com/support", RootEligibility: analyzer.RootSupport,
+		Files: []analyzer.SourceFile{{Path: "support.go", Content: []byte(`package support
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Injected = declaration.Member[declaration.NoAccess]{Namespace: "injected"}
+
+func init() { panic("must not execute") }
+`)}},
+	})
+	snapshot.Limits.MaxRoots = 1
+	result, err := analyzer.Analyze(snapshot)
+	if err != nil || !result.Valid || len(result.Diagnostics) != 0 || len(result.Roots) != 1 || result.Roots[0].PackagePath != "example.com/model" {
+		t.Fatalf("support package injected a root: %#v, %v", result, err)
+	}
+	firstDigest, err := analyzer.SnapshotDigest(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.Packages[len(snapshot.Packages)-1].RootEligibility = analyzer.RootEligible
+	secondDigest, err := analyzer.SnapshotDigest(snapshot)
+	if err != nil || firstDigest == secondDigest {
+		t.Fatalf("eligibility did not change snapshot digest: %q, %q, %v", firstDigest, secondDigest, err)
+	}
+	result, err = analyzer.Analyze(snapshot)
+	if err != nil || result.Valid || !hasCode(result, analyzer.CodeDuplicateSymbol) {
+		t.Fatalf("eligible duplicate root = %#v, %v", result, err)
+	}
+}
+
+func TestAnalyzeRejectsMissingOrUnknownRootEligibility(t *testing.T) {
+	for _, eligibility := range []analyzer.RootEligibility{"", "unknown"} {
+		snapshot := sourceSnapshot("package model")
+		snapshot.Packages[2].RootEligibility = eligibility
+		if _, err := analyzer.SnapshotDigest(snapshot); !errors.Is(err, analyzer.ErrInvalidSnapshot) {
+			t.Fatalf("eligibility %q digest error = %v", eligibility, err)
+		}
+		if _, err := analyzer.Analyze(snapshot); !errors.Is(err, analyzer.ErrInvalidSnapshot) {
+			t.Fatalf("eligibility %q analysis error = %v", eligibility, err)
+		}
+	}
+}
+
 func TestAnalyzeRejectsClosedGrammarViolations(t *testing.T) {
 	tests := []struct {
 		name string
@@ -561,7 +617,7 @@ var Other = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
 	}
 
 	reserved := duplicate
-	reserved.Packages = []analyzer.Package{{ImportPath: "example.com/model", Files: []analyzer.SourceFile{{Path: "generated/models.go", Content: []byte("package model")}}}}
+	reserved.Packages = []analyzer.Package{{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "generated/models.go", Content: []byte("package model")}}}}
 	if _, err := analyzer.Analyze(reserved); !errors.Is(err, analyzer.ErrInvalidSnapshot) {
 		t.Fatalf("reserved snapshot error = %v", err)
 	}
@@ -651,7 +707,7 @@ func sourceSnapshotFile(fileName, body string, resources ...analyzer.ResourceCon
 	}
 	return analyzer.Snapshot{
 		Packages: []analyzer.Package{
-			{ImportPath: "github.com/plystra/data/declaration", Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(`package declaration
+			{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(`package declaration
 
 type NoAccess struct{}
 type Ref struct { Member string; Symbol string }
@@ -689,11 +745,11 @@ type Migration struct { ID string; Version uint64; Predecessors []Ref; Operation
 type MigrationOperationKind string
 type MigrationOperation struct { Kind MigrationOperationKind; Table Ref; Column Column; Index Index }
 `)}}},
-			{ImportPath: "github.com/plystra/data/database", Files: []analyzer.SourceFile{{Path: "resource.go", Content: []byte(`package database
+			{ImportPath: "github.com/plystra/data/database", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "resource.go", Content: []byte(`package database
 
 type Resource interface { Ping() error }
 `)}}},
-			{ImportPath: "example.com/model", Files: []analyzer.SourceFile{{Path: fileName, Content: []byte(body)}}},
+			{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: fileName, Content: []byte(body)}}},
 		},
 		Resources: validResources,
 	}

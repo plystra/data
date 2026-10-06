@@ -79,6 +79,50 @@ func TestAnalyzeInputDigestBindsBuildContext(t *testing.T) {
 	}
 }
 
+func TestAnalyzeProtocolEnforcesPackageRootEligibility(t *testing.T) {
+	request := validRequest(t)
+	request.Snapshot.Packages = append(request.Snapshot.Packages, analyzer.Package{
+		ImportPath: "example.com/support", RootEligibility: analyzer.RootSupport,
+		Files: []analyzer.SourceFile{{Path: "support.go", Content: []byte(`package support
+import "github.com/plystra/data/declaration"
+//plystra:data accounts.user/v1
+var Injected = declaration.Member[declaration.NoAccess]{Namespace: "injected"}
+`)}},
+	})
+	var err error
+	request.InputDigest, err = protocol.AnalyzeInputDigest(request.Snapshot, request.Build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := protocol.HandleAnalyze(request)
+	if response.Status != protocol.StatusSucceeded || len(response.Output.Roots) != 1 || response.Output.Roots[0].PackagePath != "example.com/model" {
+		t.Fatalf("support package injected a root: %#v", response)
+	}
+	request.Snapshot.Packages[2].RootEligibility = analyzer.RootEligible
+	if response = protocol.HandleAnalyze(request); response.Status != protocol.StatusRejected || !hasDiagnosticCode(response.Diagnostics, analyzer.CodeInvalidSnapshot) {
+		t.Fatalf("changed eligibility retained input digest: %#v", response)
+	}
+	request.InputDigest, err = protocol.AnalyzeInputDigest(request.Snapshot, request.Build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = protocol.HandleAnalyze(request)
+	if response.Status != protocol.StatusRejected || !hasDiagnosticCode(response.Diagnostics, analyzer.CodeDuplicateSymbol) {
+		t.Fatalf("eligible duplicate root = %#v", response)
+	}
+}
+
+func TestAnalyzeProtocolRejectsInvalidRootEligibility(t *testing.T) {
+	for _, eligibility := range []analyzer.RootEligibility{"", "unknown"} {
+		request := validRequest(t)
+		request.Snapshot.Packages[1].RootEligibility = eligibility
+		response := protocol.HandleAnalyze(request)
+		if response.Status != protocol.StatusRejected || !hasDiagnosticCode(response.Diagnostics, analyzer.CodeInvalidSnapshot) {
+			t.Fatalf("eligibility %q response = %#v", eligibility, response)
+		}
+	}
+}
+
 func TestAnalyzeFramePreservesMemberReferenceDiagnostics(t *testing.T) {
 	request := validRequest(t)
 	request.Snapshot.Packages[1].Files[0].Content = []byte(`package model
@@ -186,11 +230,11 @@ func TestParseDistributionManifestRejectsInvalidContract(t *testing.T) {
 func validRequest(t *testing.T) protocol.AnalyzeRequest {
 	snapshot := analyzer.Snapshot{
 		Packages: []analyzer.Package{
-			{ImportPath: "github.com/plystra/data/declaration", Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(`package declaration
+			{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(`package declaration
 type NoAccess struct{}
 type Member[Access any] struct { Namespace string; Imports []string }
 `)}}},
-			{ImportPath: "example.com/model", Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte(`package model
+			{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte(`package model
 import "github.com/plystra/data/declaration"
 //plystra:data accounts.user/v1
 var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
