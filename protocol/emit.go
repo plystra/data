@@ -60,14 +60,25 @@ type StagedArtifact struct {
 	Backend           string                `json:"backend"`
 	Compiler          CompilerIdentity      `json:"compiler"`
 	FrozenModelDigest string                `json:"frozen_model_digest"`
+	Query             *QueryMetadata        `json:"query,omitempty"`
 	Migration         *migration.Definition `json:"migration,omitempty"`
 }
 
+// QueryMetadata binds the typed invocation contract to a staged SQL artifact.
+// Parameters are in PostgreSQL positional-placeholder order.
+type QueryMetadata struct {
+	ID         string                    `json:"id"`
+	Operation  declaration.OperationKind `json:"operation"`
+	Parameters []declaration.Parameter   `json:"parameters"`
+	Results    []declaration.ResultField `json:"results"`
+}
+
 type manifestEntry struct {
-	Path          string   `json:"path"`
-	Mode          uint32   `json:"mode"`
-	Digest        string   `json:"digest"`
-	OwningMembers []string `json:"owning_members"`
+	Path          string         `json:"path"`
+	Mode          uint32         `json:"mode"`
+	Digest        string         `json:"digest"`
+	OwningMembers []string       `json:"owning_members"`
+	Query         *QueryMetadata `json:"query,omitempty"`
 }
 
 type EmitOutput struct {
@@ -126,6 +137,16 @@ func ValidateEmitRequest(request EmitRequest) error {
 	}
 	if len(request.Analyze.Roots) > 1024 || len(request.Assignments) > 1024 {
 		return fmt.Errorf("emit member limit exceeded")
+	}
+	for _, root := range request.Analyze.Roots {
+		if !declaration.ValidMemberID(root.MemberID) {
+			return fmt.Errorf("invalid Data member ID")
+		}
+	}
+	for _, assignment := range request.Assignments {
+		if !declaration.ValidMemberID(assignment.MemberID) {
+			return fmt.Errorf("invalid Data member assignment ID")
+		}
 	}
 	expected, err := EmitInputDigest(request)
 	if err != nil || request.InputDigest != expected {
@@ -271,6 +292,7 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 	}
 	expected := map[string]map[string]struct{}{}
 	queryOwners := map[string]string{}
+	queryMetadata := map[string]QueryMetadata{}
 	owners := map[string][]string{}
 	for _, assignment := range request.Assignments {
 		resource := assignment.Resource
@@ -285,6 +307,7 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 			queryPath := "generated/data/" + resource + "/queries/" + assignment.MemberID + "/" + query.ID + ".sql"
 			expected[resource][queryPath] = struct{}{}
 			queryOwners[queryPath] = assignment.MemberID
+			queryMetadata[queryPath] = metadataForQuery(query)
 		}
 		for _, item := range roots[assignment.MemberID].Model.Migrations {
 			expected[resource]["generated/data/"+resource+"/migrations/"+assignment.MemberID+"/"+item.ID+".sql"] = struct{}{}
@@ -303,8 +326,12 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 			if _, allowed := expected[resource][artifact.Path]; !allowed {
 				return fmt.Errorf("Resource %s has unexpected staged artifact", resource)
 			}
-			if owner, queryArtifact := queryOwners[artifact.Path]; queryArtifact && (len(artifact.OwningMembers) != 1 || artifact.OwningMembers[0] != owner || artifact.Migration != nil) {
-				return fmt.Errorf("Resource %s has invalid query artifact ownership", resource)
+			if owner, queryArtifact := queryOwners[artifact.Path]; queryArtifact {
+				if len(artifact.OwningMembers) != 1 || artifact.OwningMembers[0] != owner || artifact.Migration != nil || artifact.Query == nil || !reflect.DeepEqual(*artifact.Query, queryMetadata[artifact.Path]) {
+					return fmt.Errorf("Resource %s has invalid query artifact ownership or metadata", resource)
+				}
+			} else if artifact.Query != nil {
+				return fmt.Errorf("Resource %s has unexpected query metadata", resource)
 			}
 			if artifact.Path == "generated/data/"+resource+"/manifest.json" {
 				manifestArtifact = artifact
@@ -313,7 +340,7 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 			if artifact.Path == "generated/data/"+resource+"/schema/schema.sql" {
 				schemaArtifact = artifact
 			}
-			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers})
+			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query})
 		}
 		if manifestArtifact == nil || schemaArtifact == nil || !reflect.DeepEqual(manifestArtifact.OwningMembers, owners[resource]) || !reflect.DeepEqual(schemaArtifact.OwningMembers, owners[resource]) || manifestArtifact.Migration != nil || schemaArtifact.Migration != nil {
 			return fmt.Errorf("Resource %s has invalid schema or manifest ownership", resource)
@@ -425,8 +452,20 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 		if err != nil {
 			return nil, analyzer.CodeEmitBackend, err
 		}
+		queryByPath := make(map[string]QueryMetadata)
+		for _, member := range item.members {
+			for _, query := range member.Model.Queries {
+				queryByPath["queries/"+member.MemberID+"/"+query.ID+".sql"] = metadataForQuery(query)
+			}
+		}
 		for _, query := range queries {
-			artifacts = append(artifacts, stagedSQL(item.assignment, []string{query.MemberID}, request, query.Path, query.SQL, nil))
+			artifact := stagedSQL(item.assignment, []string{query.MemberID}, request, query.Path, query.SQL, nil)
+			metadata, exists := queryByPath[query.Path]
+			if !exists {
+				return nil, analyzer.CodeEmitArtifact, fmt.Errorf("query artifact has no declaration")
+			}
+			artifact.Query = &metadata
+			artifacts = append(artifacts, artifact)
 		}
 		migrations, err := postgres.CompileMigrations(item.members, compiler)
 		if err != nil {
@@ -439,7 +478,7 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 		}
 		entries := make([]manifestEntry, 0, len(artifacts)-start)
 		for _, artifact := range artifacts[start:] {
-			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers})
+			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 		modelDigests := make(map[string]string, len(item.members))
@@ -534,7 +573,20 @@ func safePath(value string) bool {
 			return false
 		}
 	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
 	return true
+}
+
+func metadataForQuery(query declaration.Query) QueryMetadata {
+	return QueryMetadata{
+		ID: query.ID, Operation: query.Operation,
+		Parameters: append([]declaration.Parameter{}, query.Parameters...),
+		Results:    append([]declaration.ResultField{}, query.Results...),
+	}
 }
 
 func digest(domain string, payload []byte) string {

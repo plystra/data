@@ -187,3 +187,70 @@ func TestNormalizeClonesQueryResultSlices(t *testing.T) {
 		t.Fatal("Normalize did not isolate query result slices")
 	}
 }
+
+func TestNormalizeJoinsPreservesOrderAndClones(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Symbol: "teams"}
+	departments := declaration.Ref{Symbol: "departments"}
+	member := declaration.Member[access]{Namespace: "accounts", Tables: []declaration.Table{{ID: "users"}, {ID: "teams"}, {ID: "departments"}}, Queries: []declaration.Query{{
+		ID: "read", Operation: declaration.OperationSelect, Table: users,
+		Joins: []declaration.Join{
+			{Kind: declaration.JoinInner, Table: teams, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"}}},
+			{Kind: declaration.JoinLeft, Table: departments, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: teams, Column: "department-id"}, Right: declaration.ColumnRef{Table: departments, Column: "id"}}},
+		},
+	}}}
+	model, err := member.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.Queries[0].Joins) != 2 || model.Queries[0].Joins[0].Table != teams || model.Queries[0].Joins[1].Kind != declaration.JoinLeft {
+		t.Fatalf("normalized joins = %#v", model.Queries[0].Joins)
+	}
+	model.Queries[0].Joins[0].On.Left.Column = "changed"
+	if member.Queries[0].Joins[0].On.Left.Column != "team-id" {
+		t.Fatal("Normalize did not isolate joins")
+	}
+	first, err := member.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member.Queries[0].Joins[0].On.Left.Column = "other-id"
+	second, err := member.Digest()
+	if err != nil || first == second {
+		t.Fatalf("join condition did not affect digest: %s, %s, %v", first, second, err)
+	}
+}
+
+func TestNormalizeRejectsInvalidJoins(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Symbol: "teams"}
+	valid := declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: users, Joins: []declaration.Join{{
+		Kind: declaration.JoinInner, Table: teams,
+		On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"}},
+	}}}
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Query)
+		want error
+	}{
+		{"mutation", func(query *declaration.Query) { query.Operation = declaration.OperationInsert }, declaration.ErrInvalidSchema},
+		{"kind", func(query *declaration.Query) { query.Joins[0].Kind = "cross" }, declaration.ErrUnsupported},
+		{"missing local table", func(query *declaration.Query) { query.Joins[0].Table.Symbol = "missing" }, declaration.ErrReference},
+		{"unimported table", func(query *declaration.Query) { query.Joins[0].Table.Member = "other.member/v1" }, declaration.ErrReference},
+		{"duplicate table", func(query *declaration.Query) { query.Joins[0].Table = users }, declaration.ErrDuplicate},
+		{"forward left table", func(query *declaration.Query) { query.Joins[0].On.Left.Table = teams }, declaration.ErrReference},
+		{"wrong right table", func(query *declaration.Query) { query.Joins[0].On.Right.Table = users }, declaration.ErrReference},
+		{"invalid left column", func(query *declaration.Query) { query.Joins[0].On.Left.Column = "Bad" }, declaration.ErrReference},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := valid
+			query.Joins = append([]declaration.Join(nil), valid.Joins...)
+			test.edit(&query)
+			member := declaration.Member[access]{Namespace: "accounts", Tables: []declaration.Table{{ID: "users"}, {ID: "teams"}}, Queries: []declaration.Query{query}}
+			_, err := member.Normalize()
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}

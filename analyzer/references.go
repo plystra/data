@@ -85,6 +85,7 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 		if !ok {
 			continue
 		}
+		a.validateJoinReferences(root, query, target, symbols)
 		for _, projection := range query.Projection {
 			a.validateColumn(root, target, projection.Column)
 		}
@@ -106,6 +107,41 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 			a.resolveKind(root, operation.Table, "table", symbols)
 		}
 	}
+}
+
+func (a *analysis) validateJoinReferences(root Root, query declaration.Query, base declaration.Table, symbols map[string]memberSymbols) {
+	introduced := map[declaration.Ref]declaration.Table{query.Table: base}
+	for _, join := range query.Joins {
+		target, ok := a.resolveTable(root, join.Table, symbols)
+		if !ok {
+			continue
+		}
+		leftTable, ok := introduced[join.On.Left.Table]
+		if !ok {
+			continue // A prior unresolved join was already reported.
+		}
+		left, leftOK := columnByID(leftTable, join.On.Left.Column)
+		right, rightOK := columnByID(target, join.On.Right.Column)
+		if !leftOK {
+			a.validateColumn(root, leftTable, join.On.Left.Column)
+		}
+		if !rightOK {
+			a.validateColumn(root, target, join.On.Right.Column)
+		}
+		if leftOK && rightOK && left.Type != right.Type {
+			a.referenceDiagnostic(root, CodeTypeCheck, "Data join columns have different scalar types", "Compare columns with the same scalar type.", join.On.Right.Column)
+		}
+		introduced[join.Table] = target
+	}
+}
+
+func columnByID(table declaration.Table, id string) (declaration.Column, bool) {
+	for _, column := range table.Columns {
+		if column.ID == id {
+			return column, true
+		}
+	}
+	return declaration.Column{}, false
 }
 
 func (a *analysis) resolveTable(root Root, ref declaration.Ref, symbols map[string]memberSymbols) (declaration.Table, bool) {

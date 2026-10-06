@@ -80,6 +80,9 @@ func TestEmitIncludesOwnedQueryArtifactAndManifestEntry(t *testing.T) {
 	if query.Path == "" || query.Migration != nil || !bytes.Contains(query.Bytes, []byte(`SELECT "id" FROM "accounts"."accounts";`)) || !reflect.DeepEqual(query.OwningMembers, []string{"accounts.user/v1"}) {
 		t.Fatalf("query artifact = %#v", query)
 	}
+	if query.Query == nil || query.Query.ID != "list-accounts" || query.Query.Operation != declaration.OperationSelect || len(query.Query.Parameters) != 0 || len(query.Query.Results) != 0 {
+		t.Fatalf("query metadata = %#v", query.Query)
+	}
 	if err := protocol.ValidateEmitResponse(request, response); err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +158,60 @@ func TestEmitIncludesTypedReturningMutation(t *testing.T) {
 	if query.Path == "" || !bytes.Contains(query.Bytes, []byte(`DELETE FROM "accounts"."accounts" WHERE "id" = 1 RETURNING "id" AS "account-id";`)) {
 		t.Fatalf("query artifact = %#v", query)
 	}
+	if query.Query == nil || query.Query.ID != "delete-account" || query.Query.Operation != declaration.OperationDelete || !reflect.DeepEqual(query.Query.Results, []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}}) {
+		t.Fatalf("query metadata = %#v", query.Query)
+	}
+	var manifest struct {
+		Artifacts []struct {
+			Path  string                  `json:"path"`
+			Query *protocol.QueryMetadata `json:"query"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(response.Output.Artifacts[0].Bytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Artifacts) != 3 || manifest.Artifacts[1].Path != query.Path || !reflect.DeepEqual(manifest.Artifacts[1].Query, query.Query) {
+		t.Fatalf("manifest query metadata = %#v", manifest.Artifacts)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEmitIncludesJoinedSelect(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Tables[0].Columns = append(model.Tables[0].Columns, declaration.Column{ID: "team-id", Type: declaration.TypeInt64})
+	model.Tables = append(model.Tables, declaration.Table{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}})
+	accounts := declaration.Ref{Symbol: "accounts"}
+	teams := declaration.Ref{Symbol: "teams"}
+	model.Queries = []declaration.Query{{
+		ID: "list-accounts", Operation: declaration.OperationSelect, Table: accounts,
+		Joins: []declaration.Join{{Kind: declaration.JoinInner, Table: teams, On: declaration.JoinCondition{
+			Left:  declaration.ColumnRef{Table: accounts, Column: "team-id"},
+			Right: declaration.ColumnRef{Table: teams, Column: "id"},
+		}}},
+		Projection: []declaration.Projection{{Column: "id"}},
+		Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded {
+		t.Fatalf("response = %#v", response)
+	}
+	var query *protocol.StagedArtifact
+	for index := range response.Output.Artifacts {
+		artifact := &response.Output.Artifacts[index]
+		if artifact.Query != nil {
+			query = artifact
+		}
+	}
+	if query == nil || !bytes.Contains(query.Bytes, []byte(`INNER JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id"`)) || query.Query.ID != "list-accounts" || len(query.Query.Results) != 1 {
+		t.Fatalf("joined query artifact = %#v", query)
+	}
 	if err := protocol.ValidateEmitResponse(request, response); err != nil {
 		t.Fatal(err)
 	}
@@ -204,6 +261,53 @@ func TestEmitRejectsChangedFrozenInputs(t *testing.T) {
 				t.Fatalf("response = %#v", response)
 			}
 		})
+	}
+}
+
+func TestEmitRejectsInvalidMemberIDBeforePathConstruction(t *testing.T) {
+	request := validEmitRequest(t)
+	request.Analyze.Roots[0].MemberID = "accounts.user/v1\ninvalid"
+	request.Assignments[0].MemberID = request.Analyze.Roots[0].MemberID
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusRejected || len(response.Output.Artifacts) != 0 || response.Diagnostics[0].Code != analyzer.CodeEmitInput {
+		t.Fatalf("invalid member ID response = %#v", response)
+	}
+}
+
+func TestValidateEmitResponseRejectsSelfConsistentQueryMetadataTamper(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Queries = []declaration.Query{{
+		ID: "read-account", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+		Projection: []declaration.Projection{{Column: "id"}},
+		Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded {
+		t.Fatalf("response = %#v", response)
+	}
+	for index := range response.Output.Artifacts {
+		if response.Output.Artifacts[index].Query != nil {
+			response.Output.Artifacts[index].Query.Results[0].Type = declaration.TypeString
+		}
+	}
+	manifest := &response.Output.Artifacts[0]
+	changed := bytes.Replace(manifest.Bytes, []byte(`"type":"int64"`), []byte(`"type":"string"`), 1)
+	if bytes.Equal(changed, manifest.Bytes) {
+		t.Fatal("manifest has no query result type")
+	}
+	manifest.Bytes = changed
+	manifest.Digest = postgres.DigestSQL(string(changed))
+	refreshEmitOutputDigest(t, &response)
+	if err := protocol.ValidateEmitResponse(request, response); err == nil {
+		t.Fatal("self-consistent query metadata tamper was accepted")
 	}
 }
 
@@ -387,4 +491,14 @@ func refreshEmitDigest(t *testing.T, request *protocol.EmitRequest) {
 		t.Fatal(err)
 	}
 	request.InputDigest = digest
+}
+
+func refreshEmitOutputDigest(t *testing.T, response *protocol.EmitResponse) {
+	t.Helper()
+	payload, err := json.Marshal(response.Output.Artifacts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(append([]byte("plystra.data.emit-output/v1\x00"), payload...))
+	response.OutputDigest = "sha256:" + hex.EncodeToString(sum[:])
 }

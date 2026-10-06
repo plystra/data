@@ -167,6 +167,7 @@ type Query struct {
 	ID          string        `json:"id"`
 	Operation   OperationKind `json:"operation"`
 	Table       Ref           `json:"table"`
+	Joins       []Join        `json:"joins,omitempty"`
 	Parameters  []Parameter   `json:"parameters,omitempty"`
 	Assignments []Assignment  `json:"assignments,omitempty"`
 	Projection  []Projection  `json:"projection,omitempty"`
@@ -178,6 +179,31 @@ type Query struct {
 	HasLimit    bool          `json:"has_limit,omitempty"`
 	Offset      uint64        `json:"offset,omitempty"`
 	HasOffset   bool          `json:"has_offset,omitempty"`
+}
+
+// ColumnRef identifies one column on a table explicitly present in a query.
+type ColumnRef struct {
+	Table  Ref    `json:"table"`
+	Column string `json:"column"`
+}
+
+type JoinKind string
+
+const (
+	JoinInner JoinKind = "inner"
+	JoinLeft  JoinKind = "left"
+)
+
+// JoinCondition is one equality between already introduced and newly joined tables.
+type JoinCondition struct {
+	Left  ColumnRef `json:"left"`
+	Right ColumnRef `json:"right"`
+}
+
+type Join struct {
+	Kind  JoinKind      `json:"kind"`
+	Table Ref           `json:"table"`
+	On    JoinCondition `json:"on"`
 }
 
 type Projection struct {
@@ -368,6 +394,7 @@ func cloneQueries(queries []Query) []Query {
 	result := make([]Query, len(queries))
 	for i, query := range queries {
 		result[i] = query
+		result[i].Joins = append([]Join(nil), query.Joins...)
 		result[i].Parameters = append([]Parameter(nil), query.Parameters...)
 		result[i].Assignments = make([]Assignment, len(query.Assignments))
 		for assignment := range query.Assignments {
@@ -561,6 +588,37 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 		}
 	}
 	parameters := make(map[string]ScalarType, len(query.Parameters))
+	if len(query.Joins) != 0 && query.Operation != OperationSelect {
+		return fmt.Errorf("%w: joins require select query", ErrInvalidSchema)
+	}
+	introduced := map[string]struct{}{refKey(query.Table): {}}
+	for _, join := range query.Joins {
+		if join.Kind != JoinInner && join.Kind != JoinLeft {
+			return fmt.Errorf("%w: join kind %q", ErrUnsupported, join.Kind)
+		}
+		if err := validateRef(join.Table, imports); err != nil {
+			return err
+		}
+		if join.Table.Member == "" {
+			if _, exists := tables[join.Table.Symbol]; !exists {
+				return fmt.Errorf("%w: join table %q", ErrReference, join.Table.Symbol)
+			}
+		}
+		key := refKey(join.Table)
+		if _, exists := introduced[key]; exists {
+			return fmt.Errorf("%w: join table %q", ErrDuplicate, join.Table.Symbol)
+		}
+		if err := validateRef(join.On.Left.Table, imports); err != nil {
+			return err
+		}
+		if _, exists := introduced[refKey(join.On.Left.Table)]; !exists || !validSymbol(join.On.Left.Column) {
+			return fmt.Errorf("%w: join left column %q", ErrReference, join.On.Left.Column)
+		}
+		if join.On.Right.Table != join.Table || !validSymbol(join.On.Right.Column) {
+			return fmt.Errorf("%w: join right column %q", ErrReference, join.On.Right.Column)
+		}
+		introduced[key] = struct{}{}
+	}
 	for _, parameter := range query.Parameters {
 		if !validSymbol(parameter.ID) || !validScalar(parameter.Type) {
 			return fmt.Errorf("%w: query parameter %q", ErrInvalidSchema, parameter.ID)
@@ -790,7 +848,7 @@ func nodeCount(model Model) int {
 		count += len(table.Columns) + len(table.Constraints) + len(table.Indexes)
 	}
 	for _, query := range model.Queries {
-		count += len(query.Parameters) + len(query.Assignments) + len(query.Projection) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
+		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + len(query.Projection) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
 	}
 	for _, plan := range model.Plans {
 		count += len(plan.Statements)

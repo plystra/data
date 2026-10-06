@@ -519,6 +519,12 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 				return nil, err
 			}
 		}
+		if field, ok := fields["Joins"]; ok {
+			query.Joins, err = d.joins(field)
+			if err != nil {
+				return nil, fmt.Errorf("joins: %w", err)
+			}
+		}
 		if field, ok := fields["Parameters"]; ok {
 			query.Parameters, err = d.parameters(field)
 			if err != nil {
@@ -586,6 +592,82 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 			}
 		}
 		result[index] = query
+	}
+	return result, nil
+}
+
+func (d modelDecoder) joins(value ast.Expr) ([]declaration.Join, error) {
+	elements, err := d.slice(value)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]declaration.Join, len(elements))
+	for index, element := range elements {
+		fields, err := d.fieldsExpr(element)
+		if err != nil {
+			return nil, err
+		}
+		if field, ok := fields["Kind"]; ok {
+			kind, err := d.string(field)
+			if err != nil {
+				return nil, err
+			}
+			result[index].Kind = declaration.JoinKind(kind)
+		}
+		if field, ok := fields["Table"]; ok {
+			result[index].Table, err = d.ref(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["On"]; ok {
+			result[index].On, err = d.joinCondition(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return result, nil
+}
+
+func (d modelDecoder) joinCondition(value ast.Expr) (declaration.JoinCondition, error) {
+	fields, err := d.fieldsExpr(value)
+	if err != nil {
+		return declaration.JoinCondition{}, err
+	}
+	result := declaration.JoinCondition{}
+	if field, ok := fields["Left"]; ok {
+		result.Left, err = d.columnRef(field)
+		if err != nil {
+			return declaration.JoinCondition{}, err
+		}
+	}
+	if field, ok := fields["Right"]; ok {
+		result.Right, err = d.columnRef(field)
+		if err != nil {
+			return declaration.JoinCondition{}, err
+		}
+	}
+	return result, nil
+}
+
+func (d modelDecoder) columnRef(value ast.Expr) (declaration.ColumnRef, error) {
+	fields, err := d.fieldsExpr(value)
+	if err != nil {
+		return declaration.ColumnRef{}, err
+	}
+	result := declaration.ColumnRef{}
+	if field, ok := fields["Table"]; ok {
+		result.Table, err = d.ref(field)
+		if err != nil {
+			return declaration.ColumnRef{}, err
+		}
+	}
+	if field, ok := fields["Column"]; ok {
+		result.Column, err = d.string(field)
+		if err != nil {
+			return declaration.ColumnRef{}, err
+		}
 	}
 	return result, nil
 }

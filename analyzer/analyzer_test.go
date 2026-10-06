@@ -2,6 +2,7 @@ package analyzer_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/plystra/data/analyzer"
@@ -163,6 +164,83 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	query := result.Roots[0].Model.Queries[0]
 	if len(query.Returning) != 2 || query.Returning[0].Alias != "user-id" || len(query.Results) != 2 || query.Results[1].Nullable != true {
 		t.Fatalf("decoded returning results = %#v", query)
+	}
+}
+
+func TestAnalyzeDecodesSelectJoins(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{
+		{ID: "users", Columns: []declaration.Column{{ID: "team-id", Type: "int64"}}},
+		{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: "int64"}}},
+	},
+	Queries: []declaration.Query{{
+		ID: "read", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		Joins: []declaration.Join{{Kind: declaration.JoinLeft, Table: declaration.Ref{Symbol: "teams"},
+			On: declaration.JoinCondition{
+				Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "team-id"},
+				Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "teams"}, Column: "id"},
+			},
+		}},
+	}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || len(result.Roots) != 1 || len(result.Diagnostics) != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	joins := result.Roots[0].Model.Queries[0].Joins
+	if len(joins) != 1 || joins[0].Kind != "left" || joins[0].On.Left.Column != "team-id" || joins[0].On.Right.Table.Symbol != "teams" {
+		t.Fatalf("decoded joins = %#v", joins)
+	}
+}
+
+func TestAnalyzeRejectsInvalidJoinReferences(t *testing.T) {
+	source := `package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts", Imports: []string{"teams.member/v1"},
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "team-id", Type: "int64"}}}},
+	Queries: []declaration.Query{{ID: "read", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		Joins: []declaration.Join{{Kind: "inner", Table: declaration.Ref{Member: "teams.member/v1", Symbol: "teams"}, On: declaration.JoinCondition{
+			Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "team-id"},
+			Right: declaration.ColumnRef{Table: declaration.Ref{Member: "teams.member/v1", Symbol: "teams"}, Column: "id"},
+		}}},
+	}},
+}
+
+//plystra:data teams.member/v1
+var Teams = declaration.Member[declaration.NoAccess]{Namespace: "teams", Tables: []declaration.Table{{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}}}
+`
+	for _, test := range []struct {
+		name, source string
+		code         analyzer.DiagnosticCode
+	}{
+		{"missing target table", strings.ReplaceAll(source, `Symbol: "teams"`, `Symbol: "missing"`), analyzer.CodeUnresolvedReference},
+		{"wrong target kind", strings.Replace(source,
+			`Tables: []declaration.Table{{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}}}`,
+			`Tables: []declaration.Table{{ID: "other", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}}, Queries: []declaration.Query{{ID: "teams", Operation: "select", Table: declaration.Ref{Symbol: "other"}}}}`, 1), analyzer.CodeReferenceKindMismatch},
+		{"missing join column", strings.Replace(source, `Column: "id"`, `Column: "missing"`, 1), analyzer.CodeUnresolvedReference},
+		{"mismatched column type", strings.Replace(source, `ID: "id", Type: "int64"`, `ID: "id", Type: "string"`, 1), analyzer.CodeTypeCheck},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := analyzer.Analyze(sourceSnapshot(test.source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Valid || !hasCode(result, test.code) {
+				t.Fatalf("result = %#v, want %s", result, test.code)
+			}
+		})
 	}
 }
 
@@ -484,7 +562,12 @@ type Index struct { ID string; Columns []string; Unique bool }
 type OperationKind string
 type Parameter struct { ID string; Type ScalarType }
 type Assignment struct { Column string; Value Value }
-type Query struct { ID string; Operation OperationKind; Table Ref; Parameters []Parameter; Assignments []Assignment; Projection []Projection; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
+type ColumnRef struct { Table Ref; Column string }
+type JoinKind string
+const JoinLeft JoinKind = "left"
+type JoinCondition struct { Left ColumnRef; Right ColumnRef }
+type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
+type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Projection []Projection; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 type Projection struct { Column string; Alias string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string

@@ -37,7 +37,7 @@ func CompileQueries(members []SchemaMember) ([]QueryArtifact, error) {
 			if err != nil {
 				return nil, fmt.Errorf("%w: query %s table: %w", ErrQueryCompilation, query.ID, err)
 			}
-			sql, err := compileQuery(tableMember, table, query)
+			sql, err := compileQuery(member, tableMember, table, query, byID)
 			if err != nil {
 				return nil, fmt.Errorf("%w: query %s: %w", ErrQueryCompilation, query.ID, err)
 			}
@@ -98,7 +98,7 @@ type queryParameter struct {
 	typ   declaration.ScalarType
 }
 
-func compileQuery(member SchemaMember, table declaration.Table, query declaration.Query) (string, error) {
+func compileQuery(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, byID map[string]SchemaMember) (string, error) {
 	if err := validateQueryResults(table, query); err != nil {
 		return "", err
 	}
@@ -108,13 +108,13 @@ func compileQuery(member SchemaMember, table declaration.Table, query declaratio
 	}
 	switch query.Operation {
 	case declaration.OperationSelect:
-		return compileSelect(member, table, query, parameters)
+		return compileSelect(owner, tableMember, table, query, parameters, byID)
 	case declaration.OperationInsert:
-		return compileInsert(member, table, query, parameters)
+		return compileInsert(owner, tableMember, table, query, parameters)
 	case declaration.OperationUpdate:
-		return compileUpdate(member, table, query, parameters)
+		return compileUpdate(owner, tableMember, table, query, parameters)
 	case declaration.OperationDelete:
-		return compileDelete(member, table, query, parameters)
+		return compileDelete(owner, tableMember, table, query, parameters)
 	default:
 		return "", fmt.Errorf("unsupported operation %q", query.Operation)
 	}
@@ -124,15 +124,30 @@ func queryHeader(member SchemaMember, query declaration.Query, operation string)
 	return fmt.Sprintf("-- plystra.data.postgres-query/v1 %s#%s\n%s", member.MemberID, query.ID, operation)
 }
 
-func compileSelect(member SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter) (string, error) {
-	columns, err := selectColumns(table, query.Projection)
+func compileSelect(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter, byID map[string]SchemaMember) (string, error) {
+	qualifier := ""
+	joins := ""
+	var err error
+	if len(query.Joins) != 0 {
+		qualifier = quoteIdentifier("t0") + "."
+		joins, err = joinSQL(owner, table, query, byID)
+		if err != nil {
+			return "", err
+		}
+	}
+	columns, err := selectColumnsQualified(table, query.Projection, qualifier)
 	if err != nil {
 		return "", err
 	}
 	var sql strings.Builder
-	sql.WriteString(queryHeader(member, query, "SELECT "+columns+" FROM "+quoteIdentifier(member.Model.Namespace)+"."+quoteIdentifier(table.ID)))
+	sql.WriteString(queryHeader(owner, query, "SELECT "+columns+" FROM "+quoteIdentifier(tableMember.Model.Namespace)+"."+quoteIdentifier(table.ID)))
+	if joins != "" {
+		sql.WriteString(" AS ")
+		sql.WriteString(quoteIdentifier("t0"))
+		sql.WriteString(joins)
+	}
 	if query.Predicate.Kind != "" {
-		predicate, err := predicateSQL(query.Predicate, table, parameters)
+		predicate, err := predicateSQL(query.Predicate, table, parameters, qualifier)
 		if err != nil {
 			return "", err
 		}
@@ -149,7 +164,7 @@ func compileSelect(member SchemaMember, table declaration.Table, query declarati
 			if item.Direction == declaration.OrderingDescending {
 				direction = "DESC"
 			}
-			ordering[index] = quoteIdentifier(item.Column) + " " + direction
+			ordering[index] = qualifier + quoteIdentifier(item.Column) + " " + direction
 		}
 		sql.WriteString(" ORDER BY ")
 		sql.WriteString(strings.Join(ordering, ", "))
@@ -164,9 +179,56 @@ func compileSelect(member SchemaMember, table declaration.Table, query declarati
 	return sql.String(), nil
 }
 
-func compileInsert(member SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter) (string, error) {
+type joinedTable struct {
+	alias string
+	table declaration.Table
+}
+
+func joinSQL(owner SchemaMember, baseTable declaration.Table, query declaration.Query, byID map[string]SchemaMember) (string, error) {
+	introduced := map[declaration.Ref]joinedTable{query.Table: {alias: "t0", table: baseTable}}
 	var sql strings.Builder
-	sql.WriteString(queryHeader(member, query, "INSERT INTO "+quoteIdentifier(member.Model.Namespace)+"."+quoteIdentifier(table.ID)))
+	for index, join := range query.Joins {
+		member, table, err := resolveSchemaTable(owner, join.Table, byID)
+		if err != nil {
+			return "", fmt.Errorf("join table %s: %w", join.Table.Symbol, err)
+		}
+		if _, exists := introduced[join.Table]; exists {
+			return "", fmt.Errorf("duplicate join table %s", join.Table.Symbol)
+		}
+		left, exists := introduced[join.On.Left.Table]
+		if !exists {
+			return "", fmt.Errorf("join left table %s is not introduced", join.On.Left.Table.Symbol)
+		}
+		if join.On.Right.Table != join.Table {
+			return "", fmt.Errorf("join right table does not match %s", join.Table.Symbol)
+		}
+		leftColumn, exists := columnByID(left.table, join.On.Left.Column)
+		if !exists {
+			return "", fmt.Errorf("join left column %s is not present", join.On.Left.Column)
+		}
+		rightColumn, exists := columnByID(table, join.On.Right.Column)
+		if !exists {
+			return "", fmt.Errorf("join right column %s is not present", join.On.Right.Column)
+		}
+		if leftColumn.Type != rightColumn.Type {
+			return "", fmt.Errorf("join column types do not match: %s and %s", leftColumn.ID, rightColumn.ID)
+		}
+		kind := "INNER"
+		if join.Kind == declaration.JoinLeft {
+			kind = "LEFT"
+		} else if join.Kind != declaration.JoinInner {
+			return "", fmt.Errorf("unsupported join kind %q", join.Kind)
+		}
+		alias := "t" + strconv.Itoa(index+1)
+		fmt.Fprintf(&sql, " %s JOIN %s.%s AS %s ON %s.%s = %s.%s", kind, quoteIdentifier(member.Model.Namespace), quoteIdentifier(table.ID), quoteIdentifier(alias), quoteIdentifier(left.alias), quoteIdentifier(leftColumn.ID), quoteIdentifier(alias), quoteIdentifier(rightColumn.ID))
+		introduced[join.Table] = joinedTable{alias: alias, table: table}
+	}
+	return sql.String(), nil
+}
+
+func compileInsert(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter) (string, error) {
+	var sql strings.Builder
+	sql.WriteString(queryHeader(owner, query, "INSERT INTO "+quoteIdentifier(tableMember.Model.Namespace)+"."+quoteIdentifier(table.ID)))
 	if len(query.Assignments) == 0 {
 		sql.WriteString(" DEFAULT VALUES")
 	} else {
@@ -185,7 +247,7 @@ func compileInsert(member SchemaMember, table declaration.Table, query declarati
 	return sql.String(), nil
 }
 
-func compileUpdate(member SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter) (string, error) {
+func compileUpdate(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter) (string, error) {
 	if query.Predicate.Kind == "" {
 		return "", fmt.Errorf("update query requires a predicate")
 	}
@@ -197,7 +259,7 @@ func compileUpdate(member SchemaMember, table declaration.Table, query declarati
 		}
 		values[index] = quoteIdentifier(assignment.Column) + " = " + value
 	}
-	predicate, err := predicateSQL(query.Predicate, table, parameters)
+	predicate, err := predicateSQL(query.Predicate, table, parameters, "")
 	if err != nil {
 		return "", err
 	}
@@ -205,14 +267,14 @@ func compileUpdate(member SchemaMember, table declaration.Table, query declarati
 	if err != nil {
 		return "", err
 	}
-	return queryHeader(member, query, "UPDATE "+quoteIdentifier(member.Model.Namespace)+"."+quoteIdentifier(table.ID)+" SET "+strings.Join(values, ", ")+" WHERE "+predicate+returning+";\n"), nil
+	return queryHeader(owner, query, "UPDATE "+quoteIdentifier(tableMember.Model.Namespace)+"."+quoteIdentifier(table.ID)+" SET "+strings.Join(values, ", ")+" WHERE "+predicate+returning+";\n"), nil
 }
 
-func compileDelete(member SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter) (string, error) {
+func compileDelete(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter) (string, error) {
 	if query.Predicate.Kind == "" {
 		return "", fmt.Errorf("delete query requires a predicate")
 	}
-	predicate, err := predicateSQL(query.Predicate, table, parameters)
+	predicate, err := predicateSQL(query.Predicate, table, parameters, "")
 	if err != nil {
 		return "", err
 	}
@@ -220,7 +282,7 @@ func compileDelete(member SchemaMember, table declaration.Table, query declarati
 	if err != nil {
 		return "", err
 	}
-	return queryHeader(member, query, "DELETE FROM "+quoteIdentifier(member.Model.Namespace)+"."+quoteIdentifier(table.ID)+" WHERE "+predicate+returning+";\n"), nil
+	return queryHeader(owner, query, "DELETE FROM "+quoteIdentifier(tableMember.Model.Namespace)+"."+quoteIdentifier(table.ID)+" WHERE "+predicate+returning+";\n"), nil
 }
 
 func returningSQL(table declaration.Table, projection []declaration.Projection) (string, error) {
@@ -275,15 +337,19 @@ func validateQueryResults(table declaration.Table, query declaration.Query) erro
 }
 
 func selectColumns(table declaration.Table, projection []declaration.Projection) (string, error) {
+	return selectColumnsQualified(table, projection, "")
+}
+
+func selectColumnsQualified(table declaration.Table, projection []declaration.Projection, qualifier string) (string, error) {
 	if len(projection) == 0 {
-		return "*", nil
+		return qualifier + "*", nil
 	}
 	columns := make([]string, len(projection))
 	for index, item := range projection {
 		if !hasColumn(table, item.Column) {
 			return "", fmt.Errorf("projection column %s is not present", item.Column)
 		}
-		columns[index] = quoteIdentifier(item.Column)
+		columns[index] = qualifier + quoteIdentifier(item.Column)
 		if item.Alias != "" {
 			columns[index] += " AS " + quoteIdentifier(item.Alias)
 		}
@@ -291,7 +357,7 @@ func selectColumns(table declaration.Table, projection []declaration.Projection)
 	return strings.Join(columns, ", "), nil
 }
 
-func predicateSQL(predicate declaration.Predicate, table declaration.Table, parameters map[string]queryParameter) (string, error) {
+func predicateSQL(predicate declaration.Predicate, table declaration.Table, parameters map[string]queryParameter, qualifier string) (string, error) {
 	switch predicate.Kind {
 	case declaration.PredicateEqual, declaration.PredicateNotEqual,
 		declaration.PredicateLess, declaration.PredicateLessEqual,
@@ -315,12 +381,12 @@ func predicateSQL(predicate declaration.Predicate, table declaration.Table, para
 			declaration.PredicateGreater:      ">",
 			declaration.PredicateGreaterEqual: ">=",
 		}[predicate.Kind]
-		return quoteIdentifier(column.ID) + " " + operator + " " + value, nil
+		return qualifier + quoteIdentifier(column.ID) + " " + operator + " " + value, nil
 	case declaration.PredicateIsNull:
 		if !hasColumn(table, predicate.Left) {
 			return "", fmt.Errorf("predicate column %s is not present", predicate.Left)
 		}
-		return quoteIdentifier(predicate.Left) + " IS NULL", nil
+		return qualifier + quoteIdentifier(predicate.Left) + " IS NULL", nil
 	case declaration.PredicateAnd, declaration.PredicateOr:
 		parts := make([]string, len(predicate.Items))
 		joiner := " AND "
@@ -328,7 +394,7 @@ func predicateSQL(predicate declaration.Predicate, table declaration.Table, para
 			joiner = " OR "
 		}
 		for index, item := range predicate.Items {
-			part, err := predicateSQL(item, table, parameters)
+			part, err := predicateSQL(item, table, parameters, qualifier)
 			if err != nil {
 				return "", err
 			}

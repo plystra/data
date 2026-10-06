@@ -51,15 +51,10 @@ func TestCompileQueriesIsDeterministicAndLowersSelectIntent(t *testing.T) {
 	if len(first) != 1 || first[0].Path != "queries/accounts.user/v1/list-active.sql" || first[0].SQL != second[0].SQL || first[0].Digest != second[0].Digest || first[0].MemberID != member.MemberID {
 		t.Fatalf("artifacts differ: first=%#v second=%#v", first, second)
 	}
-	for _, want := range []string{
-		"-- plystra.data.postgres-query/v1 accounts.user/v1#list-active",
-		`SELECT "id", "email" AS "address" FROM "accounts"."users"`,
-		`WHERE ("active" = TRUE) AND ("id" > 10)`,
-		`ORDER BY "email" ASC LIMIT 25 OFFSET 5;`,
-	} {
-		if !strings.Contains(first[0].SQL, want) {
-			t.Fatalf("SQL missing %q:\n%s", want, first[0].SQL)
-		}
+	want := "-- plystra.data.postgres-query/v1 accounts.user/v1#list-active\n" +
+		`SELECT "id", "email" AS "address" FROM "accounts"."users" WHERE ("active" = TRUE) AND ("id" > 10) ORDER BY "email" ASC LIMIT 25 OFFSET 5;` + "\n"
+	if first[0].SQL != want {
+		t.Fatalf("single-table SQL = %q, want %q", first[0].SQL, want)
 	}
 }
 
@@ -224,6 +219,121 @@ func TestCompileQueriesRejectsCrossResourceTable(t *testing.T) {
 		Model: declaration.Model{Namespace: "right", Tables: []declaration.Table{{ID: "items", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}}},
 	}
 	_, err := postgres.CompileQueries([]postgres.SchemaMember{left, right})
+	if !errors.Is(err, postgres.ErrCrossResourceReference) {
+		t.Fatalf("error = %v, want cross-Resource reference", err)
+	}
+}
+
+func TestCompileQueriesLowersQualifiedJoinsAndOwnerHeader(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Symbol: "teams"}
+	regions := declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}
+	owner := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts", Imports: []string{"geo.region/v1"},
+		Tables: []declaration.Table{
+			{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "team-id", Type: declaration.TypeInt64}, {ID: "active", Type: declaration.TypeBool}}},
+			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "region-id", Type: declaration.TypeInt64}}},
+		},
+		Queries: []declaration.Query{
+			{ID: "joined-users", Operation: declaration.OperationSelect, Table: users,
+				Joins: []declaration.Join{
+					{Kind: declaration.JoinInner, Table: teams, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"}}},
+					{Kind: declaration.JoinLeft, Table: regions, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: teams, Column: "region-id"}, Right: declaration.ColumnRef{Table: regions, Column: "id"}}},
+				},
+				Projection: []declaration.Projection{{Column: "id", Alias: "user-id"}},
+				Results:    []declaration.ResultField{{ID: "id", Source: "user-id", Type: declaration.TypeInt64}},
+				Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: "active", Value: declaration.Bool(true)},
+				Ordering:   []declaration.Ordering{{Column: "id", Direction: declaration.OrderingAscending}},
+			},
+			{ID: "remote-regions", Operation: declaration.OperationSelect, Table: regions, Projection: []declaration.Projection{{Column: "id"}}},
+		},
+	}}
+	remote := postgres.SchemaMember{MemberID: "geo.region/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "geo", Tables: []declaration.Table{{ID: "regions", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+	}}
+	first, err := postgres.CompileQueries([]postgres.SchemaMember{remote, owner})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 2 || len(second) != 2 || first[0].SQL != second[0].SQL || first[0].Digest != second[0].Digest {
+		t.Fatalf("unstable join artifacts: first=%#v second=%#v", first, second)
+	}
+	for _, artifact := range first {
+		switch artifact.Path {
+		case "queries/accounts.user/v1/joined-users.sql":
+			want := "-- plystra.data.postgres-query/v1 accounts.user/v1#joined-users\n" +
+				`SELECT "t0"."id" AS "user-id" FROM "accounts"."users" AS "t0" INNER JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id" LEFT JOIN "geo"."regions" AS "t2" ON "t1"."region-id" = "t2"."id" WHERE "t0"."active" = TRUE ORDER BY "t0"."id" ASC;` + "\n"
+			if artifact.SQL != want {
+				t.Fatalf("joined SQL = %q, want %q", artifact.SQL, want)
+			}
+		case "queries/accounts.user/v1/remote-regions.sql":
+			want := "-- plystra.data.postgres-query/v1 accounts.user/v1#remote-regions\n" + `SELECT "id" FROM "geo"."regions";` + "\n"
+			if artifact.SQL != want {
+				t.Fatalf("cross-member SQL = %q, want %q", artifact.SQL, want)
+			}
+		default:
+			t.Fatalf("unexpected artifact %#v", artifact)
+		}
+	}
+}
+
+func TestCompileQueriesRejectsInvalidJoinReferences(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Symbol: "teams"}
+	join := declaration.Join{Kind: declaration.JoinInner, Table: teams, On: declaration.JoinCondition{
+		Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"},
+	}}
+	base := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts", Tables: []declaration.Table{
+			{ID: "users", Columns: []declaration.Column{{ID: "team-id", Type: declaration.TypeInt64}}},
+			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}},
+		},
+	}}
+	for _, test := range []struct {
+		name string
+		edit func(*postgres.SchemaMember, *declaration.Join)
+		want string
+	}{
+		{"missing left column", func(_ *postgres.SchemaMember, join *declaration.Join) { join.On.Left.Column = "missing" }, "join left column missing"},
+		{"missing right column", func(_ *postgres.SchemaMember, join *declaration.Join) { join.On.Right.Column = "missing" }, "join right column missing"},
+		{"mismatched types", func(member *postgres.SchemaMember, _ *declaration.Join) {
+			member.Model.Tables[1].Columns[0].Type = declaration.TypeString
+		}, "join column types do not match"},
+		{"missing target table", func(_ *postgres.SchemaMember, join *declaration.Join) { join.Table.Symbol = "missing" }, "join table"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			member := base
+			member.Model.Tables = append([]declaration.Table(nil), base.Model.Tables...)
+			member.Model.Tables[1].Columns = append([]declaration.Column(nil), base.Model.Tables[1].Columns...)
+			candidate := join
+			test.edit(&member, &candidate)
+			member.Model.Queries = []declaration.Query{{ID: "read", Operation: declaration.OperationSelect, Table: users, Joins: []declaration.Join{candidate}}}
+			_, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+			if !errors.Is(err, postgres.ErrQueryCompilation) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestCompileQueriesRejectsCrossResourceJoin(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Member: "teams.member/v1", Symbol: "teams"}
+	owner := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts", Imports: []string{"teams.member/v1"},
+		Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "team-id", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{ID: "read", Operation: declaration.OperationSelect, Table: users, Joins: []declaration.Join{{
+			Kind: declaration.JoinInner, Table: teams, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"}},
+		}}}},
+	}}
+	other := postgres.SchemaMember{MemberID: "teams.member/v1", Resource: "database.secondary", Model: declaration.Model{
+		Namespace: "teams", Tables: []declaration.Table{{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+	}}
+	_, err := postgres.CompileQueries([]postgres.SchemaMember{owner, other})
 	if !errors.Is(err, postgres.ErrCrossResourceReference) {
 		t.Fatalf("error = %v, want cross-Resource reference", err)
 	}

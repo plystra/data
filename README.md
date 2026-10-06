@@ -35,6 +35,14 @@ rejects cross-Resource foreign keys before any backend operation.
 `UPDATE`, and `DELETE` intent. Query predicates and assignments accept only
 declared typed parameters or closed literal values; projections, ordering,
 limit, offset, and cross-Resource references are validated before lowering.
+`SELECT` queries can declare ordered `INNER` and `LEFT` equality joins through
+`Query.Joins`. Each join names one table and compares a column on an already
+introduced table with a column on the new table using explicit `ColumnRef`
+values. Joined columns must have matching scalar types, and all referenced
+members must use the same selected database Resource. The SQL lowerer uses
+stable table aliases and qualifies the base table's projections, predicates,
+and ordering; the current projection and result mapping remain limited to the
+base table. Queries without joins retain their existing SQL bytes.
 `postgres.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.
@@ -44,6 +52,9 @@ typed `Results` mappings. The lowerer emits deterministic PostgreSQL
 does not match the selected table column. Result mappings are compiler
 metadata; typed access provider and codec generation remains a later
 integration boundary.
+Staged query artifacts and their manifest entries include the declaring query
+operation, parameters in PostgreSQL positional order, and typed result
+metadata.
 The `analyzer` package statically discovers directive-bound declaration roots
 from a caller-supplied, module-relative source snapshot. It type-checks the
 snapshot without executing package initialization, accepts only the closed
