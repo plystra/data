@@ -537,6 +537,18 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 				return nil, err
 			}
 		}
+		if field, ok := fields["Returning"]; ok {
+			query.Returning, err = d.projections(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Results"]; ok {
+			query.Results, err = d.resultFields(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if field, ok := fields["Predicate"]; ok {
 			query.Predicate, err = d.predicate(field)
 			if err != nil {
@@ -598,6 +610,47 @@ func (d modelDecoder) projections(value ast.Expr) ([]declaration.Projection, err
 		}
 		if field, ok := fields["Alias"]; ok {
 			item.Alias, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		result[index] = item
+	}
+	return result, nil
+}
+
+func (d modelDecoder) resultFields(value ast.Expr) ([]declaration.ResultField, error) {
+	elements, err := d.slice(value)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]declaration.ResultField, len(elements))
+	for index, element := range elements {
+		fields, fieldErr := d.fieldsExpr(element)
+		if fieldErr != nil {
+			return nil, fieldErr
+		}
+		item := declaration.ResultField{}
+		if field, ok := fields["ID"]; ok {
+			item.ID, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Source"]; ok {
+			item.Source, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Type"]; ok {
+			item.Type, err = d.scalar(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Nullable"]; ok {
+			item.Nullable, err = d.bool(field)
 			if err != nil {
 				return nil, err
 			}

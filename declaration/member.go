@@ -170,6 +170,8 @@ type Query struct {
 	Parameters  []Parameter   `json:"parameters,omitempty"`
 	Assignments []Assignment  `json:"assignments,omitempty"`
 	Projection  []Projection  `json:"projection,omitempty"`
+	Returning   []Projection  `json:"returning,omitempty"`
+	Results     []ResultField `json:"results,omitempty"`
 	Predicate   Predicate     `json:"predicate,omitempty"`
 	Ordering    []Ordering    `json:"ordering,omitempty"`
 	Limit       uint64        `json:"limit,omitempty"`
@@ -181,6 +183,14 @@ type Query struct {
 type Projection struct {
 	Column string `json:"column"`
 	Alias  string `json:"alias,omitempty"`
+}
+
+// ResultField maps one named query output to a typed result field.
+type ResultField struct {
+	ID       string     `json:"id"`
+	Source   string     `json:"source"`
+	Type     ScalarType `json:"type"`
+	Nullable bool       `json:"nullable,omitempty"`
 }
 
 type PredicateKind string
@@ -364,6 +374,8 @@ func cloneQueries(queries []Query) []Query {
 			result[i].Assignments[assignment] = query.Assignments[assignment]
 		}
 		result[i].Projection = append([]Projection(nil), query.Projection...)
+		result[i].Returning = append([]Projection(nil), query.Returning...)
+		result[i].Results = append([]ResultField(nil), query.Results...)
 		result[i].Ordering = append([]Ordering(nil), query.Ordering...)
 		result[i].Predicate = clonePredicate(query.Predicate)
 	}
@@ -560,7 +572,7 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 	}
 	switch query.Operation {
 	case OperationSelect:
-		if len(query.Assignments) != 0 {
+		if len(query.Assignments) != 0 || len(query.Returning) != 0 {
 			return fmt.Errorf("%w: select query assignments", ErrInvalidSchema)
 		}
 	case OperationInsert:
@@ -589,9 +601,47 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 			return fmt.Errorf("%w: assignment %s: %v", ErrInvalidSchema, assignment.Column, err)
 		}
 	}
-	for _, projection := range query.Projection {
+	outputs := query.Projection
+	if query.Operation != OperationSelect {
+		outputs = query.Returning
+	}
+	if len(query.Returning) != 0 && len(query.Results) == 0 || len(query.Results) != 0 && (len(outputs) == 0 || len(query.Results) != len(outputs)) {
+		return fmt.Errorf("%w: query result mapping", ErrInvalidSchema)
+	}
+	for _, projection := range outputs {
 		if !validSymbol(projection.Column) || projection.Alias != "" && !validSymbol(projection.Alias) {
 			return fmt.Errorf("%w: query projection %q", ErrInvalidSchema, projection.Column)
+		}
+	}
+	if len(query.Results) != 0 {
+		outputNames := make(map[string]struct{}, len(outputs))
+		for _, projection := range outputs {
+			name := projection.Column
+			if projection.Alias != "" {
+				name = projection.Alias
+			}
+			if _, exists := outputNames[name]; exists {
+				return fmt.Errorf("%w: query output %q", ErrDuplicate, name)
+			}
+			outputNames[name] = struct{}{}
+		}
+		resultIDs := make(map[string]struct{}, len(query.Results))
+		resultSources := make(map[string]struct{}, len(query.Results))
+		for _, result := range query.Results {
+			if !validSymbol(result.ID) || !validSymbol(result.Source) || !validScalar(result.Type) {
+				return fmt.Errorf("%w: query result %q", ErrInvalidSchema, result.ID)
+			}
+			if _, exists := resultIDs[result.ID]; exists {
+				return fmt.Errorf("%w: query result %q", ErrDuplicate, result.ID)
+			}
+			resultIDs[result.ID] = struct{}{}
+			if _, exists := resultSources[result.Source]; exists {
+				return fmt.Errorf("%w: query result source %q", ErrDuplicate, result.Source)
+			}
+			resultSources[result.Source] = struct{}{}
+			if _, exists := outputNames[result.Source]; !exists {
+				return fmt.Errorf("%w: query result source %q", ErrReference, result.Source)
+			}
 		}
 	}
 	if err := validatePredicate(query.Predicate, imports, parameters, 0); err != nil {
@@ -740,7 +790,7 @@ func nodeCount(model Model) int {
 		count += len(table.Columns) + len(table.Constraints) + len(table.Indexes)
 	}
 	for _, query := range model.Queries {
-		count += len(query.Parameters) + len(query.Assignments) + len(query.Projection) + len(query.Ordering) + predicateCount(query.Predicate)
+		count += len(query.Parameters) + len(query.Assignments) + len(query.Projection) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
 	}
 	for _, plan := range model.Plans {
 		count += len(plan.Statements)

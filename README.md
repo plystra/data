@@ -38,6 +38,12 @@ limit, offset, and cross-Resource references are validated before lowering.
 `postgres.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.
+Mutation queries may additionally declare explicit `Returning` projections and
+typed `Results` mappings. The lowerer emits deterministic PostgreSQL
+`RETURNING` clauses and rejects result sources whose scalar type or nullability
+does not match the selected table column. Result mappings are compiler
+metadata; typed access provider and codec generation remains a later
+integration boundary.
 The `analyzer` package statically discovers directive-bound declaration roots
 from a caller-supplied, module-relative source snapshot. It type-checks the
 snapshot without executing package initialization, accepts only the closed

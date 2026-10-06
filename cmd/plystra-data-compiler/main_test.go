@@ -22,6 +22,8 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 			ID: "delete-account", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "accounts"},
 			Parameters: []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
 			Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+			Returning:  []declaration.Projection{{Column: "id", Alias: "account-id"}},
+			Results:    []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}},
 		}},
 	}).Normalize()
 	if err != nil {
@@ -70,6 +72,11 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	}
 	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 3 {
 		t.Fatalf("invalid command response: %v, bytes=%d, artifacts=%d", err, stdout.Len(), len(response.Output.Artifacts))
+	}
+	for _, artifact := range response.Output.Artifacts {
+		if strings.HasSuffix(artifact.Path, "/delete-account.sql") && !bytes.Contains(artifact.Bytes, []byte(`RETURNING "id" AS "account-id";`)) {
+			t.Fatalf("query artifact does not contain typed RETURNING: %q", artifact.Bytes)
+		}
 	}
 	after, err := os.ReadDir(".")
 	if err != nil {

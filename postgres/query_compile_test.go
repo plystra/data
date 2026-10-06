@@ -107,6 +107,86 @@ func TestCompileQueriesSupportsTypedMutationIntent(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersTypedReturningAndResultMapping(t *testing.T) {
+	member := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts",
+			Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{
+				{ID: "id", Type: declaration.TypeInt64},
+				{ID: "email", Type: declaration.TypeString, Nullable: true},
+			}}},
+			Queries: []declaration.Query{
+				{
+					ID: "insert-user", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"},
+					Parameters:  []declaration.Parameter{{ID: "email", Type: declaration.TypeString}},
+					Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "email"}}},
+					Returning:   []declaration.Projection{{Column: "id", Alias: "user-id"}, {Column: "email"}},
+					Results:     []declaration.ResultField{{ID: "id", Source: "user-id", Type: declaration.TypeInt64}, {ID: "email", Source: "email", Type: declaration.TypeString, Nullable: true}},
+				},
+				{
+					ID: "update-user", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "users"},
+					Assignments: []declaration.Assignment{{Column: "email", Value: declaration.String("updated")}},
+					Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Int64(1)},
+					Returning:   []declaration.Projection{{Column: "email"}},
+					Results:     []declaration.ResultField{{ID: "email", Source: "email", Type: declaration.TypeString, Nullable: true}},
+				},
+				{
+					ID: "delete-user", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "users"},
+					Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Int64(1)},
+					Returning: []declaration.Projection{{Column: "id"}},
+					Results:   []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+				},
+				{
+					ID: "select-user", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+					Projection: []declaration.Projection{{Column: "id", Alias: "user-id"}},
+					Results:    []declaration.ResultField{{ID: "id", Source: "user-id", Type: declaration.TypeInt64}},
+				},
+			},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 4 {
+		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
+	}
+	wants := map[string]string{
+		"insert-user": `INSERT INTO "accounts"."users" ("email") VALUES ($1) RETURNING "id" AS "user-id", "email";`,
+		"update-user": `UPDATE "accounts"."users" SET "email" = 'updated' WHERE "id" = 1 RETURNING "email";`,
+		"delete-user": `DELETE FROM "accounts"."users" WHERE "id" = 1 RETURNING "id";`,
+		"select-user": `SELECT "id" AS "user-id" FROM "accounts"."users";`,
+	}
+	for _, artifact := range artifacts {
+		name := strings.TrimSuffix(strings.TrimPrefix(artifact.Path, "queries/accounts.user/v1/"), ".sql")
+		if !strings.Contains(artifact.SQL, wants[name]) || len(artifact.Results) == 0 {
+			t.Fatalf("artifact = %#v", artifact)
+		}
+	}
+}
+
+func TestCompileQueriesRejectsInvalidTypedResultMapping(t *testing.T) {
+	base := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{Namespace: "accounts", Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString, Nullable: true}}}}},
+	}
+	for _, test := range []struct {
+		name    string
+		results []declaration.ResultField
+		want    string
+	}{
+		{"wrong type", []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeString}}, "does not match"},
+		{"wrong nullability", []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64, Nullable: true}}, "does not match"},
+		{"unknown source", []declaration.ResultField{{ID: "id", Source: "missing", Type: declaration.TypeInt64}}, "query result source"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base.Model.Queries = []declaration.Query{{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Projection: []declaration.Projection{{Column: "id"}}, Results: test.results}}
+			_, err := postgres.CompileQueries([]postgres.SchemaMember{base})
+			if !errors.Is(err, postgres.ErrQueryCompilation) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestCompileQueriesRejectsInvalidIntent(t *testing.T) {
 	base := postgres.SchemaMember{
 		MemberID: "accounts.user/v1", Resource: "database.primary",

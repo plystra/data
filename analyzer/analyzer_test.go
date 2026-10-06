@@ -137,6 +137,58 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeDecodesReturningResults(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "email", Type: "string"}}}},
+	Queries: []declaration.Query{{
+		ID: "update-email", Operation: "update", Table: declaration.Ref{Symbol: "users"},
+		Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: "string", Set: true, String: "updated"}}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: "id", Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+		Returning: []declaration.Projection{{Column: "id", Alias: "user-id"}, {Column: "email"}},
+		Results: []declaration.ResultField{{ID: "id", Source: "user-id", Type: "int64"}, {ID: "email", Source: "email", Type: "string", Nullable: true}},
+	}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || len(result.Diagnostics) != 0 || len(result.Roots) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	query := result.Roots[0].Model.Queries[0]
+	if len(query.Returning) != 2 || query.Returning[0].Alias != "user-id" || len(query.Results) != 2 || query.Results[1].Nullable != true {
+		t.Fatalf("decoded returning results = %#v", query)
+	}
+}
+
+func TestAnalyzeRejectsIncompleteReturningResults(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users"}},
+	Queries: []declaration.Query{{
+		ID: "delete-user", Operation: "delete", Table: declaration.Ref{Symbol: "users"},
+		Predicate: declaration.Predicate{Kind: "equal", Left: "id", Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+		Returning: []declaration.Projection{{Column: "id"}},
+	}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Valid || len(result.Diagnostics) == 0 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestAnalyzeResolvesImportedReferences(t *testing.T) {
 	result, err := analyzer.Analyze(sourceSnapshot(`package model
 
@@ -432,8 +484,9 @@ type Index struct { ID string; Columns []string; Unique bool }
 type OperationKind string
 type Parameter struct { ID string; Type ScalarType }
 type Assignment struct { Column string; Value Value }
-type Query struct { ID string; Operation OperationKind; Table Ref; Parameters []Parameter; Assignments []Assignment; Projection []Projection; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
+type Query struct { ID string; Operation OperationKind; Table Ref; Parameters []Parameter; Assignments []Assignment; Projection []Projection; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 type Projection struct { Column string; Alias string }
+type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string
 type Predicate struct { Kind PredicateKind; Left string; Right string; Value Value; Items []Predicate }
 type OrderingDirection string

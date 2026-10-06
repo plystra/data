@@ -127,6 +127,39 @@ func TestEmitIncludesTypedMutationQueryArtifact(t *testing.T) {
 	}
 }
 
+func TestEmitIncludesTypedReturningMutation(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Queries = []declaration.Query{{
+		ID: "delete-account", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "accounts"},
+		Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Int64(1)},
+		Returning: []declaration.Projection{{Column: "id", Alias: "account-id"}},
+		Results:   []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}},
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
+		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
+	})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded {
+		t.Fatalf("response = %#v", response)
+	}
+	var query protocol.StagedArtifact
+	for _, artifact := range response.Output.Artifacts {
+		if artifact.Path == "generated/data/database.primary/queries/accounts.user/v1/delete-account.sql" {
+			query = artifact
+		}
+	}
+	if query.Path == "" || !bytes.Contains(query.Bytes, []byte(`DELETE FROM "accounts"."accounts" WHERE "id" = 1 RETURNING "id" AS "account-id";`)) {
+		t.Fatalf("query artifact = %#v", query)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEmitRejectsAtomicPlansUntilExecutableArtifactsExist(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model

@@ -20,6 +20,7 @@ type QueryArtifact struct {
 	Path     string
 	SQL      string
 	Digest   string
+	Results  []declaration.ResultField
 }
 
 // CompileQueries lowers the currently supported query subset for members
@@ -45,6 +46,7 @@ func CompileQueries(members []SchemaMember) ([]QueryArtifact, error) {
 				Path:     "queries/" + member.MemberID + "/" + query.ID + ".sql",
 				SQL:      sql,
 				Digest:   DigestSQL(sql),
+				Results:  append([]declaration.ResultField(nil), query.Results...),
 			})
 		}
 	}
@@ -97,6 +99,9 @@ type queryParameter struct {
 }
 
 func compileQuery(member SchemaMember, table declaration.Table, query declaration.Query) (string, error) {
+	if err := validateQueryResults(table, query); err != nil {
+		return "", err
+	}
 	parameters := make(map[string]queryParameter, len(query.Parameters))
 	for index, parameter := range query.Parameters {
 		parameters[parameter.ID] = queryParameter{index: index + 1, typ: parameter.Type}
@@ -163,14 +168,20 @@ func compileInsert(member SchemaMember, table declaration.Table, query declarati
 	var sql strings.Builder
 	sql.WriteString(queryHeader(member, query, "INSERT INTO "+quoteIdentifier(member.Model.Namespace)+"."+quoteIdentifier(table.ID)))
 	if len(query.Assignments) == 0 {
-		sql.WriteString(" DEFAULT VALUES;\n")
-		return sql.String(), nil
+		sql.WriteString(" DEFAULT VALUES")
+	} else {
+		columns, values, err := assignmentSQL(table, query.Assignments, parameters)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&sql, " (%s) VALUES (%s)", columns, values)
 	}
-	columns, values, err := assignmentSQL(table, query.Assignments, parameters)
+	returning, err := returningSQL(table, query.Returning)
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprintf(&sql, " (%s) VALUES (%s);\n", columns, values)
+	sql.WriteString(returning)
+	sql.WriteString(";\n")
 	return sql.String(), nil
 }
 
@@ -190,7 +201,11 @@ func compileUpdate(member SchemaMember, table declaration.Table, query declarati
 	if err != nil {
 		return "", err
 	}
-	return queryHeader(member, query, "UPDATE "+quoteIdentifier(member.Model.Namespace)+"."+quoteIdentifier(table.ID)+" SET "+strings.Join(values, ", ")+" WHERE "+predicate+";\n"), nil
+	returning, err := returningSQL(table, query.Returning)
+	if err != nil {
+		return "", err
+	}
+	return queryHeader(member, query, "UPDATE "+quoteIdentifier(member.Model.Namespace)+"."+quoteIdentifier(table.ID)+" SET "+strings.Join(values, ", ")+" WHERE "+predicate+returning+";\n"), nil
 }
 
 func compileDelete(member SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter) (string, error) {
@@ -201,7 +216,62 @@ func compileDelete(member SchemaMember, table declaration.Table, query declarati
 	if err != nil {
 		return "", err
 	}
-	return queryHeader(member, query, "DELETE FROM "+quoteIdentifier(member.Model.Namespace)+"."+quoteIdentifier(table.ID)+" WHERE "+predicate+";\n"), nil
+	returning, err := returningSQL(table, query.Returning)
+	if err != nil {
+		return "", err
+	}
+	return queryHeader(member, query, "DELETE FROM "+quoteIdentifier(member.Model.Namespace)+"."+quoteIdentifier(table.ID)+" WHERE "+predicate+returning+";\n"), nil
+}
+
+func returningSQL(table declaration.Table, projection []declaration.Projection) (string, error) {
+	if len(projection) == 0 {
+		return "", nil
+	}
+	columns, err := selectColumns(table, projection)
+	if err != nil {
+		return "", err
+	}
+	return " RETURNING " + columns, nil
+}
+
+func validateQueryResults(table declaration.Table, query declaration.Query) error {
+	projection := query.Projection
+	if query.Operation != declaration.OperationSelect {
+		projection = query.Returning
+	}
+	if len(query.Results) == 0 {
+		return nil
+	}
+	if len(projection) == 0 || len(query.Results) != len(projection) {
+		return fmt.Errorf("result mapping must cover each explicit output")
+	}
+	outputs := make(map[string]declaration.Column, len(projection))
+	for _, item := range projection {
+		column, exists := columnByID(table, item.Column)
+		if !exists {
+			return fmt.Errorf("result column %s is not present", item.Column)
+		}
+		name := item.Column
+		if item.Alias != "" {
+			name = item.Alias
+		}
+		if _, duplicate := outputs[name]; duplicate {
+			return fmt.Errorf("duplicate result source %s", name)
+		}
+		outputs[name] = column
+	}
+	seen := make(map[string]struct{}, len(query.Results))
+	for _, result := range query.Results {
+		column, exists := outputs[result.Source]
+		if !exists || column.Type != result.Type || column.Nullable != result.Nullable {
+			return fmt.Errorf("result %s does not match source %s", result.ID, result.Source)
+		}
+		if _, duplicate := seen[result.Source]; duplicate {
+			return fmt.Errorf("duplicate result source %s", result.Source)
+		}
+		seen[result.Source] = struct{}{}
+	}
+	return nil
 }
 
 func selectColumns(table declaration.Table, projection []declaration.Projection) (string, error) {

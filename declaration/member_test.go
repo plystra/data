@@ -121,3 +121,69 @@ func TestNormalizeQueryParametersAndAssignments(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeQueryReturningResults(t *testing.T) {
+	member := declaration.Member[access]{
+		Namespace: "authn",
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}}}},
+		Queries: []declaration.Query{
+			{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}, Projection: []declaration.Projection{{Column: "id", Alias: "account-id"}, {Column: "email"}}, Results: []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}, {ID: "email", Source: "email", Type: declaration.TypeString, Nullable: true}}},
+			{ID: "update", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"}, Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, String: "new"}}}, Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Int64: 1}}, Returning: []declaration.Projection{{Column: "id", Alias: "account-id"}}, Results: []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}}},
+		},
+	}
+	model, err := member.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.Queries[0].Results) != 2 || model.Queries[1].Returning[0].Alias != "account-id" {
+		t.Fatalf("normalized result intent = %#v", model.Queries)
+	}
+
+	tests := []struct {
+		name string
+		edit func(*declaration.Query)
+	}{
+		{"select returning", func(query *declaration.Query) { query.Returning = []declaration.Projection{{Column: "id"}} }},
+		{"missing explicit output", func(query *declaration.Query) {
+			query.Projection = nil
+			query.Results = []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}}
+		}},
+		{"incomplete mutation mapping", func(query *declaration.Query) { query.Results = nil }},
+		{"duplicate source", func(query *declaration.Query) { query.Results[1].Source = query.Results[0].Source }},
+		{"unknown source", func(query *declaration.Query) { query.Results[0].Source = "missing" }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			changed := member
+			changed.Queries = append([]declaration.Query(nil), member.Queries...)
+			changed.Queries[0].Projection = append([]declaration.Projection(nil), member.Queries[0].Projection...)
+			changed.Queries[0].Results = append([]declaration.ResultField(nil), member.Queries[0].Results...)
+			changed.Queries[1].Returning = append([]declaration.Projection(nil), member.Queries[1].Returning...)
+			changed.Queries[1].Results = append([]declaration.ResultField(nil), member.Queries[1].Results...)
+			test.edit(&changed.Queries[0])
+			if test.name == "incomplete mutation mapping" {
+				changed.Queries[0] = member.Queries[1]
+				test.edit(&changed.Queries[0])
+			}
+			if _, err := changed.Normalize(); err == nil {
+				t.Fatal("Normalize accepted invalid result mapping")
+			}
+		})
+	}
+}
+
+func TestNormalizeClonesQueryResultSlices(t *testing.T) {
+	member := declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts"}}, Queries: []declaration.Query{{
+		ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+		Projection: []declaration.Projection{{Column: "id"}}, Results: []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+	}}}
+	model, err := member.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	model.Queries[0].Projection[0].Column = "changed"
+	model.Queries[0].Results[0].Source = "changed"
+	if member.Queries[0].Projection[0].Column != "id" || member.Queries[0].Results[0].Source != "id" {
+		t.Fatal("Normalize did not isolate query result slices")
+	}
+}
