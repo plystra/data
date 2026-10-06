@@ -48,6 +48,24 @@ func TestValidateAnalyzeRequestRejectsDigestMismatch(t *testing.T) {
 	}
 }
 
+func TestAnalyzeFramePreservesMemberReferenceDiagnostics(t *testing.T) {
+	request := validRequest(t)
+	request.Snapshot.Packages[1].Files[0].Content = []byte(`package model
+import "github.com/plystra/data/declaration"
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts", Imports: []string{"orders.audit/v1"}}
+`)
+	digest, err := analyzer.SnapshotDigest(request.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.InputDigest = digest
+	response := protocol.HandleAnalyze(request)
+	if response.Status != protocol.StatusRejected || response.Output.Valid || !hasDiagnosticCode(response.Diagnostics, analyzer.CodeUnresolvedReference) {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestReadFrameRejectsOversizedPayload(t *testing.T) {
 	var input bytes.Buffer
 	var header [4]byte
@@ -89,7 +107,7 @@ func validRequest(t *testing.T) protocol.AnalyzeRequest {
 		Packages: []analyzer.Package{
 			{ImportPath: "github.com/plystra/data/declaration", Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(`package declaration
 type NoAccess struct{}
-type Member[Access any] struct { Namespace string }
+type Member[Access any] struct { Namespace string; Imports []string }
 `)}}},
 			{ImportPath: "example.com/model", Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte(`package model
 import "github.com/plystra/data/declaration"
@@ -110,4 +128,13 @@ var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
 		},
 		Build: protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
 	}
+}
+
+func hasDiagnosticCode(diagnostics []analyzer.Diagnostic, want analyzer.DiagnosticCode) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Code == want {
+			return true
+		}
+	}
+	return false
 }
