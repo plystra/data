@@ -168,6 +168,22 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeDecodesInsertConflict(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}}, Constraints: []declaration.Constraint{{ID: "users-pk", Kind: "primary-key", Columns: []string{"id"}}}}},
+	Queries: []declaration.Query{{ID: "insert-user", Operation: "insert", Table: declaration.Ref{Symbol: "users"}, Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}}, Conflict: declaration.Conflict{Constraint: "users-pk", Action: "do-nothing"}}},
+}`))
+	if err != nil || !result.Valid || len(result.Diagnostics) != 0 || result.Roots[0].Model.Queries[0].Conflict.Constraint != "users-pk" || result.Roots[0].Model.Queries[0].Conflict.Action != declaration.ConflictDoNothing {
+		t.Fatalf("decoded conflict = %#v, %v", result, err)
+	}
+}
+
 func TestAnalyzeDecodesSelectJoins(t *testing.T) {
 	result, err := analyzer.Analyze(sourceSnapshot(`package model
 
@@ -613,7 +629,9 @@ type JoinKind string
 const JoinLeft JoinKind = "left"
 type JoinCondition struct { Left ColumnRef; Right ColumnRef }
 type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
-type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Projection []Projection; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
+type ConflictAction string
+type Conflict struct { Constraint string; Action ConflictAction }
+type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 type Projection struct { Table Ref; Column string; Alias string; Aggregate string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string

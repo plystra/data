@@ -32,7 +32,10 @@ database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
 rejects cross-Resource foreign keys before any backend operation.
 `postgres/compiler.CompileQueries` emits deterministic SQL for `SELECT`, `INSERT`,
-`UPDATE`, and `DELETE` intent. Query predicate operands use explicit
+`UPDATE`, and `DELETE` intent. `INSERT` may target a named local primary-key or
+unique table constraint with PostgreSQL `ON CONFLICT ... DO NOTHING`. Other
+conflict actions, conflict targets, and upsert behavior remain unsupported.
+Query predicate operands use explicit
 `ColumnRef` values and accept either an introduced column or a declared typed
 parameter/literal; assignments accept only declared typed parameters or closed
 literal values. Projections, ordering, limit, offset, and cross-Resource
@@ -50,8 +53,9 @@ the closed `COUNT` aggregate may project `*` or an introduced column with an
 explicit alias and one required non-null `int64` result mapping. COUNT is a
 single-output SELECT with no ordinary projection, aggregate ordering, limit,
 or offset. `COUNT(column)` ignores NULL values, including unmatched LEFT JOIN
-rows; `COUNT(*)` counts joined rows. Other aggregates and conflict/upsert intent
-remain unsupported. `COUNT(*)` cannot name a table; count an introduced column
+rows; `COUNT(*)` counts joined rows. Other aggregates and conflict actions,
+targets, and upsert behavior remain unsupported. `COUNT(*)` cannot name a
+table; count an introduced column
 to exclude unmatched LEFT JOIN rows. Queries without joins retain their existing
 SQL bytes.
 `postgres/compiler.CompileMigrations` lowers immutable migration operations into

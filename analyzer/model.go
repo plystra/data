@@ -537,6 +537,12 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 				return nil, err
 			}
 		}
+		if field, ok := fields["Conflict"]; ok {
+			query.Conflict, err = d.conflict(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if field, ok := fields["Projection"]; ok {
 			query.Projection, err = d.projections(field)
 			if err != nil {
@@ -592,6 +598,28 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 			}
 		}
 		result[index] = query
+	}
+	return result, nil
+}
+
+func (d modelDecoder) conflict(value ast.Expr) (declaration.Conflict, error) {
+	fields, err := d.fieldsExpr(value)
+	if err != nil {
+		return declaration.Conflict{}, err
+	}
+	result := declaration.Conflict{}
+	if field, ok := fields["Constraint"]; ok {
+		result.Constraint, err = d.string(field)
+		if err != nil {
+			return declaration.Conflict{}, err
+		}
+	}
+	if field, ok := fields["Action"]; ok {
+		value, valueErr := d.string(field)
+		if valueErr != nil {
+			return declaration.Conflict{}, valueErr
+		}
+		result.Action = declaration.ConflictAction(value)
 	}
 	return result, nil
 }

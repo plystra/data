@@ -71,6 +71,7 @@ type QueryMetadata struct {
 	Operation  declaration.OperationKind `json:"operation"`
 	Parameters []declaration.Parameter   `json:"parameters"`
 	Results    []declaration.ResultField `json:"results"`
+	Conflict   *declaration.Conflict     `json:"conflict,omitempty"`
 }
 
 type manifestEntry struct {
@@ -652,11 +653,16 @@ func safePath(value string) bool {
 }
 
 func metadataForQuery(query declaration.Query) QueryMetadata {
-	return QueryMetadata{
+	metadata := QueryMetadata{
 		ID: query.ID, Operation: query.Operation,
 		Parameters: append([]declaration.Parameter{}, query.Parameters...),
 		Results:    append([]declaration.ResultField{}, query.Results...),
 	}
+	if query.Conflict.Action != "" || query.Conflict.Constraint != "" {
+		conflict := query.Conflict
+		metadata.Conflict = &conflict
+	}
+	return metadata
 }
 
 func digest(domain string, payload []byte) string {

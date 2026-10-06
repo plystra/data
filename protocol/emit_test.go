@@ -143,6 +143,55 @@ func TestEmitIncludesTypedMutationQueryArtifact(t *testing.T) {
 	}
 }
 
+func TestEmitIncludesConflictMetadataForInsert(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Queries = []declaration.Query{{
+		ID: "insert-account", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "accounts"},
+		Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Int64(1)}},
+		Conflict:    declaration.Conflict{Constraint: "pk-accounts", Action: declaration.ConflictDoNothing},
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded {
+		t.Fatalf("response = %#v", response)
+	}
+	var query protocol.StagedArtifact
+	for _, artifact := range response.Output.Artifacts {
+		if strings.HasSuffix(artifact.Path, "/insert-account.sql") {
+			query = artifact
+		}
+	}
+	if query.Query == nil || query.Query.Conflict == nil || query.Query.Conflict.Constraint != "pk-accounts" || !bytes.Contains(query.Bytes, []byte(`ON CONFLICT ON CONSTRAINT "pk-accounts" DO NOTHING`)) {
+		t.Fatalf("conflict artifact = %#v", query)
+	}
+	for _, artifact := range response.Output.Artifacts {
+		if !strings.HasSuffix(artifact.Path, "/manifest.json") {
+			continue
+		}
+		var manifest struct {
+			Artifacts []struct {
+				Path  string                  `json:"path"`
+				Query *protocol.QueryMetadata `json:"query"`
+			} `json:"artifacts"`
+		}
+		if err := json.Unmarshal(artifact.Bytes, &manifest); err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range manifest.Artifacts {
+			if entry.Path == query.Path && !reflect.DeepEqual(entry.Query, query.Query) {
+				t.Fatalf("manifest conflict metadata = %#v, query metadata = %#v", entry.Query, query.Query)
+			}
+		}
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEmitIncludesTypedReturningMutation(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model

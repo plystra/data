@@ -113,6 +113,17 @@ type Assignment struct {
 	Value  Value  `json:"value"`
 }
 
+type ConflictAction string
+
+const ConflictDoNothing ConflictAction = "do-nothing"
+
+// Conflict describes the bounded PostgreSQL conflict behavior of an insert.
+// Only a named local primary-key or unique constraint may be ignored.
+type Conflict struct {
+	Constraint string         `json:"constraint"`
+	Action     ConflictAction `json:"action"`
+}
+
 // Table is one logical relational table.
 type Table struct {
 	ID          string       `json:"id"`
@@ -170,6 +181,7 @@ type Query struct {
 	Joins       []Join        `json:"joins,omitempty"`
 	Parameters  []Parameter   `json:"parameters,omitempty"`
 	Assignments []Assignment  `json:"assignments,omitempty"`
+	Conflict    Conflict      `json:"conflict,omitempty"`
 	Projection  []Projection  `json:"projection,omitempty"`
 	Returning   []Projection  `json:"returning,omitempty"`
 	Results     []ResultField `json:"results,omitempty"`
@@ -472,12 +484,12 @@ func validateModel(model *Model) error {
 		return ErrLimit
 	}
 	symbols := map[string]string{}
-	tables := make(map[string]struct{}, len(model.Tables))
+	tables := make(map[string]Table, len(model.Tables))
 	for _, table := range model.Tables {
 		if err := addSymbol(symbols, table.ID, "table"); err != nil {
 			return err
 		}
-		tables[table.ID] = struct{}{}
+		tables[table.ID] = table
 		if err := validateTable(table); err != nil {
 			return err
 		}
@@ -553,10 +565,15 @@ func validateTable(table Table) error {
 			return err
 		}
 	}
+	constraints := map[string]struct{}{}
 	for _, constraint := range table.Constraints {
 		if !validSymbol(constraint.ID) || len(constraint.Columns) == 0 {
 			return fmt.Errorf("%w: constraint %q", ErrInvalidSchema, constraint.ID)
 		}
+		if _, exists := constraints[constraint.ID]; exists {
+			return fmt.Errorf("%w: constraint %q", ErrDuplicate, constraint.ID)
+		}
+		constraints[constraint.ID] = struct{}{}
 		if constraint.Kind != ConstraintPrimaryKey && constraint.Kind != ConstraintUnique && constraint.Kind != ConstraintForeignKey {
 			return fmt.Errorf("%w: constraint %q", ErrUnsupported, constraint.Kind)
 		}
@@ -584,7 +601,7 @@ func validateTable(table Table) error {
 	return nil
 }
 
-func validateQuery(query Query, imports map[string]struct{}, tables map[string]struct{}) error {
+func validateQuery(query Query, imports map[string]struct{}, tables map[string]Table) error {
 	if !validSymbol(query.ID) || !validOperation(query.Operation) || query.Table.Symbol == "" {
 		return fmt.Errorf("%w: query %q", ErrInvalidSchema, query.ID)
 	}
@@ -653,6 +670,21 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 	case OperationDelete:
 		if len(query.Assignments) != 0 || query.Predicate.Kind == "" || len(query.Ordering) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
 			return fmt.Errorf("%w: delete query shape", ErrInvalidSchema)
+		}
+	}
+	if query.Conflict.Action != "" || query.Conflict.Constraint != "" {
+		if query.Operation != OperationInsert || query.Table.Member != "" || query.Conflict.Action != ConflictDoNothing || !validSymbol(query.Conflict.Constraint) {
+			return fmt.Errorf("%w: query conflict", ErrInvalidSchema)
+		}
+		found := false
+		for _, constraint := range tables[query.Table.Symbol].Constraints {
+			if constraint.ID == query.Conflict.Constraint && (constraint.Kind == ConstraintPrimaryKey || constraint.Kind == ConstraintUnique) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("%w: conflict constraint %q", ErrReference, query.Conflict.Constraint)
 		}
 	}
 	seenAssignments := make(map[string]struct{}, len(query.Assignments))
@@ -940,7 +972,11 @@ func nodeCount(model Model) int {
 		count += len(table.Columns) + len(table.Constraints) + len(table.Indexes)
 	}
 	for _, query := range model.Queries {
-		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + len(query.Projection) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
+		conflictNodes := 0
+		if query.Conflict.Constraint != "" || query.Conflict.Action != "" {
+			conflictNodes = 1
+		}
+		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + conflictNodes + len(query.Projection) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
 	}
 	for _, plan := range model.Plans {
 		count += len(plan.Statements)

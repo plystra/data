@@ -225,6 +225,84 @@ func TestCompileQueriesLowersTypedReturningAndResultMapping(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersNamedConstraintConflictIgnore(t *testing.T) {
+	member := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts",
+			Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "users-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}},
+			Queries:   []declaration.Query{{ID: "insert-user", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"}, Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Int64(1)}}, Conflict: declaration.Conflict{Constraint: "users-pk", Action: declaration.ConflictDoNothing}}},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
+	}
+	want := `INSERT INTO "accounts"."users" ("id") VALUES (1) ON CONFLICT ON CONSTRAINT "users-pk" DO NOTHING;`
+	if artifacts[0].SQL != "-- plystra.data.postgres-query/v1 accounts.user/v1#insert-user\n"+want+"\n" {
+		t.Fatalf("SQL = %q, want %q", artifacts[0].SQL, want)
+	}
+}
+
+func TestCompileQueriesLowersUniqueConstraintConflictIgnore(t *testing.T) {
+	member := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts",
+			Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "email", Type: declaration.TypeString}}, Constraints: []declaration.Constraint{{ID: "users-email-key", Kind: declaration.ConstraintUnique, Columns: []string{"email"}}}}},
+			Queries:   []declaration.Query{{ID: "insert-user", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"}, Assignments: []declaration.Assignment{{Column: "email", Value: declaration.String("a@example.com")}}, Conflict: declaration.Conflict{Constraint: "users-email-key", Action: declaration.ConflictDoNothing}}},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
+	}
+	want := "-- plystra.data.postgres-query/v1 accounts.user/v1#insert-user\nINSERT INTO \"accounts\".\"users\" (\"email\") VALUES ('a@example.com') ON CONFLICT ON CONSTRAINT \"users-email-key\" DO NOTHING;\n"
+	if artifacts[0].SQL != want {
+		t.Fatalf("SQL = %q, want %q", artifacts[0].SQL, want)
+	}
+}
+
+func TestCompileQueriesRejectsUnsupportedConflictTargets(t *testing.T) {
+	base := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts",
+			Tables: []declaration.Table{{
+				ID:      "users",
+				Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}},
+				Constraints: []declaration.Constraint{
+					{ID: "users-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}},
+					{ID: "users-fk", Kind: declaration.ConstraintForeignKey, Columns: []string{"id"}, ReferencedTable: declaration.Ref{Symbol: "users"}, ReferencedCols: []string{"id"}},
+				},
+				Indexes: []declaration.Index{{ID: "users-unique-index", Columns: []string{"id"}, Unique: true}},
+			}},
+		},
+	}
+	for _, test := range []struct {
+		name     string
+		conflict declaration.Conflict
+		want     string
+	}{
+		{name: "unknown constraint", conflict: declaration.Conflict{Constraint: "missing", Action: declaration.ConflictDoNothing}, want: "conflict constraint"},
+		{name: "foreign key", conflict: declaration.Conflict{Constraint: "users-fk", Action: declaration.ConflictDoNothing}, want: "conflict constraint"},
+		{name: "unique index", conflict: declaration.Conflict{Constraint: "users-unique-index", Action: declaration.ConflictDoNothing}, want: "conflict constraint"},
+		{name: "empty constraint", conflict: declaration.Conflict{Action: declaration.ConflictDoNothing}, want: "query conflict"},
+		{name: "update action", conflict: declaration.Conflict{Constraint: "users-pk", Action: "do-update"}, want: "query conflict"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base.Model.Queries = []declaration.Query{{
+				ID: "insert-user", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"},
+				Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Int64(1)}}, Conflict: test.conflict,
+			}}
+			_, err := postgres.CompileQueries([]postgres.SchemaMember{base})
+			if err == nil || !errors.Is(err, postgres.ErrQueryCompilation) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestCompileQueriesRejectsInvalidTypedResultMapping(t *testing.T) {
 	base := postgres.SchemaMember{
 		MemberID: "accounts.user/v1", Resource: "database.primary",

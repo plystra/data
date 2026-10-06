@@ -247,6 +247,22 @@ func compileInsert(owner, tableMember SchemaMember, table declaration.Table, que
 		}
 		fmt.Fprintf(&sql, " (%s) VALUES (%s)", columns, values)
 	}
+	if query.Conflict.Action != "" || query.Conflict.Constraint != "" {
+		if query.Conflict.Action != declaration.ConflictDoNothing {
+			return "", fmt.Errorf("unsupported conflict action %q", query.Conflict.Action)
+		}
+		found := false
+		for _, constraint := range table.Constraints {
+			if constraint.ID == query.Conflict.Constraint && (constraint.Kind == declaration.ConstraintPrimaryKey || constraint.Kind == declaration.ConstraintUnique) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return "", fmt.Errorf("conflict constraint %q is not a primary or unique table constraint", query.Conflict.Constraint)
+		}
+		fmt.Fprintf(&sql, " ON CONFLICT ON CONSTRAINT %s DO NOTHING", quoteIdentifier(query.Conflict.Constraint))
+	}
 	returning, err := returningSQL(table, query.Returning)
 	if err != nil {
 		return "", err

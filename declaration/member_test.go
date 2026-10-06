@@ -58,6 +58,7 @@ func TestNormalizeRejectsInvalidAndHiddenReferences(t *testing.T) {
 		{name: "unimported reference", member: declaration.Member[access]{Namespace: "authn", Queries: []declaration.Query{{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Member: "authz.persistence/v1", Symbol: "accounts"}}}}, want: declaration.ErrReference},
 		{name: "unresolved local reference", member: declaration.Member[access]{Namespace: "authn", Queries: []declaration.Query{{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}}}}, want: declaration.ErrReference},
 		{name: "invalid symbol", member: declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "bad--symbol"}}}, want: declaration.ErrInvalidID},
+		{name: "duplicate constraint", member: declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "accounts-key", Kind: declaration.ConstraintUnique, Columns: []string{"id"}}, {ID: "accounts-key", Kind: declaration.ConstraintForeignKey, Columns: []string{"id"}, ReferencedTable: declaration.Ref{Symbol: "accounts"}, ReferencedCols: []string{"id"}}}}}}, want: declaration.ErrDuplicate},
 		{name: "unsupported predicate", member: declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts"}}, Queries: []declaration.Query{{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}, Predicate: declaration.Predicate{Kind: "contains", Left: declaration.ColumnRef{Column: "email"}}}}}, want: declaration.ErrUnsupported},
 	}
 	for _, test := range tests {
@@ -113,6 +114,38 @@ func TestNormalizeQueryParametersAndAssignments(t *testing.T) {
 			changed.Queries = append([]declaration.Query(nil), member.Queries...)
 			changed.Queries[0].Parameters = append([]declaration.Parameter(nil), member.Queries[0].Parameters...)
 			changed.Queries[0].Assignments = append([]declaration.Assignment(nil), member.Queries[0].Assignments...)
+			test.edit(&changed.Queries[0])
+			_, err := changed.Normalize()
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeInsertConflictByNamedConstraint(t *testing.T) {
+	member := declaration.Member[access]{
+		Namespace: "authn",
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}, {ID: "accounts-fk", Kind: declaration.ConstraintForeignKey, Columns: []string{"id"}, ReferencedTable: declaration.Ref{Symbol: "accounts"}, ReferencedCols: []string{"id"}}}}},
+		Queries:   []declaration.Query{{ID: "insert", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "accounts"}, Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Int64(1)}}, Conflict: declaration.Conflict{Constraint: "accounts-pk", Action: declaration.ConflictDoNothing}}},
+	}
+	model, err := member.Normalize()
+	if err != nil || model.Queries[0].Conflict.Constraint != "accounts-pk" {
+		t.Fatalf("normalized conflict = %#v, %v", model, err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Query)
+		want error
+	}{
+		{"unknown constraint", func(query *declaration.Query) { query.Conflict.Constraint = "missing" }, declaration.ErrReference},
+		{"foreign key", func(query *declaration.Query) { query.Conflict.Constraint = "accounts-fk" }, declaration.ErrReference},
+		{"wrong action", func(query *declaration.Query) { query.Conflict.Action = "do-update" }, declaration.ErrInvalidSchema},
+		{"select conflict", func(query *declaration.Query) { query.Operation = declaration.OperationSelect }, declaration.ErrInvalidSchema},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := member
+			changed.Queries = append([]declaration.Query(nil), member.Queries...)
 			test.edit(&changed.Queries[0])
 			_, err := changed.Normalize()
 			if !errors.Is(err, test.want) {
