@@ -115,13 +115,17 @@ type Assignment struct {
 
 type ConflictAction string
 
-const ConflictDoNothing ConflictAction = "do-nothing"
+const (
+	ConflictDoNothing ConflictAction = "do-nothing"
+	ConflictDoUpdate  ConflictAction = "do-update"
+)
 
 // Conflict describes the bounded PostgreSQL conflict behavior of an insert.
-// Only a named primary-key or unique constraint on the target may be ignored.
+// Only a named primary-key or unique constraint on the target is supported.
 type Conflict struct {
-	Constraint string         `json:"constraint"`
-	Action     ConflictAction `json:"action"`
+	Constraint    string         `json:"constraint"`
+	Action        ConflictAction `json:"action"`
+	UpdateColumns []string       `json:"update_columns,omitempty"`
 }
 
 // Table is one logical relational table.
@@ -360,6 +364,7 @@ func (m Member[Access]) Normalize() (Model, error) {
 		sort.Slice(model.Queries[i].Assignments, func(a, b int) bool {
 			return model.Queries[i].Assignments[a].Column < model.Queries[i].Assignments[b].Column
 		})
+		sort.Strings(model.Queries[i].Conflict.UpdateColumns)
 	}
 	for i := range model.Migrations {
 		sort.Slice(model.Migrations[i].Predecessors, func(a, b int) bool {
@@ -422,6 +427,7 @@ func cloneQueries(queries []Query) []Query {
 		for assignment := range query.Assignments {
 			result[i].Assignments[assignment] = query.Assignments[assignment]
 		}
+		result[i].Conflict.UpdateColumns = append([]string(nil), query.Conflict.UpdateColumns...)
 		result[i].Projection = append([]Projection(nil), query.Projection...)
 		result[i].Returning = append([]Projection(nil), query.Returning...)
 		result[i].Results = append([]ResultField(nil), query.Results...)
@@ -673,8 +679,11 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			return fmt.Errorf("%w: delete query shape", ErrInvalidSchema)
 		}
 	}
-	if query.Conflict.Action != "" || query.Conflict.Constraint != "" {
-		if query.Operation != OperationInsert || query.Conflict.Action != ConflictDoNothing || !validSymbol(query.Conflict.Constraint) {
+	if query.Conflict.Action != "" || query.Conflict.Constraint != "" || len(query.Conflict.UpdateColumns) != 0 {
+		if query.Operation != OperationInsert || !validSymbol(query.Conflict.Constraint) ||
+			(query.Conflict.Action != ConflictDoNothing && query.Conflict.Action != ConflictDoUpdate) ||
+			(query.Conflict.Action == ConflictDoNothing && len(query.Conflict.UpdateColumns) != 0) ||
+			(query.Conflict.Action == ConflictDoUpdate && len(query.Conflict.UpdateColumns) == 0) {
 			return fmt.Errorf("%w: query conflict", ErrInvalidSchema)
 		}
 		if query.Table.Member == "" {
@@ -701,6 +710,31 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 		seenAssignments[assignment.Column] = struct{}{}
 		if err := validateQueryValue(assignment.Value, parameters); err != nil {
 			return fmt.Errorf("%w: assignment %s: %v", ErrInvalidSchema, assignment.Column, err)
+		}
+	}
+	seenUpdates := make(map[string]struct{}, len(query.Conflict.UpdateColumns))
+	for _, column := range query.Conflict.UpdateColumns {
+		if !validSymbol(column) {
+			return fmt.Errorf("%w: conflict update column %q", ErrInvalidSchema, column)
+		}
+		if _, exists := seenUpdates[column]; exists {
+			return fmt.Errorf("%w: conflict update column %q", ErrDuplicate, column)
+		}
+		seenUpdates[column] = struct{}{}
+		if _, exists := seenAssignments[column]; !exists {
+			return fmt.Errorf("%w: conflict update column %q has no insert assignment", ErrReference, column)
+		}
+		if query.Table.Member == "" {
+			found := false
+			for _, targetColumn := range tables[query.Table.Symbol].Columns {
+				if targetColumn.ID == column {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("%w: conflict update column %q", ErrReference, column)
+			}
 		}
 	}
 	outputs := query.Projection
@@ -976,10 +1010,10 @@ func nodeCount(model Model) int {
 	}
 	for _, query := range model.Queries {
 		conflictNodes := 0
-		if query.Conflict.Constraint != "" || query.Conflict.Action != "" {
+		if query.Conflict.Constraint != "" || query.Conflict.Action != "" || len(query.Conflict.UpdateColumns) != 0 {
 			conflictNodes = 1
 		}
-		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + conflictNodes + len(query.Projection) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
+		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + conflictNodes + len(query.Conflict.UpdateColumns) + len(query.Projection) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
 	}
 	for _, plan := range model.Plans {
 		count += len(plan.Statements)

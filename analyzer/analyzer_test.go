@@ -184,6 +184,35 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeDecodesConflictUpdateAndChecksImportedColumns(t *testing.T) {
+	source := `package model
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts", Imports: []string{"orders.audit/v1"},
+	Queries: []declaration.Query{{ID: "insert-event", Operation: "insert", Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"},
+		Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: "string", Set: true, String: "event"}}, {Column: "label", Value: declaration.Value{Kind: "string", Set: true, String: "new"}}},
+		Conflict: declaration.Conflict{Constraint: "events-key", Action: "do-update", UpdateColumns: []string{"label"}},
+	}},
+}
+
+//plystra:data orders.audit/v1
+var Audit = declaration.Member[declaration.NoAccess]{
+	Namespace: "orders",
+	Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "string"}, {ID: "label", Type: "string"}}, Constraints: []declaration.Constraint{{ID: "events-key", Kind: "unique", Columns: []string{"id"}}}}},
+}`
+	result, err := analyzer.Analyze(sourceSnapshot(source))
+	if err != nil || !result.Valid || len(result.Diagnostics) != 0 || len(result.Roots) != 2 || result.Roots[0].Model.Queries[0].Conflict.UpdateColumns[0] != "label" {
+		t.Fatalf("decoded conflict update = %#v, %v", result, err)
+	}
+	missing := strings.Replace(source, `{ID: "label", Type: "string"}`, `{ID: "other", Type: "string"}`, 1)
+	result, err = analyzer.Analyze(sourceSnapshot(missing))
+	if err != nil || result.Valid || !hasCode(result, analyzer.CodeUnresolvedReference) {
+		t.Fatalf("missing imported update column = %#v, %v", result, err)
+	}
+}
+
 func TestAnalyzeDecodesNotNullPredicate(t *testing.T) {
 	result, err := analyzer.Analyze(sourceSnapshot(`package model
 
@@ -644,7 +673,7 @@ const JoinLeft JoinKind = "left"
 type JoinCondition struct { Left ColumnRef; Right ColumnRef }
 type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
 type ConflictAction string
-type Conflict struct { Constraint string; Action ConflictAction }
+type Conflict struct { Constraint string; Action ConflictAction; UpdateColumns []string }
 type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 type Projection struct { Table Ref; Column string; Alias string; Aggregate string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }

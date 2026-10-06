@@ -8,3 +8,10 @@ func TestNodeCountIncludesConflict(t *testing.T) {
 		t.Fatalf("nodeCount = %d, want %d", got, want)
 	}
 }
+
+func TestNodeCountIncludesConflictUpdateColumns(t *testing.T) {
+	model := Model{Queries: []Query{{Conflict: Conflict{Constraint: "users-pk", Action: ConflictDoUpdate, UpdateColumns: []string{"email", "name"}}}}}
+	if got, want := nodeCount(model), 5; got != want {
+		t.Fatalf("nodeCount = %d, want %d", got, want)
+	}
+}

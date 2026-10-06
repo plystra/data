@@ -263,6 +263,52 @@ func TestCompileQueriesLowersUniqueConstraintConflictIgnore(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersConflictUpdateWithTypedReturning(t *testing.T) {
+	member := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts",
+		Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}, {ID: "name", Type: declaration.TypeString}}, Constraints: []declaration.Constraint{{ID: "users-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}},
+		Queries: []declaration.Query{{ID: "insert-user", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"},
+			Parameters:  []declaration.Parameter{{ID: "name", Type: declaration.TypeString}, {ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}},
+			Assignments: []declaration.Assignment{{Column: "name", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "name"}}, {Column: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}}, {Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "email"}}},
+			Conflict:    declaration.Conflict{Constraint: "users-pk", Action: declaration.ConflictDoUpdate, UpdateColumns: []string{"name", "email"}},
+			Returning:   []declaration.Projection{{Column: "id", Alias: "user-id"}}, Results: []declaration.ResultField{{ID: "id", Source: "user-id", Type: declaration.TypeInt64}},
+		}},
+	}}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
+	}
+	want := "-- plystra.data.postgres-query/v1 accounts.user/v1#insert-user\nINSERT INTO \"accounts\".\"users\" (\"email\", \"id\", \"name\") VALUES ($1, $2, $3) ON CONFLICT ON CONSTRAINT \"users-pk\" DO UPDATE SET \"email\" = EXCLUDED.\"email\", \"name\" = EXCLUDED.\"name\" RETURNING \"id\" AS \"user-id\";\n"
+	if artifacts[0].SQL != want {
+		t.Fatalf("SQL = %q, want %q", artifacts[0].SQL, want)
+	}
+}
+
+func TestCompileQueriesLowersImportedSameResourceConflictUpdate(t *testing.T) {
+	owner := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts", Imports: []string{"orders.audit/v1"},
+		Queries: []declaration.Query{{ID: "insert-event", Operation: declaration.OperationInsert, Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"},
+			Assignments: []declaration.Assignment{{Column: "id", Value: declaration.String("event")}, {Column: "label", Value: declaration.String("new")}},
+			Conflict:    declaration.Conflict{Constraint: "events-key", Action: declaration.ConflictDoUpdate, UpdateColumns: []string{"label"}},
+		}},
+	}}
+	remote := postgres.SchemaMember{MemberID: "orders.audit/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "orders", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeString}, {ID: "label", Type: declaration.TypeString}}, Constraints: []declaration.Constraint{{ID: "events-key", Kind: declaration.ConstraintUnique, Columns: []string{"id"}}}}},
+	}}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
+	}
+	want := "-- plystra.data.postgres-query/v1 accounts.user/v1#insert-event\nINSERT INTO \"orders\".\"events\" (\"id\", \"label\") VALUES ('event', 'new') ON CONFLICT ON CONSTRAINT \"events-key\" DO UPDATE SET \"label\" = EXCLUDED.\"label\";\n"
+	if artifacts[0].SQL != want {
+		t.Fatalf("SQL = %q, want %q", artifacts[0].SQL, want)
+	}
+	remote.Resource = "database.other"
+	if _, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote}); err == nil || !errors.Is(err, postgres.ErrQueryCompilation) {
+		t.Fatalf("cross-Resource conflict update error = %v", err)
+	}
+}
+
 func TestCompileQueriesLowersImportedSameResourceConflictIgnore(t *testing.T) {
 	owner := postgres.SchemaMember{
 		MemberID: "accounts.user/v1", Resource: "database.primary",
@@ -317,7 +363,7 @@ func TestCompileQueriesRejectsUnsupportedConflictTargets(t *testing.T) {
 		{name: "foreign key", conflict: declaration.Conflict{Constraint: "users-fk", Action: declaration.ConflictDoNothing}, want: "conflict constraint"},
 		{name: "unique index", conflict: declaration.Conflict{Constraint: "users-unique-index", Action: declaration.ConflictDoNothing}, want: "conflict constraint"},
 		{name: "empty constraint", conflict: declaration.Conflict{Action: declaration.ConflictDoNothing}, want: "query conflict"},
-		{name: "update action", conflict: declaration.Conflict{Constraint: "users-pk", Action: "do-update"}, want: "query conflict"},
+		{name: "missing update columns", conflict: declaration.Conflict{Constraint: "users-pk", Action: declaration.ConflictDoUpdate}, want: "query conflict"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			base.Model.Queries = []declaration.Query{{

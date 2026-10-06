@@ -18,13 +18,19 @@ import (
 func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	model, err := (declaration.Member[struct{}]{
 		Namespace: "accounts",
-		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}},
 		Queries: []declaration.Query{{
 			ID: "delete-account", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "accounts"},
 			Parameters: []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
 			Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
 			Returning:  []declaration.Projection{{Column: "id", Alias: "account-id"}},
 			Results:    []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}},
+		}, {
+			ID: "upsert-account", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "accounts"},
+			Parameters:  []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}},
+			Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}}, {Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "email"}}},
+			Conflict:    declaration.Conflict{Constraint: "accounts-pk", Action: declaration.ConflictDoUpdate, UpdateColumns: []string{"email"}},
+			Returning:   []declaration.Projection{{Column: "id"}}, Results: []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
 		}},
 	}).Normalize()
 	if err != nil {
@@ -71,13 +77,23 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	if err := protocol.ReadFrame(&stdout, &response); err != nil {
 		t.Fatal(err)
 	}
-	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 3 {
+	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 4 {
 		t.Fatalf("invalid command response: %v, bytes=%d, artifacts=%d", err, stdout.Len(), len(response.Output.Artifacts))
 	}
+	foundUpsert := false
 	for _, artifact := range response.Output.Artifacts {
 		if strings.HasSuffix(artifact.Path, "/delete-account.sql") && !bytes.Contains(artifact.Bytes, []byte(`RETURNING "id" AS "account-id";`)) {
 			t.Fatalf("query artifact does not contain typed RETURNING: %q", artifact.Bytes)
 		}
+		if strings.HasSuffix(artifact.Path, "/upsert-account.sql") {
+			foundUpsert = true
+			if artifact.Query == nil || artifact.Query.Conflict == nil || len(artifact.Query.Conflict.UpdateColumns) != 1 || artifact.Query.Conflict.UpdateColumns[0] != "email" || !bytes.Contains(artifact.Bytes, []byte(`DO UPDATE SET "email" = EXCLUDED."email" RETURNING "id";`)) {
+				t.Fatalf("query artifact does not contain conflict update: %#v", artifact)
+			}
+		}
+	}
+	if !foundUpsert {
+		t.Fatal("compiler did not stage the conflict update query")
 	}
 	after, err := os.ReadDir(".")
 	if err != nil {
@@ -133,7 +149,7 @@ func TestCompilerCommandAnalyzesOneBoundedFrame(t *testing.T) {
 func TestCompilerCommandDoesNotDependOnCorePackages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "go", "list", "-deps", ".")
+	command := exec.CommandContext(ctx, "go", "list", "-buildvcs=false", "-deps", ".")
 	command.Env = append(os.Environ(), "GOWORK=off")
 	output, err := command.Output()
 	if err != nil {

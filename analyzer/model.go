@@ -621,6 +621,12 @@ func (d modelDecoder) conflict(value ast.Expr) (declaration.Conflict, error) {
 		}
 		result.Action = declaration.ConflictAction(value)
 	}
+	if field, ok := fields["UpdateColumns"]; ok {
+		result.UpdateColumns, err = d.stringSlice(field)
+		if err != nil {
+			return declaration.Conflict{}, err
+		}
+	}
 	return result, nil
 }
 
