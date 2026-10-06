@@ -147,28 +147,9 @@ func writeTable(sql *strings.Builder, member SchemaMember, table declaration.Tab
 }
 
 func writeForeignKey(sql *strings.Builder, member SchemaMember, table declaration.Table, constraint declaration.Constraint, byID map[string]SchemaMember) error {
-	targetMember := member
-	if constraint.ReferencedTable.Member != "" {
-		var exists bool
-		targetMember, exists = byID[constraint.ReferencedTable.Member]
-		if !exists {
-			return fmt.Errorf("%w: foreign key %s target member %s", ErrSchemaCompilation, constraint.ID, constraint.ReferencedTable.Member)
-		}
-		if targetMember.Resource != member.Resource {
-			return fmt.Errorf("%w: %s to %s", ErrCrossResourceReference, member.MemberID, targetMember.MemberID)
-		}
-	}
-	var targetTable declaration.Table
-	found := false
-	for _, candidate := range targetMember.Model.Tables {
-		if candidate.ID == constraint.ReferencedTable.Symbol {
-			targetTable = candidate
-			found = true
-			break
-		}
-	}
-	if !found {
-		return fmt.Errorf("%w: foreign key %s target table %s", ErrSchemaCompilation, constraint.ID, constraint.ReferencedTable.Symbol)
+	targetMember, targetTable, err := resolveSchemaTable(member, constraint.ReferencedTable, byID)
+	if err != nil {
+		return fmt.Errorf("%w: foreign key %s: %w", ErrSchemaCompilation, constraint.ID, err)
 	}
 	if len(constraint.Columns) != len(constraint.ReferencedCols) {
 		return fmt.Errorf("%w: foreign key %s column count", ErrSchemaCompilation, constraint.ID)
@@ -180,6 +161,26 @@ func writeForeignKey(sql *strings.Builder, member SchemaMember, table declaratio
 	}
 	fmt.Fprintf(sql, "ALTER TABLE %s.%s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s.%s (%s);\n", quoteIdentifier(member.Model.Namespace), quoteIdentifier(table.ID), quoteIdentifier(constraint.ID), quoteIdentifiers(constraint.Columns), quoteIdentifier(targetMember.Model.Namespace), quoteIdentifier(targetTable.ID), quoteIdentifiers(constraint.ReferencedCols))
 	return nil
+}
+
+func resolveSchemaTable(member SchemaMember, ref declaration.Ref, byID map[string]SchemaMember) (SchemaMember, declaration.Table, error) {
+	targetMember := member
+	if ref.Member != "" {
+		var exists bool
+		targetMember, exists = byID[ref.Member]
+		if !exists {
+			return SchemaMember{}, declaration.Table{}, fmt.Errorf("target member %s is not present", ref.Member)
+		}
+		if targetMember.Resource != member.Resource {
+			return SchemaMember{}, declaration.Table{}, fmt.Errorf("%w: %s to %s", ErrCrossResourceReference, member.MemberID, targetMember.MemberID)
+		}
+	}
+	for _, candidate := range targetMember.Model.Tables {
+		if candidate.ID == ref.Symbol {
+			return targetMember, candidate, nil
+		}
+	}
+	return SchemaMember{}, declaration.Table{}, fmt.Errorf("target table %s is not present", ref.Symbol)
 }
 
 func writeIndex(sql *strings.Builder, member SchemaMember, table declaration.Table, index declaration.Index) {

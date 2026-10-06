@@ -31,6 +31,9 @@ The `postgres.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
 rejects cross-Resource foreign keys before any backend operation.
+`postgres.CompileMigrations` lowers immutable migration operations into
+planner-validated SQL artifacts with logical and compiled digests, predecessor
+identity, compiler identity, and PostgreSQL backend identity.
 The `analyzer` package statically discovers directive-bound declaration roots
 from a caller-supplied, module-relative source snapshot. It type-checks the
 snapshot without executing package initialization, accepts only the closed
