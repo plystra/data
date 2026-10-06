@@ -74,11 +74,12 @@ type QueryMetadata struct {
 }
 
 type manifestEntry struct {
-	Path          string         `json:"path"`
-	Mode          uint32         `json:"mode"`
-	Digest        string         `json:"digest"`
-	OwningMembers []string       `json:"owning_members"`
-	Query         *QueryMetadata `json:"query,omitempty"`
+	Path          string                `json:"path"`
+	Mode          uint32                `json:"mode"`
+	Digest        string                `json:"digest"`
+	OwningMembers []string              `json:"owning_members"`
+	Query         *QueryMetadata        `json:"query,omitempty"`
+	Migration     *migration.Definition `json:"migration,omitempty"`
 }
 
 type EmitOutput struct {
@@ -208,6 +209,10 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 	for _, assignment := range request.Assignments {
 		assignments[assignment.MemberID] = assignment
 	}
+	migrationDefinitions, err := expectedMigrationDefinitions(request)
+	if err != nil {
+		return fmt.Errorf("accepted migration definitions are invalid: %w", err)
+	}
 	seen := map[string]struct{}{}
 	previous := ""
 	for _, artifact := range response.Output.Artifacts {
@@ -241,15 +246,15 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 		if artifact.Compiler != request.Compiler || artifact.FrozenModelDigest != request.FrozenModelDigest {
 			return fmt.Errorf("staged artifact compiler or frozen model mismatch")
 		}
-		if artifact.Migration != nil {
-			definition := artifact.Migration
-			compiler := compilerDigest(request.Compiler)
-			if len(artifact.OwningMembers) != 1 || definition.Identity.Member != artifact.OwningMembers[0] || definition.ArtifactDigest != artifact.Digest || definition.Backend != artifact.Backend || definition.Compiler != compiler {
+		if expected, isMigration := migrationDefinitions[artifact.Path]; isMigration {
+			if artifact.Migration == nil || len(artifact.OwningMembers) != 1 || !jsonEqual(*artifact.Migration, expected) {
 				return fmt.Errorf("staged migration provenance mismatch")
 			}
+		} else if artifact.Migration != nil {
+			return fmt.Errorf("non-migration artifact carries migration metadata")
 		}
 	}
-	if err := validateManifests(request, response.Output.Artifacts); err != nil {
+	if err := validateManifests(request, response.Output.Artifacts, migrationDefinitions); err != nil {
 		return err
 	}
 	payload, err := json.Marshal(response.Output.Artifacts)
@@ -263,7 +268,7 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 	return nil
 }
 
-func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
+func validateManifests(request EmitRequest, artifacts []StagedArtifact, migrationDefinitions map[string]migration.Definition) error {
 	type instanceManifest struct {
 		Schema            string            `json:"schema"`
 		Resource          string            `json:"resource"`
@@ -326,6 +331,13 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 			if _, allowed := expected[resource][artifact.Path]; !allowed {
 				return fmt.Errorf("Resource %s has unexpected staged artifact", resource)
 			}
+			if expectedMigration, migrationArtifact := migrationDefinitions[artifact.Path]; migrationArtifact {
+				if artifact.Migration == nil || !jsonEqual(*artifact.Migration, expectedMigration) || artifact.Query != nil {
+					return fmt.Errorf("Resource %s has invalid migration artifact metadata", resource)
+				}
+			} else if artifact.Migration != nil {
+				return fmt.Errorf("Resource %s has migration metadata on a non-migration artifact", resource)
+			}
 			if owner, queryArtifact := queryOwners[artifact.Path]; queryArtifact {
 				if len(artifact.OwningMembers) != 1 || artifact.OwningMembers[0] != owner || artifact.Migration != nil || artifact.Query == nil || !reflect.DeepEqual(*artifact.Query, queryMetadata[artifact.Path]) {
 					return fmt.Errorf("Resource %s has invalid query artifact ownership or metadata", resource)
@@ -340,7 +352,7 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 			if artifact.Path == "generated/data/"+resource+"/schema/schema.sql" {
 				schemaArtifact = artifact
 			}
-			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query})
+			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query, Migration: artifact.Migration})
 		}
 		if manifestArtifact == nil || schemaArtifact == nil || !reflect.DeepEqual(manifestArtifact.OwningMembers, owners[resource]) || !reflect.DeepEqual(schemaArtifact.OwningMembers, owners[resource]) || manifestArtifact.Migration != nil || schemaArtifact.Migration != nil {
 			return fmt.Errorf("Resource %s has invalid schema or manifest ownership", resource)
@@ -349,7 +361,7 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 		if err := decodeRequest(manifestArtifact.Bytes, &manifest); err != nil {
 			return fmt.Errorf("invalid staged manifest: %w", err)
 		}
-		if manifest.Schema != "plystra.data-instance-manifest/v1" || manifest.Resource != resource || manifest.ResourceContract != manifestArtifact.ResourceContract || manifest.Provider != manifestArtifact.Provider || manifest.Backend != manifestArtifact.Backend || manifest.Compiler != request.Compiler || manifest.AnalyzeDigest != request.AnalyzeDigest || manifest.InputDigest != request.InputDigest || manifest.FrozenModelDigest != request.FrozenModelDigest || !reflect.DeepEqual(manifest.Artifacts, entries) {
+		if manifest.Schema != "plystra.data-instance-manifest/v1" || manifest.Resource != resource || manifest.ResourceContract != manifestArtifact.ResourceContract || manifest.Provider != manifestArtifact.Provider || manifest.Backend != manifestArtifact.Backend || manifest.Compiler != request.Compiler || manifest.AnalyzeDigest != request.AnalyzeDigest || manifest.InputDigest != request.InputDigest || manifest.FrozenModelDigest != request.FrozenModelDigest || !jsonEqual(manifest.Artifacts, entries) {
 			return fmt.Errorf("staged manifest provenance or artifact inventory mismatch")
 		}
 		if len(manifest.MemberModels) != len(manifestArtifact.OwningMembers) {
@@ -367,6 +379,64 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 		}
 	}
 	return nil
+}
+
+func expectedMigrationDefinitions(request EmitRequest) (map[string]migration.Definition, error) {
+	assignments := make(map[string]EmitAssignment, len(request.Assignments))
+	membersByResource := map[string][]postgres.SchemaMember{}
+	for _, assignment := range request.Assignments {
+		root, exists := findRoot(request.Analyze.Roots, assignment.MemberID)
+		if !exists {
+			return nil, fmt.Errorf("assignment %s has no accepted member model", assignment.MemberID)
+		}
+		assignments[assignment.MemberID] = assignment
+		membersByResource[assignment.Resource] = append(membersByResource[assignment.Resource], postgres.SchemaMember{
+			MemberID: assignment.MemberID,
+			Resource: assignment.Resource,
+			Model:    root.Model,
+		})
+	}
+	definitions := map[string]migration.Definition{}
+	compiler := compilerDigest(request.Compiler)
+	for resource, members := range membersByResource {
+		if !hasMigrations(members) {
+			continue
+		}
+		compiled, err := postgres.CompileMigrations(members, compiler)
+		if err != nil {
+			return nil, fmt.Errorf("Resource %s: %w", resource, err)
+		}
+		for _, artifact := range compiled {
+			assignment, exists := assignments[artifact.Definition.Identity.Member]
+			if !exists {
+				return nil, fmt.Errorf("migration %s has no active assignment", artifact.Definition.Identity)
+			}
+			path := "generated/data/" + assignment.Resource + "/migrations/" + artifact.Definition.Identity.Member + "/" + artifact.Definition.Identity.Name + ".sql"
+			if _, duplicate := definitions[path]; duplicate {
+				return nil, fmt.Errorf("duplicate accepted migration path %s", path)
+			}
+			definitions[path] = artifact.Definition
+		}
+	}
+	return definitions, nil
+}
+
+func findRoot(roots []analyzer.Root, memberID string) (analyzer.Root, bool) {
+	for _, root := range roots {
+		if root.MemberID == memberID {
+			return root, true
+		}
+	}
+	return analyzer.Root{}, false
+}
+
+func hasMigrations(members []postgres.SchemaMember) bool {
+	for _, member := range members {
+		if len(member.Model.Migrations) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode, error) {
@@ -478,7 +548,7 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 		}
 		entries := make([]manifestEntry, 0, len(artifacts)-start)
 		for _, artifact := range artifacts[start:] {
-			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query})
+			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query, Migration: artifact.Migration})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 		modelDigests := make(map[string]string, len(item.members))
@@ -592,6 +662,12 @@ func metadataForQuery(query declaration.Query) QueryMetadata {
 func digest(domain string, payload []byte) string {
 	sum := sha256.Sum256(append([]byte(domain+"\x00"), payload...))
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func jsonEqual(left, right any) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }
 
 func compilerDigest(identity CompilerIdentity) string {
