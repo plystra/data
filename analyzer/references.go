@@ -102,6 +102,9 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 				a.referenceDiagnostic(root, CodeUnresolvedReference, "Data projection table is not introduced by the query", "Project only columns from the base table or an earlier join.", projectionTable.Symbol)
 				continue
 			}
+			if projection.Aggregate == declaration.AggregateCount && projection.Column == "" {
+				continue
+			}
 			a.validateColumn(root, projectionTarget, projection.Column)
 		}
 		for _, ordering := range query.Ordering {

@@ -322,11 +322,17 @@ func validateQueryResults(owner, tableMember SchemaMember, table declaration.Tab
 		if err != nil {
 			return err
 		}
-		column, exists := columnByID(outputTable, item.Column)
-		if !exists {
-			return fmt.Errorf("result column %s is not present", item.Column)
+		column := declaration.Column{ID: item.Column, Type: itemResultType(item)}
+		if item.Aggregate == "" {
+			var exists bool
+			column, exists = columnByID(outputTable, item.Column)
+			if !exists {
+				return fmt.Errorf("result column %s is not present", item.Column)
+			}
+		} else if item.Aggregate != declaration.AggregateCount {
+			return fmt.Errorf("unsupported aggregate %q", item.Aggregate)
 		}
-		if projectionCanBeNull(query, item.Table) {
+		if item.Aggregate == "" && projectionCanBeNull(query, item.Table) {
 			column.Nullable = true
 		}
 		name := item.Column
@@ -350,6 +356,13 @@ func validateQueryResults(owner, tableMember SchemaMember, table declaration.Tab
 		seen[result.Source] = struct{}{}
 	}
 	return nil
+}
+
+func itemResultType(item declaration.Projection) declaration.ScalarType {
+	if item.Aggregate == declaration.AggregateCount {
+		return declaration.TypeInt64
+	}
+	return ""
 }
 
 func projectionCanBeNull(query declaration.Query, ref declaration.Ref) bool {
@@ -392,6 +405,9 @@ func selectColumnsQualified(table declaration.Table, projection []declaration.Pr
 	}
 	columns := make([]string, len(projection))
 	for index, item := range projection {
+		if item.Aggregate != "" {
+			return "", fmt.Errorf("aggregate projection is not valid for mutation output")
+		}
 		if !hasColumn(table, item.Column) {
 			return "", fmt.Errorf("projection column %s is not present", item.Column)
 		}
@@ -417,14 +433,28 @@ func selectQueryColumns(query declaration.Query, aliases map[declaration.Ref]joi
 		if !exists {
 			return "", fmt.Errorf("projection table %s is not introduced", tableRef.Symbol)
 		}
-		if !hasColumn(introduced.table, item.Column) {
+		if item.Aggregate != declaration.AggregateCount && !hasColumn(introduced.table, item.Column) {
 			return "", fmt.Errorf("projection column %s is not present", item.Column)
+		}
+		if item.Aggregate == declaration.AggregateCount && item.Column != "" && !hasColumn(introduced.table, item.Column) {
+			return "", fmt.Errorf("projection column %s is not present", item.Column)
+		}
+		if item.Aggregate != "" && item.Aggregate != declaration.AggregateCount {
+			return "", fmt.Errorf("unsupported aggregate %q", item.Aggregate)
 		}
 		qualifier := baseQualifier
 		if len(query.Joins) != 0 {
 			qualifier = quoteIdentifier(introduced.alias) + "."
 		}
-		columns[index] = qualifier + quoteIdentifier(item.Column)
+		if item.Aggregate == declaration.AggregateCount {
+			argument := "*"
+			if item.Column != "" {
+				argument = qualifier + quoteIdentifier(item.Column)
+			}
+			columns[index] = "COUNT(" + argument + ")"
+		} else {
+			columns[index] = qualifier + quoteIdentifier(item.Column)
+		}
 		if item.Alias != "" {
 			columns[index] += " AS " + quoteIdentifier(item.Alias)
 		}

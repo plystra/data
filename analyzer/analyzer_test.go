@@ -206,6 +206,33 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeDecodesCountProjection(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}},
+	Queries: []declaration.Query{{
+		ID: "count-users", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		Projection: []declaration.Projection{{Aggregate: "count", Alias: "total"}},
+		Results: []declaration.ResultField{{ID: "total", Source: "total", Type: "int64"}},
+	}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || len(result.Diagnostics) != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	query := result.Roots[0].Model.Queries[0]
+	if len(query.Projection) != 1 || query.Projection[0].Aggregate != declaration.AggregateCount || query.Projection[0].Alias != "total" || query.Results[0].Type != declaration.TypeInt64 {
+		t.Fatalf("decoded count query = %#v", query)
+	}
+}
+
 func TestAnalyzeRejectsInvalidJoinReferences(t *testing.T) {
 	source := `package model
 
@@ -573,7 +600,7 @@ const JoinLeft JoinKind = "left"
 type JoinCondition struct { Left ColumnRef; Right ColumnRef }
 type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
 type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Projection []Projection; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
-type Projection struct { Table Ref; Column string; Alias string }
+type Projection struct { Table Ref; Column string; Alias string; Aggregate string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string
 type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }

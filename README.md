@@ -46,8 +46,12 @@ ordering may explicitly name the base table or an already introduced join
 table; the SQL lowerer uses stable aliases and qualifies those columns
 deterministically. Predicates may compare columns from the base or an already
 introduced join table, or compare an introduced column with a typed value;
-aggregate and conflict/upsert intent remain unsupported. Queries without joins
-retain their existing SQL bytes.
+the closed `COUNT` aggregate may project `*` or an introduced column with an
+explicit alias and one required non-null `int64` result mapping. COUNT is a
+single-output SELECT with no ordinary projection, aggregate ordering, limit,
+or offset. `COUNT(column)` ignores NULL values, including unmatched LEFT JOIN
+rows; `COUNT(*)` counts joined rows. Other aggregates and conflict/upsert intent
+remain unsupported. Queries without joins retain their existing SQL bytes.
 `postgres.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.

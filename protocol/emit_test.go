@@ -191,6 +191,70 @@ func TestEmitIncludesTypedReturningMutation(t *testing.T) {
 	}
 }
 
+func TestEmitIncludesCountQueryArtifactAndStableMetadata(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Queries = []declaration.Query{{
+		ID: "count-accounts", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+		Projection: []declaration.Projection{{Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
+		Results:    []declaration.ResultField{{ID: "total", Source: "total", Type: declaration.TypeInt64}},
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
+		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
+	})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+
+	response := protocol.HandleEmit(request)
+	second := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded || second.Status != protocol.StatusSucceeded {
+		t.Fatalf("responses = %#v, %#v", response, second)
+	}
+	if response.OutputDigest == "" || response.OutputDigest != second.OutputDigest || !reflect.DeepEqual(response.Output.Artifacts, second.Output.Artifacts) {
+		t.Fatalf("count output is not deterministic: first=%#v second=%#v", response, second)
+	}
+	var query protocol.StagedArtifact
+	for _, artifact := range response.Output.Artifacts {
+		if artifact.Query != nil && artifact.Query.ID == "count-accounts" {
+			query = artifact
+			break
+		}
+	}
+	wantSQL := `SELECT COUNT("id") AS "total" FROM "accounts"."accounts";`
+	if query.Path == "" || !bytes.Contains(query.Bytes, []byte(wantSQL)) || query.Query == nil ||
+		!reflect.DeepEqual(query.Query.Results, []declaration.ResultField{{ID: "total", Source: "total", Type: declaration.TypeInt64}}) {
+		t.Fatalf("count query artifact = %#v", query)
+	}
+	var manifest struct {
+		Artifacts []struct {
+			Path  string                  `json:"path"`
+			Query *protocol.QueryMetadata `json:"query"`
+		} `json:"artifacts"`
+	}
+	for _, artifact := range response.Output.Artifacts {
+		if strings.HasSuffix(artifact.Path, "/manifest.json") {
+			if err := json.Unmarshal(artifact.Bytes, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	var manifestQuery *protocol.QueryMetadata
+	for _, entry := range manifest.Artifacts {
+		if entry.Path == query.Path {
+			manifestQuery = entry.Query
+			break
+		}
+	}
+	if !reflect.DeepEqual(manifestQuery, query.Query) {
+		t.Fatalf("manifest count metadata = %#v, query metadata = %#v", manifestQuery, query.Query)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEmitIncludesJoinedSelect(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model

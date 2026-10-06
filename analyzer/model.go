@@ -702,6 +702,13 @@ func (d modelDecoder) projections(value ast.Expr) ([]declaration.Projection, err
 				return nil, err
 			}
 		}
+		if field, ok := fields["Aggregate"]; ok {
+			value, valueErr := d.string(field)
+			if valueErr != nil {
+				return nil, valueErr
+			}
+			item.Aggregate = declaration.AggregateKind(value)
+		}
 		result[index] = item
 	}
 	return result, nil

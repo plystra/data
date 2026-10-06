@@ -58,6 +58,73 @@ func TestCompileQueriesIsDeterministicAndLowersSelectIntent(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersCountProjection(t *testing.T) {
+	member := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts",
+			Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+			Queries: []declaration.Query{
+				{
+					ID: "count-users", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+					Projection: []declaration.Projection{{Aggregate: declaration.AggregateCount, Alias: "total"}},
+					Results:    []declaration.ResultField{{ID: "total", Source: "total", Type: declaration.TypeInt64}},
+				},
+				{
+					ID: "count-user-ids", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+					Projection: []declaration.Projection{{Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
+					Results:    []declaration.ResultField{{ID: "total", Source: "total", Type: declaration.TypeInt64}},
+				},
+			},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("count artifacts = %#v", artifacts)
+	}
+	want := map[string]string{
+		"count-users":    `SELECT COUNT(*) AS "total" FROM "accounts"."users";`,
+		"count-user-ids": `SELECT COUNT("id") AS "total" FROM "accounts"."users";`,
+	}
+	for _, artifact := range artifacts {
+		name := strings.TrimSuffix(strings.TrimPrefix(artifact.Path, "queries/accounts.user/v1/"), ".sql")
+		if !strings.Contains(artifact.SQL, want[name]) {
+			t.Fatalf("count SQL = %#v, want %q", artifact, want[name])
+		}
+	}
+}
+
+func TestCompileQueriesCountsNullableJoinedColumn(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Symbol: "teams"}
+	member := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts",
+		Tables: []declaration.Table{
+			{ID: "users", Columns: []declaration.Column{{ID: "team-id", Type: declaration.TypeInt64}}},
+			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}},
+		},
+		Queries: []declaration.Query{{
+			ID: "count-teams", Operation: declaration.OperationSelect, Table: users,
+			Joins: []declaration.Join{{Kind: declaration.JoinLeft, Table: teams, On: declaration.JoinCondition{
+				Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"},
+			}}},
+			Projection: []declaration.Projection{{Table: teams, Column: "id", Aggregate: declaration.AggregateCount, Alias: "total"}},
+			Results:    []declaration.ResultField{{ID: "total", Source: "total", Type: declaration.TypeInt64}},
+		}},
+	}}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `SELECT COUNT("t1"."id") AS "total" FROM "accounts"."users" AS "t0" LEFT JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id";`
+	if len(artifacts) != 1 || !strings.Contains(artifacts[0].SQL, want) || artifacts[0].Results[0].Nullable {
+		t.Fatalf("joined count artifacts = %#v, want %q", artifacts, want)
+	}
+}
+
 func TestCompileQueriesSupportsTypedMutationIntent(t *testing.T) {
 	base := postgres.SchemaMember{
 		MemberID: "accounts.user/v1", Resource: "database.primary",

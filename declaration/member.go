@@ -206,10 +206,17 @@ type Join struct {
 	On    JoinCondition `json:"on"`
 }
 
+type AggregateKind string
+
+const (
+	AggregateCount AggregateKind = "count"
+)
+
 type Projection struct {
-	Table  Ref    `json:"table,omitempty"`
-	Column string `json:"column"`
-	Alias  string `json:"alias,omitempty"`
+	Table     Ref           `json:"table,omitempty"`
+	Column    string        `json:"column,omitempty"`
+	Alias     string        `json:"alias,omitempty"`
+	Aggregate AggregateKind `json:"aggregate,omitempty"`
 }
 
 // ResultField maps one named query output to a typed result field.
@@ -668,8 +675,45 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 	if len(query.Returning) != 0 && len(query.Results) == 0 || len(query.Results) != 0 && (len(outputs) == 0 || len(query.Results) != len(outputs)) {
 		return fmt.Errorf("%w: query result mapping", ErrInvalidSchema)
 	}
+	aggregateOutputs := 0
 	for _, projection := range outputs {
-		if !validSymbol(projection.Column) || projection.Alias != "" && !validSymbol(projection.Alias) {
+		if projection.Aggregate != "" {
+			aggregateOutputs++
+		}
+	}
+	if aggregateOutputs != 0 && (aggregateOutputs != 1 || len(outputs) != 1) {
+		return fmt.Errorf("%w: aggregate query projection", ErrUnsupported)
+	}
+	if aggregateOutputs != 0 && len(query.Results) != 1 {
+		return fmt.Errorf("%w: aggregate query result mapping", ErrInvalidSchema)
+	}
+	if aggregateOutputs != 0 {
+		result := query.Results[0]
+		projection := outputs[0]
+		if result.Source != projection.Alias || result.Type != TypeInt64 || result.Nullable {
+			return fmt.Errorf("%w: aggregate query result type", ErrInvalidSchema)
+		}
+	}
+	if aggregateOutputs != 0 && (len(query.Ordering) != 0 || query.HasLimit || query.HasOffset) {
+		return fmt.Errorf("%w: aggregate query modifiers", ErrUnsupported)
+	}
+	for _, projection := range outputs {
+		if projection.Aggregate == "" {
+			if !validSymbol(projection.Column) {
+				return fmt.Errorf("%w: query projection %q", ErrInvalidSchema, projection.Column)
+			}
+		} else {
+			if query.Operation != OperationSelect || projection.Aggregate != AggregateCount {
+				return fmt.Errorf("%w: query aggregate %q", ErrUnsupported, projection.Aggregate)
+			}
+			if projection.Column != "" && !validSymbol(projection.Column) {
+				return fmt.Errorf("%w: query aggregate column %q", ErrInvalidSchema, projection.Column)
+			}
+			if projection.Alias == "" {
+				return fmt.Errorf("%w: aggregate projection alias", ErrInvalidSchema)
+			}
+		}
+		if projection.Alias != "" && !validSymbol(projection.Alias) {
 			return fmt.Errorf("%w: query projection %q", ErrInvalidSchema, projection.Column)
 		}
 		if projection.Table.Member != "" || projection.Table.Symbol != "" {

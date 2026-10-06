@@ -172,6 +172,56 @@ func TestNormalizeQueryReturningResults(t *testing.T) {
 	}
 }
 
+func TestNormalizeCountProjection(t *testing.T) {
+	member := declaration.Member[access]{
+		Namespace: "authn",
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{
+			ID: "count-accounts", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+			Projection: []declaration.Projection{{Aggregate: declaration.AggregateCount, Alias: "total"}},
+			Results:    []declaration.ResultField{{ID: "total", Source: "total", Type: declaration.TypeInt64}},
+		}},
+	}
+	if _, err := member.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Query)
+		want error
+	}{
+		{"missing alias", func(query *declaration.Query) { query.Projection[0].Alias = "" }, declaration.ErrInvalidSchema},
+		{"missing result", func(query *declaration.Query) { query.Results = nil }, declaration.ErrInvalidSchema},
+		{"wrong result type", func(query *declaration.Query) { query.Results[0].Type = declaration.TypeString }, declaration.ErrInvalidSchema},
+		{"nullable result", func(query *declaration.Query) { query.Results[0].Nullable = true }, declaration.ErrInvalidSchema},
+		{"unsupported aggregate", func(query *declaration.Query) { query.Projection[0].Aggregate = "sum" }, declaration.ErrUnsupported},
+		{"mixed projection", func(query *declaration.Query) {
+			query.Projection = append(query.Projection, declaration.Projection{Column: "id"})
+			query.Results = append(query.Results, declaration.ResultField{ID: "id", Source: "id", Type: declaration.TypeInt64})
+		}, declaration.ErrUnsupported},
+		{"aggregate modifiers", func(query *declaration.Query) { query.HasLimit = true; query.Limit = 1 }, declaration.ErrUnsupported},
+		{"mutation aggregate", func(query *declaration.Query) {
+			query.Operation = declaration.OperationInsert
+			query.Projection = nil
+			query.Returning = append([]declaration.Projection(nil), query.Returning...)
+			if len(query.Returning) == 0 {
+				query.Returning = []declaration.Projection{{Aggregate: declaration.AggregateCount, Alias: "total"}}
+			}
+		}, declaration.ErrUnsupported},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := member
+			changed.Queries = append([]declaration.Query(nil), member.Queries...)
+			changed.Queries[0].Projection = append([]declaration.Projection(nil), member.Queries[0].Projection...)
+			changed.Queries[0].Results = append([]declaration.ResultField(nil), member.Queries[0].Results...)
+			test.edit(&changed.Queries[0])
+			if _, err := changed.Normalize(); !errors.Is(err, test.want) {
+				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeClonesQueryResultSlices(t *testing.T) {
 	member := declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts"}}, Queries: []declaration.Query{{
 		ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
