@@ -86,11 +86,35 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 			continue
 		}
 		a.validateJoinReferences(root, query, target, symbols)
+		introduced := map[declaration.Ref]declaration.Table{query.Table: target}
+		for _, join := range query.Joins {
+			if joined, joinedOK := a.resolveTable(root, join.Table, symbols); joinedOK {
+				introduced[join.Table] = joined
+			}
+		}
 		for _, projection := range query.Projection {
-			a.validateColumn(root, target, projection.Column)
+			projectionTable := projection.Table
+			if projectionTable.Member == "" && projectionTable.Symbol == "" {
+				projectionTable = query.Table
+			}
+			projectionTarget, exists := introduced[projectionTable]
+			if !exists {
+				a.referenceDiagnostic(root, CodeUnresolvedReference, "Data projection table is not introduced by the query", "Project only columns from the base table or an earlier join.", projectionTable.Symbol)
+				continue
+			}
+			a.validateColumn(root, projectionTarget, projection.Column)
 		}
 		for _, ordering := range query.Ordering {
-			a.validateColumn(root, target, ordering.Column)
+			orderingTable := ordering.Table
+			if orderingTable.Member == "" && orderingTable.Symbol == "" {
+				orderingTable = query.Table
+			}
+			orderingTarget, exists := introduced[orderingTable]
+			if !exists {
+				a.referenceDiagnostic(root, CodeUnresolvedReference, "Data ordering table is not introduced by the query", "Order only by columns from the base table or an earlier join.", orderingTable.Symbol)
+				continue
+			}
+			a.validateColumn(root, orderingTarget, ordering.Column)
 		}
 		a.validatePredicate(root, target, query.Predicate)
 	}

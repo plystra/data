@@ -99,7 +99,7 @@ type queryParameter struct {
 }
 
 func compileQuery(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, byID map[string]SchemaMember) (string, error) {
-	if err := validateQueryResults(table, query); err != nil {
+	if err := validateQueryResults(owner, tableMember, table, query, byID); err != nil {
 		return "", err
 	}
 	parameters := make(map[string]queryParameter, len(query.Parameters))
@@ -127,15 +127,16 @@ func queryHeader(member SchemaMember, query declaration.Query, operation string)
 func compileSelect(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter, byID map[string]SchemaMember) (string, error) {
 	qualifier := ""
 	joins := ""
+	aliases := map[declaration.Ref]joinedTable{query.Table: {table: table}}
 	var err error
 	if len(query.Joins) != 0 {
 		qualifier = quoteIdentifier("t0") + "."
-		joins, err = joinSQL(owner, table, query, byID)
+		joins, aliases, err = joinSQL(owner, table, query, byID)
 		if err != nil {
 			return "", err
 		}
 	}
-	columns, err := selectColumnsQualified(table, query.Projection, qualifier)
+	columns, err := selectQueryColumns(query, aliases, query.Projection, qualifier)
 	if err != nil {
 		return "", err
 	}
@@ -157,14 +158,22 @@ func compileSelect(owner, tableMember SchemaMember, table declaration.Table, que
 	if len(query.Ordering) != 0 {
 		ordering := make([]string, len(query.Ordering))
 		for index, item := range query.Ordering {
-			if !hasColumn(table, item.Column) {
+			orderingTable := query.Table
+			if item.Table.Member != "" || item.Table.Symbol != "" {
+				orderingTable = item.Table
+			}
+			introduced, exists := aliases[orderingTable]
+			if !exists {
+				return "", fmt.Errorf("ordering table %s is not introduced", orderingTable.Symbol)
+			}
+			if !hasColumn(introduced.table, item.Column) {
 				return "", fmt.Errorf("ordering column %s is not present", item.Column)
 			}
 			direction := "ASC"
 			if item.Direction == declaration.OrderingDescending {
 				direction = "DESC"
 			}
-			ordering[index] = qualifier + quoteIdentifier(item.Column) + " " + direction
+			ordering[index] = columnSQL(introduced.alias, item.Column) + " " + direction
 		}
 		sql.WriteString(" ORDER BY ")
 		sql.WriteString(strings.Join(ordering, ", "))
@@ -184,46 +193,46 @@ type joinedTable struct {
 	table declaration.Table
 }
 
-func joinSQL(owner SchemaMember, baseTable declaration.Table, query declaration.Query, byID map[string]SchemaMember) (string, error) {
+func joinSQL(owner SchemaMember, baseTable declaration.Table, query declaration.Query, byID map[string]SchemaMember) (string, map[declaration.Ref]joinedTable, error) {
 	introduced := map[declaration.Ref]joinedTable{query.Table: {alias: "t0", table: baseTable}}
 	var sql strings.Builder
 	for index, join := range query.Joins {
 		member, table, err := resolveSchemaTable(owner, join.Table, byID)
 		if err != nil {
-			return "", fmt.Errorf("join table %s: %w", join.Table.Symbol, err)
+			return "", nil, fmt.Errorf("join table %s: %w", join.Table.Symbol, err)
 		}
 		if _, exists := introduced[join.Table]; exists {
-			return "", fmt.Errorf("duplicate join table %s", join.Table.Symbol)
+			return "", nil, fmt.Errorf("duplicate join table %s", join.Table.Symbol)
 		}
 		left, exists := introduced[join.On.Left.Table]
 		if !exists {
-			return "", fmt.Errorf("join left table %s is not introduced", join.On.Left.Table.Symbol)
+			return "", nil, fmt.Errorf("join left table %s is not introduced", join.On.Left.Table.Symbol)
 		}
 		if join.On.Right.Table != join.Table {
-			return "", fmt.Errorf("join right table does not match %s", join.Table.Symbol)
+			return "", nil, fmt.Errorf("join right table does not match %s", join.Table.Symbol)
 		}
 		leftColumn, exists := columnByID(left.table, join.On.Left.Column)
 		if !exists {
-			return "", fmt.Errorf("join left column %s is not present", join.On.Left.Column)
+			return "", nil, fmt.Errorf("join left column %s is not present", join.On.Left.Column)
 		}
 		rightColumn, exists := columnByID(table, join.On.Right.Column)
 		if !exists {
-			return "", fmt.Errorf("join right column %s is not present", join.On.Right.Column)
+			return "", nil, fmt.Errorf("join right column %s is not present", join.On.Right.Column)
 		}
 		if leftColumn.Type != rightColumn.Type {
-			return "", fmt.Errorf("join column types do not match: %s and %s", leftColumn.ID, rightColumn.ID)
+			return "", nil, fmt.Errorf("join column types do not match: %s and %s", leftColumn.ID, rightColumn.ID)
 		}
 		kind := "INNER"
 		if join.Kind == declaration.JoinLeft {
 			kind = "LEFT"
 		} else if join.Kind != declaration.JoinInner {
-			return "", fmt.Errorf("unsupported join kind %q", join.Kind)
+			return "", nil, fmt.Errorf("unsupported join kind %q", join.Kind)
 		}
 		alias := "t" + strconv.Itoa(index+1)
 		fmt.Fprintf(&sql, " %s JOIN %s.%s AS %s ON %s.%s = %s.%s", kind, quoteIdentifier(member.Model.Namespace), quoteIdentifier(table.ID), quoteIdentifier(alias), quoteIdentifier(left.alias), quoteIdentifier(leftColumn.ID), quoteIdentifier(alias), quoteIdentifier(rightColumn.ID))
 		introduced[join.Table] = joinedTable{alias: alias, table: table}
 	}
-	return sql.String(), nil
+	return sql.String(), introduced, nil
 }
 
 func compileInsert(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, parameters map[string]queryParameter) (string, error) {
@@ -296,7 +305,7 @@ func returningSQL(table declaration.Table, projection []declaration.Projection) 
 	return " RETURNING " + columns, nil
 }
 
-func validateQueryResults(table declaration.Table, query declaration.Query) error {
+func validateQueryResults(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, byID map[string]SchemaMember) error {
 	projection := query.Projection
 	if query.Operation != declaration.OperationSelect {
 		projection = query.Returning
@@ -309,9 +318,16 @@ func validateQueryResults(table declaration.Table, query declaration.Query) erro
 	}
 	outputs := make(map[string]declaration.Column, len(projection))
 	for _, item := range projection {
-		column, exists := columnByID(table, item.Column)
+		outputTable, err := resolveProjectionTable(owner, tableMember, table, query, item.Table, byID)
+		if err != nil {
+			return err
+		}
+		column, exists := columnByID(outputTable, item.Column)
 		if !exists {
 			return fmt.Errorf("result column %s is not present", item.Column)
+		}
+		if projectionCanBeNull(query, item.Table) {
+			column.Nullable = true
 		}
 		name := item.Column
 		if item.Alias != "" {
@@ -336,6 +352,36 @@ func validateQueryResults(table declaration.Table, query declaration.Query) erro
 	return nil
 }
 
+func projectionCanBeNull(query declaration.Query, ref declaration.Ref) bool {
+	if ref.Member == "" && ref.Symbol == "" {
+		return false
+	}
+	for _, join := range query.Joins {
+		if join.Kind == declaration.JoinLeft && join.Table == ref {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveProjectionTable(owner, tableMember SchemaMember, table declaration.Table, query declaration.Query, ref declaration.Ref, byID map[string]SchemaMember) (declaration.Table, error) {
+	if ref.Member == "" && ref.Symbol == "" {
+		return table, nil
+	}
+	introduced := map[declaration.Ref]struct{}{query.Table: {}}
+	for _, join := range query.Joins {
+		introduced[join.Table] = struct{}{}
+	}
+	if _, exists := introduced[ref]; !exists {
+		return declaration.Table{}, fmt.Errorf("projection table %s is not introduced", ref.Symbol)
+	}
+	_, target, err := resolveSchemaTable(owner, ref, byID)
+	if err != nil {
+		return declaration.Table{}, fmt.Errorf("projection table %s: %w", ref.Symbol, err)
+	}
+	return target, nil
+}
+
 func selectColumns(table declaration.Table, projection []declaration.Projection) (string, error) {
 	return selectColumnsQualified(table, projection, "")
 }
@@ -355,6 +401,42 @@ func selectColumnsQualified(table declaration.Table, projection []declaration.Pr
 		}
 	}
 	return strings.Join(columns, ", "), nil
+}
+
+func selectQueryColumns(query declaration.Query, aliases map[declaration.Ref]joinedTable, projection []declaration.Projection, baseQualifier string) (string, error) {
+	if len(projection) == 0 {
+		return baseQualifier + "*", nil
+	}
+	columns := make([]string, len(projection))
+	for index, item := range projection {
+		tableRef := query.Table
+		if item.Table.Member != "" || item.Table.Symbol != "" {
+			tableRef = item.Table
+		}
+		introduced, exists := aliases[tableRef]
+		if !exists {
+			return "", fmt.Errorf("projection table %s is not introduced", tableRef.Symbol)
+		}
+		if !hasColumn(introduced.table, item.Column) {
+			return "", fmt.Errorf("projection column %s is not present", item.Column)
+		}
+		qualifier := baseQualifier
+		if len(query.Joins) != 0 {
+			qualifier = quoteIdentifier(introduced.alias) + "."
+		}
+		columns[index] = qualifier + quoteIdentifier(item.Column)
+		if item.Alias != "" {
+			columns[index] += " AS " + quoteIdentifier(item.Alias)
+		}
+	}
+	return strings.Join(columns, ", "), nil
+}
+
+func columnSQL(alias, column string) string {
+	if alias == "" {
+		return quoteIdentifier(column)
+	}
+	return quoteIdentifier(alias) + "." + quoteIdentifier(column)
 }
 
 func predicateSQL(predicate declaration.Predicate, table declaration.Table, parameters map[string]queryParameter, qualifier string) (string, error) {

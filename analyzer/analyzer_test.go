@@ -187,6 +187,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 				Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "teams"}, Column: "id"},
 			},
 		}},
+		Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "team-id"}},
 	}},
 }`))
 	if err != nil {
@@ -196,7 +197,8 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		t.Fatalf("result = %#v", result)
 	}
 	joins := result.Roots[0].Model.Queries[0].Joins
-	if len(joins) != 1 || joins[0].Kind != "left" || joins[0].On.Left.Column != "team-id" || joins[0].On.Right.Table.Symbol != "teams" {
+	query := result.Roots[0].Model.Queries[0]
+	if len(joins) != 1 || joins[0].Kind != "left" || joins[0].On.Left.Column != "team-id" || joins[0].On.Right.Table.Symbol != "teams" || query.Projection[0].Table.Symbol != "teams" {
 		t.Fatalf("decoded joins = %#v", joins)
 	}
 }
@@ -568,12 +570,12 @@ const JoinLeft JoinKind = "left"
 type JoinCondition struct { Left ColumnRef; Right ColumnRef }
 type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
 type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Projection []Projection; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
-type Projection struct { Column string; Alias string }
+type Projection struct { Table Ref; Column string; Alias string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string
 type Predicate struct { Kind PredicateKind; Left string; Right string; Value Value; Items []Predicate }
 type OrderingDirection string
-type Ordering struct { Column string; Direction OrderingDirection }
+type Ordering struct { Table Ref; Column string; Direction OrderingDirection }
 type Plan struct { ID string; Statements []PlanStatement }
 type PlanStatement struct { ID string; Query Ref; Cardinality Cardinality; Affected AffectedRows }
 type Cardinality string

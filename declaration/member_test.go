@@ -198,6 +198,7 @@ func TestNormalizeJoinsPreservesOrderAndClones(t *testing.T) {
 			{Kind: declaration.JoinInner, Table: teams, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"}}},
 			{Kind: declaration.JoinLeft, Table: departments, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: teams, Column: "department-id"}, Right: declaration.ColumnRef{Table: departments, Column: "id"}}},
 		},
+		Projection: []declaration.Projection{{Table: teams, Column: "id", Alias: "department-id"}},
 	}}}
 	model, err := member.Normalize()
 	if err != nil {
@@ -205,6 +206,9 @@ func TestNormalizeJoinsPreservesOrderAndClones(t *testing.T) {
 	}
 	if len(model.Queries[0].Joins) != 2 || model.Queries[0].Joins[0].Table != teams || model.Queries[0].Joins[1].Kind != declaration.JoinLeft {
 		t.Fatalf("normalized joins = %#v", model.Queries[0].Joins)
+	}
+	if model.Queries[0].Projection[0].Table != teams {
+		t.Fatalf("normalized projection = %#v", model.Queries[0].Projection)
 	}
 	model.Queries[0].Joins[0].On.Left.Column = "changed"
 	if member.Queries[0].Joins[0].On.Left.Column != "team-id" {
@@ -241,6 +245,9 @@ func TestNormalizeRejectsInvalidJoins(t *testing.T) {
 		{"forward left table", func(query *declaration.Query) { query.Joins[0].On.Left.Table = teams }, declaration.ErrReference},
 		{"wrong right table", func(query *declaration.Query) { query.Joins[0].On.Right.Table = users }, declaration.ErrReference},
 		{"invalid left column", func(query *declaration.Query) { query.Joins[0].On.Left.Column = "Bad" }, declaration.ErrReference},
+		{"unintroduced projection table", func(query *declaration.Query) {
+			query.Projection = []declaration.Projection{{Table: declaration.Ref{Symbol: "missing"}, Column: "id"}}
+		}, declaration.ErrReference},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			query := valid

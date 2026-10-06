@@ -207,6 +207,7 @@ type Join struct {
 }
 
 type Projection struct {
+	Table  Ref    `json:"table,omitempty"`
 	Column string `json:"column"`
 	Alias  string `json:"alias,omitempty"`
 }
@@ -249,6 +250,7 @@ const (
 )
 
 type Ordering struct {
+	Table     Ref               `json:"table,omitempty"`
 	Column    string            `json:"column"`
 	Direction OrderingDirection `json:"direction"`
 }
@@ -670,6 +672,14 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 		if !validSymbol(projection.Column) || projection.Alias != "" && !validSymbol(projection.Alias) {
 			return fmt.Errorf("%w: query projection %q", ErrInvalidSchema, projection.Column)
 		}
+		if projection.Table.Member != "" || projection.Table.Symbol != "" {
+			if err := validateRef(projection.Table, imports); err != nil {
+				return err
+			}
+			if _, exists := introduced[refKey(projection.Table)]; !exists {
+				return fmt.Errorf("%w: query projection table %q", ErrReference, projection.Table.Symbol)
+			}
+		}
 	}
 	if len(query.Results) != 0 {
 		outputNames := make(map[string]struct{}, len(outputs))
@@ -708,6 +718,14 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 	for _, ordering := range query.Ordering {
 		if !validSymbol(ordering.Column) || ordering.Direction != OrderingAscending && ordering.Direction != OrderingDescending {
 			return fmt.Errorf("%w: query ordering %q", ErrInvalidSchema, ordering.Column)
+		}
+		if ordering.Table.Member != "" || ordering.Table.Symbol != "" {
+			if err := validateRef(ordering.Table, imports); err != nil {
+				return err
+			}
+			if _, exists := introduced[refKey(ordering.Table)]; !exists {
+				return fmt.Errorf("%w: query ordering table %q", ErrReference, ordering.Table.Symbol)
+			}
 		}
 	}
 	return nil

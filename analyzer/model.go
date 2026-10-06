@@ -684,6 +684,12 @@ func (d modelDecoder) projections(value ast.Expr) ([]declaration.Projection, err
 			return nil, fieldErr
 		}
 		item := declaration.Projection{}
+		if field, ok := fields["Table"]; ok {
+			item.Table, err = d.ref(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if field, ok := fields["Column"]; ok {
 			item.Column, err = d.string(field)
 			if err != nil {
@@ -809,6 +815,12 @@ func (d modelDecoder) ordering(value ast.Expr) ([]declaration.Ordering, error) {
 			return nil, fieldErr
 		}
 		item := declaration.Ordering{}
+		if field, ok := fields["Table"]; ok {
+			item.Table, err = d.ref(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if field, ok := fields["Column"]; ok {
 			item.Column, err = d.string(field)
 			if err != nil {

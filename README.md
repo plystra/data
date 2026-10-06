@@ -39,10 +39,12 @@ limit, offset, and cross-Resource references are validated before lowering.
 `Query.Joins`. Each join names one table and compares a column on an already
 introduced table with a column on the new table using explicit `ColumnRef`
 values. Joined columns must have matching scalar types, and all referenced
-members must use the same selected database Resource. The SQL lowerer uses
-stable table aliases and qualifies the base table's projections, predicates,
-and ordering; the current projection and result mapping remain limited to the
-base table. Queries without joins retain their existing SQL bytes.
+members must use the same selected database Resource. SELECT projections may
+explicitly name the base table or an already introduced join table; the SQL
+lowerer uses stable aliases and qualifies those columns deterministically.
+Joined predicates and ordering still target only the base table, and aggregate
+and conflict/upsert intent remain unsupported. Queries without joins retain
+their existing SQL bytes.
 `postgres.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.
