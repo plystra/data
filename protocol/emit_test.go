@@ -117,7 +117,7 @@ func TestEmitIncludesTypedMutationQueryArtifact(t *testing.T) {
 		ID: "update-account", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"},
 		Parameters:  []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
 		Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}}},
-		Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+		Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
 	}}
 	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
 		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
@@ -148,7 +148,7 @@ func TestEmitIncludesTypedReturningMutation(t *testing.T) {
 	model := request.Analyze.Roots[0].Model
 	model.Queries = []declaration.Query{{
 		ID: "delete-account", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "accounts"},
-		Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Int64(1)},
+		Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(1)},
 		Returning: []declaration.Projection{{Column: "id", Alias: "account-id"}},
 		Results:   []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}},
 	}}

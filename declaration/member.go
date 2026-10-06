@@ -236,8 +236,8 @@ const (
 
 type Predicate struct {
 	Kind  PredicateKind `json:"kind"`
-	Left  string        `json:"left,omitempty"`
-	Right string        `json:"right,omitempty"`
+	Left  ColumnRef     `json:"left,omitempty"`
+	Right ColumnRef     `json:"right,omitempty"`
 	Value Value         `json:"value,omitempty"`
 	Items []Predicate   `json:"items,omitempty"`
 }
@@ -712,7 +712,7 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 			}
 		}
 	}
-	if err := validatePredicate(query.Predicate, imports, parameters, 0); err != nil {
+	if err := validatePredicate(query.Predicate, imports, parameters, introduced, query.Table, 0); err != nil {
 		return err
 	}
 	for _, ordering := range query.Ordering {
@@ -762,7 +762,7 @@ func validatePlan(plan Plan, imports map[string]struct{}, queries map[string]str
 	return nil
 }
 
-func validatePredicate(predicate Predicate, imports map[string]struct{}, parameters map[string]ScalarType, depth int) error {
+func validatePredicate(predicate Predicate, imports map[string]struct{}, parameters map[string]ScalarType, introduced map[string]struct{}, base Ref, depth int) error {
 	if predicate.Kind == "" {
 		return nil
 	}
@@ -771,23 +771,30 @@ func validatePredicate(predicate Predicate, imports map[string]struct{}, paramet
 	}
 	switch predicate.Kind {
 	case PredicateEqual, PredicateNotEqual, PredicateLess, PredicateLessEqual, PredicateGreater, PredicateGreaterEqual:
-		if !validSymbol(predicate.Left) {
-			return fmt.Errorf("%w: predicate column %q", ErrReference, predicate.Left)
+		if err := validatePredicateColumn(predicate.Left, imports, introduced, base); err != nil {
+			return err
 		}
-		if !predicate.Value.Set {
-			return fmt.Errorf("%w: predicate value is missing", ErrInvalidSchema)
+		rightSet := predicateColumnSet(predicate.Right)
+		if rightSet == predicate.Value.Set {
+			return fmt.Errorf("%w: predicate requires exactly one right operand", ErrInvalidSchema)
+		}
+		if rightSet {
+			return validatePredicateColumn(predicate.Right, imports, introduced, base)
 		}
 		return validateQueryValue(predicate.Value, parameters)
 	case PredicateIsNull:
-		if !validSymbol(predicate.Left) {
-			return fmt.Errorf("%w: predicate column %q", ErrReference, predicate.Left)
+		if err := validatePredicateColumn(predicate.Left, imports, introduced, base); err != nil {
+			return err
+		}
+		if predicateColumnSet(predicate.Right) || predicate.Value.Set {
+			return fmt.Errorf("%w: null predicate has an operand", ErrInvalidSchema)
 		}
 	case PredicateAnd, PredicateOr:
 		if len(predicate.Items) < 2 {
 			return fmt.Errorf("%w: predicate requires two items", ErrInvalidSchema)
 		}
 		for _, item := range predicate.Items {
-			if err := validatePredicate(item, imports, parameters, depth+1); err != nil {
+			if err := validatePredicate(item, imports, parameters, introduced, base, depth+1); err != nil {
 				return err
 			}
 		}
@@ -795,6 +802,26 @@ func validatePredicate(predicate Predicate, imports map[string]struct{}, paramet
 		return fmt.Errorf("%w: predicate %q", ErrUnsupported, predicate.Kind)
 	}
 	return nil
+}
+
+func validatePredicateColumn(ref ColumnRef, imports map[string]struct{}, introduced map[string]struct{}, base Ref) error {
+	if ref.Table.Member == "" && ref.Table.Symbol == "" {
+		ref.Table = base
+	}
+	if err := validateRef(ref.Table, imports); err != nil {
+		return err
+	}
+	if _, exists := introduced[refKey(ref.Table)]; !exists {
+		return fmt.Errorf("%w: predicate table %q", ErrReference, ref.Table.Symbol)
+	}
+	if !validSymbol(ref.Column) {
+		return fmt.Errorf("%w: predicate column %q", ErrReference, ref.Column)
+	}
+	return nil
+}
+
+func predicateColumnSet(ref ColumnRef) bool {
+	return ref.Table.Member != "" || ref.Table.Symbol != "" || ref.Column != ""
 }
 
 func validateValue(value Value) error {

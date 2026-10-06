@@ -762,13 +762,13 @@ func (d modelDecoder) predicate(value ast.Expr) (declaration.Predicate, error) {
 		result.Kind = declaration.PredicateKind(kind)
 	}
 	if field, ok := fields["Left"]; ok {
-		result.Left, err = d.string(field)
+		result.Left, err = d.columnRef(field)
 		if err != nil {
 			return declaration.Predicate{}, err
 		}
 	}
 	if field, ok := fields["Right"]; ok {
-		result.Right, err = d.string(field)
+		result.Right, err = d.columnRef(field)
 		if err != nil {
 			return declaration.Predicate{}, err
 		}

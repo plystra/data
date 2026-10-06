@@ -148,7 +148,7 @@ func compileSelect(owner, tableMember SchemaMember, table declaration.Table, que
 		sql.WriteString(joins)
 	}
 	if query.Predicate.Kind != "" {
-		predicate, err := predicateSQL(query.Predicate, table, parameters, qualifier)
+		predicate, err := predicateSQL(query.Predicate, query.Table, aliases, parameters)
 		if err != nil {
 			return "", err
 		}
@@ -268,7 +268,7 @@ func compileUpdate(owner, tableMember SchemaMember, table declaration.Table, que
 		}
 		values[index] = quoteIdentifier(assignment.Column) + " = " + value
 	}
-	predicate, err := predicateSQL(query.Predicate, table, parameters, "")
+	predicate, err := predicateSQL(query.Predicate, query.Table, map[declaration.Ref]joinedTable{query.Table: {table: table}}, parameters)
 	if err != nil {
 		return "", err
 	}
@@ -283,7 +283,7 @@ func compileDelete(owner, tableMember SchemaMember, table declaration.Table, que
 	if query.Predicate.Kind == "" {
 		return "", fmt.Errorf("delete query requires a predicate")
 	}
-	predicate, err := predicateSQL(query.Predicate, table, parameters, "")
+	predicate, err := predicateSQL(query.Predicate, query.Table, map[declaration.Ref]joinedTable{query.Table: {table: table}}, parameters)
 	if err != nil {
 		return "", err
 	}
@@ -439,21 +439,34 @@ func columnSQL(alias, column string) string {
 	return quoteIdentifier(alias) + "." + quoteIdentifier(column)
 }
 
-func predicateSQL(predicate declaration.Predicate, table declaration.Table, parameters map[string]queryParameter, qualifier string) (string, error) {
+func predicateSQL(predicate declaration.Predicate, base declaration.Ref, aliases map[declaration.Ref]joinedTable, parameters map[string]queryParameter) (string, error) {
 	switch predicate.Kind {
 	case declaration.PredicateEqual, declaration.PredicateNotEqual,
 		declaration.PredicateLess, declaration.PredicateLessEqual,
 		declaration.PredicateGreater, declaration.PredicateGreaterEqual:
-		column, exists := columnByID(table, predicate.Left)
-		if !exists {
-			return "", fmt.Errorf("predicate column %s is not present", predicate.Left)
-		}
-		if !predicate.Value.Set {
-			return "", fmt.Errorf("predicate value for %s is not set", predicate.Left)
-		}
-		value, err := queryValueSQL(table, column.ID, predicate.Value, parameters)
+		left, column, err := resolvePredicateColumn(predicate.Left, base, aliases)
 		if err != nil {
 			return "", err
+		}
+		var right string
+		if predicateColumnSet(predicate.Right) {
+			rightTable, rightColumn, rightErr := resolvePredicateColumn(predicate.Right, base, aliases)
+			if rightErr != nil {
+				return "", rightErr
+			}
+			if column.Type != rightColumn.Type {
+				return "", fmt.Errorf("predicate column types do not match: %s and %s", column.ID, rightColumn.ID)
+			}
+			right = columnSQL(rightTable.alias, rightColumn.ID)
+		} else {
+			if !predicate.Value.Set {
+				return "", fmt.Errorf("predicate value for %s is not set", column.ID)
+			}
+			var valueErr error
+			right, valueErr = queryValueSQL(left.table, column.ID, predicate.Value, parameters)
+			if valueErr != nil {
+				return "", valueErr
+			}
 		}
 		operator := map[declaration.PredicateKind]string{
 			declaration.PredicateEqual:        "=",
@@ -463,12 +476,13 @@ func predicateSQL(predicate declaration.Predicate, table declaration.Table, para
 			declaration.PredicateGreater:      ">",
 			declaration.PredicateGreaterEqual: ">=",
 		}[predicate.Kind]
-		return qualifier + quoteIdentifier(column.ID) + " " + operator + " " + value, nil
+		return columnSQL(left.alias, column.ID) + " " + operator + " " + right, nil
 	case declaration.PredicateIsNull:
-		if !hasColumn(table, predicate.Left) {
-			return "", fmt.Errorf("predicate column %s is not present", predicate.Left)
+		left, column, err := resolvePredicateColumn(predicate.Left, base, aliases)
+		if err != nil {
+			return "", err
 		}
-		return qualifier + quoteIdentifier(predicate.Left) + " IS NULL", nil
+		return columnSQL(left.alias, column.ID) + " IS NULL", nil
 	case declaration.PredicateAnd, declaration.PredicateOr:
 		parts := make([]string, len(predicate.Items))
 		joiner := " AND "
@@ -476,7 +490,7 @@ func predicateSQL(predicate declaration.Predicate, table declaration.Table, para
 			joiner = " OR "
 		}
 		for index, item := range predicate.Items {
-			part, err := predicateSQL(item, table, parameters, qualifier)
+			part, err := predicateSQL(item, base, aliases, parameters)
 			if err != nil {
 				return "", err
 			}
@@ -486,6 +500,25 @@ func predicateSQL(predicate declaration.Predicate, table declaration.Table, para
 	default:
 		return "", fmt.Errorf("unsupported predicate %q", predicate.Kind)
 	}
+}
+
+func predicateColumnSet(ref declaration.ColumnRef) bool {
+	return ref.Table.Member != "" || ref.Table.Symbol != "" || ref.Column != ""
+}
+
+func resolvePredicateColumn(ref declaration.ColumnRef, base declaration.Ref, aliases map[declaration.Ref]joinedTable) (joinedTable, declaration.Column, error) {
+	if ref.Table.Member == "" && ref.Table.Symbol == "" {
+		ref.Table = base
+	}
+	table, exists := aliases[ref.Table]
+	if !exists {
+		return joinedTable{}, declaration.Column{}, fmt.Errorf("predicate table %s is not introduced", ref.Table.Symbol)
+	}
+	column, exists := columnByID(table.table, ref.Column)
+	if !exists {
+		return joinedTable{}, declaration.Column{}, fmt.Errorf("predicate column %s is not present", ref.Column)
+	}
+	return table, column, nil
 }
 
 func assignmentSQL(table declaration.Table, assignments []declaration.Assignment, parameters map[string]queryParameter) (string, string, error) {

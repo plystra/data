@@ -21,7 +21,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 		Queries: []declaration.Query{{
 			ID: "delete-account", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "accounts"},
 			Parameters: []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
-			Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+			Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
 			Returning:  []declaration.Projection{{Column: "id", Alias: "account-id"}},
 			Results:    []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}},
 		}},

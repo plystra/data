@@ -32,9 +32,11 @@ database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
 rejects cross-Resource foreign keys before any backend operation.
 `postgres.CompileQueries` emits deterministic SQL for `SELECT`, `INSERT`,
-`UPDATE`, and `DELETE` intent. Query predicates and assignments accept only
-declared typed parameters or closed literal values; projections, ordering,
-limit, offset, and cross-Resource references are validated before lowering.
+`UPDATE`, and `DELETE` intent. Query predicate operands use explicit
+`ColumnRef` values and accept either an introduced column or a declared typed
+parameter/literal; assignments accept only declared typed parameters or closed
+literal values. Projections, ordering, limit, offset, and cross-Resource
+references are validated before lowering.
 `SELECT` queries can declare ordered `INNER` and `LEFT` equality joins through
 `Query.Joins`. Each join names one table and compares a column on an already
 introduced table with a column on the new table using explicit `ColumnRef`
@@ -42,9 +44,10 @@ values. Joined columns must have matching scalar types, and all referenced
 members must use the same selected database Resource. SELECT projections and
 ordering may explicitly name the base table or an already introduced join
 table; the SQL lowerer uses stable aliases and qualifies those columns
-deterministically. Joined predicates still target only the base table, and aggregate
-and conflict/upsert intent remain unsupported. Queries without joins retain
-their existing SQL bytes.
+deterministically. Predicates may compare columns from the base or an already
+introduced join table, or compare an introduced column with a typed value;
+aggregate and conflict/upsert intent remain unsupported. Queries without joins
+retain their existing SQL bytes.
 `postgres.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.

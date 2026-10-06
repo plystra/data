@@ -116,7 +116,7 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 			}
 			a.validateColumn(root, orderingTarget, ordering.Column)
 		}
-		a.validatePredicate(root, target, query.Predicate)
+		a.validatePredicate(root, query.Table, query.Predicate, introduced)
 	}
 	for _, plan := range root.Model.Plans {
 		for _, statement := range plan.Statements {
@@ -244,18 +244,28 @@ func (a *analysis) validateColumn(root Root, table declaration.Table, column str
 	a.referenceDiagnostic(root, CodeUnresolvedReference, "Data reference does not name a column in the target table", "Use a declared column from the referenced table.", column)
 }
 
-func (a *analysis) validatePredicate(root Root, table declaration.Table, predicate declaration.Predicate) {
+func (a *analysis) validatePredicate(root Root, base declaration.Ref, predicate declaration.Predicate, introduced map[declaration.Ref]declaration.Table) {
 	if predicate.Kind == "" {
 		return
 	}
-	if predicate.Left != "" {
-		a.validateColumn(root, table, predicate.Left)
+	validate := func(ref declaration.ColumnRef) {
+		if ref.Column == "" && ref.Table.Member == "" && ref.Table.Symbol == "" {
+			return
+		}
+		if ref.Table.Member == "" && ref.Table.Symbol == "" {
+			ref.Table = base
+		}
+		table, exists := introduced[ref.Table]
+		if !exists {
+			a.referenceDiagnostic(root, CodeUnresolvedReference, "Data predicate table is not introduced by the query", "Filter only columns from the base table or an earlier join.", ref.Table.Symbol)
+			return
+		}
+		a.validateColumn(root, table, ref.Column)
 	}
-	if predicate.Right != "" {
-		a.validateColumn(root, table, predicate.Right)
-	}
+	validate(predicate.Left)
+	validate(predicate.Right)
 	for _, item := range predicate.Items {
-		a.validatePredicate(root, table, item)
+		a.validatePredicate(root, base, item, introduced)
 	}
 }
 

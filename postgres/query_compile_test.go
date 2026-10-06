@@ -32,8 +32,8 @@ func TestCompileQueriesIsDeterministicAndLowersSelectIntent(t *testing.T) {
 					{Column: "email", Alias: "address"},
 				},
 				Predicate: declaration.Predicate{Kind: declaration.PredicateAnd, Items: []declaration.Predicate{
-					{Kind: declaration.PredicateEqual, Left: "active", Value: declaration.Bool(true)},
-					{Kind: declaration.PredicateGreater, Left: "id", Value: declaration.Int64(10)},
+					{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "active"}, Value: declaration.Bool(true)},
+					{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(10)},
 				}},
 				Ordering: []declaration.Ordering{{Column: "email", Direction: declaration.OrderingAscending}},
 				Limit:    25, HasLimit: true, Offset: 5, HasOffset: true,
@@ -78,12 +78,12 @@ func TestCompileQueriesSupportsTypedMutationIntent(t *testing.T) {
 			ID: "update", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "users"},
 			Parameters:  []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
 			Assignments: []declaration.Assignment{{Column: "email", Value: declaration.String("updated")}},
-			Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+			Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
 		},
 		{
 			ID: "delete", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "users"},
 			Parameters: []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
-			Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+			Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
 		},
 	}
 	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{base})
@@ -122,13 +122,13 @@ func TestCompileQueriesLowersTypedReturningAndResultMapping(t *testing.T) {
 				{
 					ID: "update-user", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "users"},
 					Assignments: []declaration.Assignment{{Column: "email", Value: declaration.String("updated")}},
-					Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Int64(1)},
+					Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(1)},
 					Returning:   []declaration.Projection{{Column: "email"}},
 					Results:     []declaration.ResultField{{ID: "email", Source: "email", Type: declaration.TypeString, Nullable: true}},
 				},
 				{
 					ID: "delete-user", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "users"},
-					Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Int64(1)},
+					Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(1)},
 					Returning: []declaration.Projection{{Column: "id"}},
 					Results:   []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
 				},
@@ -193,7 +193,7 @@ func TestCompileQueriesRejectsInvalidIntent(t *testing.T) {
 		want  string
 	}{
 		{name: "unknown projection", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Projection: []declaration.Projection{{Column: "missing"}}}, want: "projection column missing"},
-		{name: "unknown predicate", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Predicate: declaration.Predicate{Kind: declaration.PredicateIsNull, Left: "missing"}}, want: "predicate column missing"},
+		{name: "unknown predicate", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Predicate: declaration.Predicate{Kind: declaration.PredicateIsNull, Left: declaration.ColumnRef{Column: "missing"}}}, want: "predicate column missing"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			base.Model.Queries = []declaration.Query{test.query}
@@ -242,7 +242,10 @@ func TestCompileQueriesLowersQualifiedJoinsAndOwnerHeader(t *testing.T) {
 				},
 				Projection: []declaration.Projection{{Table: users, Column: "id", Alias: "user-id"}, {Table: regions, Column: "id", Alias: "region-id"}},
 				Results:    []declaration.ResultField{{ID: "id", Source: "user-id", Type: declaration.TypeInt64}, {ID: "region", Source: "region-id", Type: declaration.TypeInt64, Nullable: true}},
-				Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: "active", Value: declaration.Bool(true)},
+				Predicate: declaration.Predicate{Kind: declaration.PredicateAnd, Items: []declaration.Predicate{
+					{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "active"}, Value: declaration.Bool(true)},
+					{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Table: teams, Column: "region-id"}, Right: declaration.ColumnRef{Table: regions, Column: "id"}},
+				}},
 				Ordering: []declaration.Ordering{
 					{Column: "id", Direction: declaration.OrderingAscending},
 					{Table: regions, Column: "id", Direction: declaration.OrderingDescending},
@@ -269,7 +272,7 @@ func TestCompileQueriesLowersQualifiedJoinsAndOwnerHeader(t *testing.T) {
 		switch artifact.Path {
 		case "queries/accounts.user/v1/joined-users.sql":
 			want := "-- plystra.data.postgres-query/v1 accounts.user/v1#joined-users\n" +
-				`SELECT "t0"."id" AS "user-id", "t2"."id" AS "region-id" FROM "accounts"."users" AS "t0" INNER JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id" LEFT JOIN "geo"."regions" AS "t2" ON "t1"."region-id" = "t2"."id" WHERE "t0"."active" = TRUE ORDER BY "t0"."id" ASC, "t2"."id" DESC;` + "\n"
+				`SELECT "t0"."id" AS "user-id", "t2"."id" AS "region-id" FROM "accounts"."users" AS "t0" INNER JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id" LEFT JOIN "geo"."regions" AS "t2" ON "t1"."region-id" = "t2"."id" WHERE ("t0"."active" = TRUE) AND ("t1"."region-id" = "t2"."id") ORDER BY "t0"."id" ASC, "t2"."id" DESC;` + "\n"
 			if artifact.SQL != want {
 				t.Fatalf("joined SQL = %q, want %q", artifact.SQL, want)
 			}
@@ -281,6 +284,53 @@ func TestCompileQueriesLowersQualifiedJoinsAndOwnerHeader(t *testing.T) {
 		default:
 			t.Fatalf("unexpected artifact %#v", artifact)
 		}
+	}
+}
+
+func TestCompileQueriesRejectsInvalidJoinedPredicateReferences(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Symbol: "teams"}
+	base := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts",
+		Tables: []declaration.Table{
+			{ID: "users", Columns: []declaration.Column{{ID: "team-id", Type: declaration.TypeInt64}}},
+			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "other-id", Type: declaration.TypeString}}},
+		},
+	}}
+	for _, test := range []struct {
+		name string
+		edit func(*postgres.SchemaMember, *declaration.Predicate)
+		want string
+	}{
+		{name: "missing table", edit: func(_ *postgres.SchemaMember, predicate *declaration.Predicate) {
+			predicate.Left = declaration.ColumnRef{Table: declaration.Ref{Symbol: "missing"}, Column: "id"}
+		}, want: `predicate table "missing"`},
+		{name: "missing column", edit: func(_ *postgres.SchemaMember, predicate *declaration.Predicate) {
+			predicate.Left = declaration.ColumnRef{Table: teams, Column: "missing"}
+		}, want: "predicate column missing is not present"},
+		{name: "mismatched columns", edit: func(member *postgres.SchemaMember, predicate *declaration.Predicate) {
+			predicate.Value = declaration.Value{}
+			predicate.Left = declaration.ColumnRef{Table: teams, Column: "other-id"}
+			predicate.Right = declaration.ColumnRef{Table: users, Column: "team-id"}
+		}, want: "predicate column types do not match"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			member := base
+			member.Model.Tables = append([]declaration.Table(nil), base.Model.Tables...)
+			predicate := declaration.Predicate{Kind: declaration.PredicateEqual, Value: declaration.Int64(1)}
+			test.edit(&member, &predicate)
+			member.Model.Queries = []declaration.Query{{
+				ID: "read", Operation: declaration.OperationSelect, Table: users,
+				Joins: []declaration.Join{{Kind: declaration.JoinInner, Table: teams, On: declaration.JoinCondition{
+					Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"},
+				}}},
+				Predicate: predicate,
+			}}
+			_, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+			if !errors.Is(err, postgres.ErrQueryCompilation) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

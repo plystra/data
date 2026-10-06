@@ -124,7 +124,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 			{ID: "email", Type: "string"}, {ID: "user-id", Type: "int64"},
 		},
 		Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: "string", Set: true, Parameter: "email"}}},
-		Predicate: declaration.Predicate{Kind: "equal", Left: "id", Value: declaration.Value{Kind: "int64", Set: true, Parameter: "user-id"}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Parameter: "user-id"}},
 	}},
 }`))
 	if err != nil {
@@ -151,7 +151,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	Queries: []declaration.Query{{
 		ID: "update-email", Operation: "update", Table: declaration.Ref{Symbol: "users"},
 		Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: "string", Set: true, String: "updated"}}},
-		Predicate: declaration.Predicate{Kind: "equal", Left: "id", Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
 		Returning: []declaration.Projection{{Column: "id", Alias: "user-id"}, {Column: "email"}},
 		Results: []declaration.ResultField{{ID: "id", Source: "user-id", Type: "int64"}, {ID: "email", Source: "email", Type: "string", Nullable: true}},
 	}},
@@ -189,6 +189,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 			},
 		}},
 		Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "team-id"}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "teams"}, Column: "id"}, Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "team-id"}},
 		Ordering: []declaration.Ordering{{Table: declaration.Ref{Symbol: "teams"}, Column: "id", Direction: "desc"}},
 	}},
 }`))
@@ -200,7 +201,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 	joins := result.Roots[0].Model.Queries[0].Joins
 	query := result.Roots[0].Model.Queries[0]
-	if len(joins) != 1 || joins[0].Kind != "left" || joins[0].On.Left.Column != "team-id" || joins[0].On.Right.Table.Symbol != "teams" || query.Projection[0].Table.Symbol != "teams" || len(query.Ordering) != 1 || query.Ordering[0].Table.Symbol != "teams" || query.Ordering[0].Direction != declaration.OrderingDescending {
+	if len(joins) != 1 || joins[0].Kind != "left" || joins[0].On.Left.Column != "team-id" || joins[0].On.Right.Table.Symbol != "teams" || query.Projection[0].Table.Symbol != "teams" || query.Predicate.Left.Table.Symbol != "teams" || query.Predicate.Left.Column != "id" || query.Predicate.Right.Table.Symbol != "users" || query.Predicate.Right.Column != "team-id" || len(query.Ordering) != 1 || query.Ordering[0].Table.Symbol != "teams" || query.Ordering[0].Direction != declaration.OrderingDescending {
 		t.Fatalf("decoded joins = %#v", joins)
 	}
 }
@@ -259,7 +260,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	Tables: []declaration.Table{{ID: "users"}},
 	Queries: []declaration.Query{{
 		ID: "delete-user", Operation: "delete", Table: declaration.Ref{Symbol: "users"},
-		Predicate: declaration.Predicate{Kind: "equal", Left: "id", Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
 		Returning: []declaration.Projection{{Column: "id"}},
 	}},
 }`))
@@ -575,7 +576,7 @@ type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join;
 type Projection struct { Table Ref; Column string; Alias string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string
-type Predicate struct { Kind PredicateKind; Left string; Right string; Value Value; Items []Predicate }
+type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }
 type OrderingDirection string
 type Ordering struct { Table Ref; Column string; Direction OrderingDirection }
 type Plan struct { ID string; Statements []PlanStatement }

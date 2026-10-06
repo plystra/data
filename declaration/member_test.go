@@ -58,7 +58,7 @@ func TestNormalizeRejectsInvalidAndHiddenReferences(t *testing.T) {
 		{name: "unimported reference", member: declaration.Member[access]{Namespace: "authn", Queries: []declaration.Query{{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Member: "authz.persistence/v1", Symbol: "accounts"}}}}, want: declaration.ErrReference},
 		{name: "unresolved local reference", member: declaration.Member[access]{Namespace: "authn", Queries: []declaration.Query{{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}}}}, want: declaration.ErrReference},
 		{name: "invalid symbol", member: declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "bad--symbol"}}}, want: declaration.ErrInvalidID},
-		{name: "unsupported predicate", member: declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts"}}, Queries: []declaration.Query{{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}, Predicate: declaration.Predicate{Kind: "contains", Left: "email"}}}}, want: declaration.ErrUnsupported},
+		{name: "unsupported predicate", member: declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts"}}, Queries: []declaration.Query{{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}, Predicate: declaration.Predicate{Kind: "contains", Left: declaration.ColumnRef{Column: "email"}}}}}, want: declaration.ErrUnsupported},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -89,7 +89,7 @@ func TestNormalizeQueryParametersAndAssignments(t *testing.T) {
 		ID: "update", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"},
 		Parameters:  []declaration.Parameter{{ID: "z-id", Type: declaration.TypeInt64}, {ID: "a-email", Type: declaration.TypeString}},
 		Assignments: []declaration.Assignment{{Column: "z-column", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "a-email"}}, {Column: "a-column", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "a-email"}}},
-		Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "z-id"}},
+		Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "z-id"}},
 	}}}
 	model, err := member.Normalize()
 	if err != nil {
@@ -128,7 +128,7 @@ func TestNormalizeQueryReturningResults(t *testing.T) {
 		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}}}},
 		Queries: []declaration.Query{
 			{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}, Projection: []declaration.Projection{{Column: "id", Alias: "account-id"}, {Column: "email"}}, Results: []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}, {ID: "email", Source: "email", Type: declaration.TypeString, Nullable: true}}},
-			{ID: "update", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"}, Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, String: "new"}}}, Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Int64: 1}}, Returning: []declaration.Projection{{Column: "id", Alias: "account-id"}}, Results: []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}}},
+			{ID: "update", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"}, Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, String: "new"}}}, Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Int64: 1}}, Returning: []declaration.Projection{{Column: "id", Alias: "account-id"}}, Results: []declaration.ResultField{{ID: "id", Source: "account-id", Type: declaration.TypeInt64}}},
 		},
 	}
 	model, err := member.Normalize()
@@ -248,6 +248,12 @@ func TestNormalizeRejectsInvalidJoins(t *testing.T) {
 		{"unintroduced projection table", func(query *declaration.Query) {
 			query.Projection = []declaration.Projection{{Table: declaration.Ref{Symbol: "missing"}, Column: "id"}}
 		}, declaration.ErrReference},
+		{"unintroduced predicate table", func(query *declaration.Query) {
+			query.Predicate = declaration.Predicate{Kind: declaration.PredicateIsNull, Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "missing"}, Column: "id"}}
+		}, declaration.ErrReference},
+		{"predicate has two right operands", func(query *declaration.Query) {
+			query.Predicate = declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"}, Value: declaration.Int64(1)}
+		}, declaration.ErrInvalidSchema},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			query := valid
