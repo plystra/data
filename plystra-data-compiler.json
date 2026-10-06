@@ -1,0 +1,18 @@
+{
+  "schema": "plystra.data-compiler-distribution/v1",
+  "module_path": "github.com/plystra/data",
+  "command_import_path": "github.com/plystra/data/cmd/plystra-data-compiler",
+  "analyze_protocol": "plystra.data-analyze/v1",
+  "emit_protocol": "plystra.data-emit/v1",
+  "declaration_language": "plystra.data-declaration/v1",
+  "limits": {
+    "max_roots": 1024,
+    "max_nodes": 65536,
+    "max_imports": 1024,
+    "max_nesting": 64,
+    "max_symbol_bytes": 128,
+    "max_diagnostics": 256,
+    "max_diagnostic_bytes": 262144,
+    "max_frame_bytes": 16777216
+  }
+}

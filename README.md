@@ -27,8 +27,21 @@ typed `Member[Access]` roots, tables, columns, constraints, indexes, queries,
 atomic plans, migrations, and explicit references. `Normalize` validates the
 closed model and returns a stable sorted copy; `Digest` binds that normalized
 logical model without including the access Resource value or runtime secrets.
-The package is Data-owned and has no dependency on Core CLI implementation
-packages.
+The `analyzer` package statically discovers directive-bound declaration roots
+from a caller-supplied, module-relative source snapshot. It type-checks the
+snapshot without executing package initialization, accepts only the closed
+literal grammar, records deterministic source provenance, validates discovered
+Resource or `NoAccess` types, and returns bounded structured diagnostics. It
+does not read the host filesystem, import the Core CLI, or write generated
+artifacts. The packages are Data-owned and have no dependency on Core CLI
+implementation packages.
+
+The `protocol` package and `cmd/plystra-data-compiler` provide the bounded
+`plystra.data-analyze/v1` phase. Requests carry an exact compiler identity,
+Go build context, limits, input digest, and self-contained source snapshot;
+responses contain only roots, provenance, diagnostics, and output digests.
+The command writes no generated files and emits no non-protocol stdout. The
+distribution contract is recorded in `plystra-data-compiler.json`.
 
 ## Module
 
