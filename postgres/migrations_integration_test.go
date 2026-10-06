@@ -10,6 +10,7 @@ import (
 
 	"github.com/plystra/data/migration"
 	"github.com/plystra/data/postgres"
+	"github.com/plystra/data/postgres/compiler"
 	"github.com/plystra/kernel/configuration"
 )
 
@@ -49,7 +50,7 @@ func TestPostgresMigrationPlanApplyAndReplan(t *testing.T) {
 		Identity:       migration.Identity{Member: "tasks.data/v1", Name: "probe"},
 		Version:        1,
 		LogicalDigest:  "logical:probe",
-		ArtifactDigest: postgres.DigestSQL(sql),
+		ArtifactDigest: compiler.DigestSQL(sql),
 		Compiler:       "compiler/v1",
 		Backend:        "postgres/v1",
 	}

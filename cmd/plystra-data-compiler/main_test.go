@@ -86,3 +86,20 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 		t.Fatal("compiler wrote files in the project directory")
 	}
 }
+
+func TestCompilerCommandDoesNotDependOnCorePackages(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "list", "-deps", ".")
+	command.Env = append(os.Environ(), "GOWORK=off")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("list compiler dependencies: %v", err)
+	}
+	for _, path := range strings.Fields(string(output)) {
+		if path == "github.com/plystra/kernel" || strings.HasPrefix(path, "github.com/plystra/kernel/") ||
+			path == "github.com/plystra/cli" || strings.HasPrefix(path, "github.com/plystra/cli/") {
+			t.Fatalf("compiler depends on Core package %q", path)
+		}
+	}
+}

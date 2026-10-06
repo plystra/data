@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/plystra/data/postgres"
+	postgres "github.com/plystra/data/postgres/compiler"
 )
 
 func TestDigestSQLIsStableAndContentBound(t *testing.T) {

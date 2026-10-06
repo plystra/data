@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/plystra/data/migration"
+	"github.com/plystra/data/postgres/compiler"
 )
 
 var (
@@ -19,19 +20,8 @@ var (
 	ErrPlanChanged       = errors.New("migration plan changed")
 )
 
-// Artifact pairs one immutable migration definition with its selected
-// PostgreSQL SQL artifact. The artifact digest must be DigestSQL(SQL).
-type Artifact struct {
-	Definition migration.Definition
-	SQL        string
-}
-
-// DigestSQL returns the stable digest used to bind a migration artifact to
-// the immutable definition supplied to ApplyMigrations.
-func DigestSQL(sql string) string {
-	sum := sha256.Sum256([]byte(sql))
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
+// Artifact is the exact SQL and definition accepted by migration operations.
+type Artifact = compiler.Artifact
 
 // MigrationPlan reads current target identity and migration history without
 // creating or changing schema, then returns the canonical pending plan.
@@ -138,7 +128,7 @@ func (provider *Database) ApplyMigrations(ctx context.Context, compiler, expecte
 func artifactDefinitions(artifacts []Artifact) ([]migration.Definition, error) {
 	definitions := make([]migration.Definition, len(artifacts))
 	for index, artifact := range artifacts {
-		if strings.TrimSpace(artifact.SQL) == "" || artifact.Definition.ArtifactDigest != DigestSQL(artifact.SQL) {
+		if strings.TrimSpace(artifact.SQL) == "" || artifact.Definition.ArtifactDigest != compiler.DigestSQL(artifact.SQL) {
 			return nil, fmt.Errorf("%w: artifact %d", ErrMigrationArtifact, index)
 		}
 		definitions[index] = artifact.Definition

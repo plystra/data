@@ -1,4 +1,4 @@
-package postgres_test
+package compiler_test
 
 import (
 	"errors"
@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/plystra/data/declaration"
-	"github.com/plystra/data/postgres"
+	postgres "github.com/plystra/data/postgres/compiler"
 )
 
 func TestCompileSchemaIsDeterministicAndLowersRelationalIntent(t *testing.T) {

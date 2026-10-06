@@ -1,4 +1,4 @@
-package postgres
+package compiler
 
 import (
 	"encoding/hex"

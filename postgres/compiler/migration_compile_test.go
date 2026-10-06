@@ -1,4 +1,4 @@
-package postgres_test
+package compiler_test
 
 import (
 	"errors"
@@ -7,7 +7,7 @@ import (
 
 	"github.com/plystra/data/declaration"
 	"github.com/plystra/data/migration"
-	"github.com/plystra/data/postgres"
+	postgres "github.com/plystra/data/postgres/compiler"
 )
 
 func TestCompileMigrationsProducesPlannerArtifacts(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"github.com/plystra/data/analyzer"
 	"github.com/plystra/data/declaration"
 	"github.com/plystra/data/migration"
-	"github.com/plystra/data/postgres"
+	postgres "github.com/plystra/data/postgres/compiler"
 	"github.com/plystra/data/protocol"
 )
 

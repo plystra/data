@@ -27,11 +27,11 @@ typed `Member[Access]` roots, tables, columns, constraints, indexes, queries,
 atomic plans, migrations, and explicit references. `Normalize` validates the
 closed model and returns a stable sorted copy; `Digest` binds that normalized
 logical model without including the access Resource value or runtime secrets.
-The `postgres.CompileSchema` lowerer turns normalized models assigned to one
+The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
 rejects cross-Resource foreign keys before any backend operation.
-`postgres.CompileQueries` emits deterministic SQL for `SELECT`, `INSERT`,
+`postgres/compiler.CompileQueries` emits deterministic SQL for `SELECT`, `INSERT`,
 `UPDATE`, and `DELETE` intent. Query predicate operands use explicit
 `ColumnRef` values and accept either an introduced column or a declared typed
 parameter/literal; assignments accept only declared typed parameters or closed
@@ -54,7 +54,7 @@ rows; `COUNT(*)` counts joined rows. Other aggregates and conflict/upsert intent
 remain unsupported. `COUNT(*)` cannot name a table; count an introduced column
 to exclude unmatched LEFT JOIN rows. Queries without joins retain their existing
 SQL bytes.
-`postgres.CompileMigrations` lowers immutable migration operations into
+`postgres/compiler.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.
 Mutation queries may additionally declare explicit `Returning` projections and
@@ -76,6 +76,11 @@ and returns bounded structured diagnostics. It
 does not read the host filesystem, import the Core CLI, or write generated
 artifacts. The packages are Data-owned and have no dependency on Core CLI
 implementation packages.
+
+The pure `postgres/compiler` package owns SQL lowering and does not import the
+runtime `postgres` provider. The public compiler command's build dependency
+closure excludes Kernel and CLI; the runtime `postgres.New` provider remains a
+separate consumer of Kernel's Secret contract.
 
 The `protocol` package and `cmd/plystra-data-compiler` provide the bounded
 `plystra.data-analyze/v1` phase. Requests carry an exact compiler identity,
