@@ -194,6 +194,7 @@ func TestNormalizeCountProjection(t *testing.T) {
 		{"missing result", func(query *declaration.Query) { query.Results = nil }, declaration.ErrInvalidSchema},
 		{"wrong result type", func(query *declaration.Query) { query.Results[0].Type = declaration.TypeString }, declaration.ErrInvalidSchema},
 		{"nullable result", func(query *declaration.Query) { query.Results[0].Nullable = true }, declaration.ErrInvalidSchema},
+		{"count star table", func(query *declaration.Query) { query.Projection[0].Table = declaration.Ref{Symbol: "accounts"} }, declaration.ErrInvalidSchema},
 		{"unsupported aggregate", func(query *declaration.Query) { query.Projection[0].Aggregate = "sum" }, declaration.ErrUnsupported},
 		{"mixed projection", func(query *declaration.Query) {
 			query.Projection = append(query.Projection, declaration.Projection{Column: "id"})

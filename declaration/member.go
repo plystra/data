@@ -709,6 +709,9 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 			if projection.Column != "" && !validSymbol(projection.Column) {
 				return fmt.Errorf("%w: query aggregate column %q", ErrInvalidSchema, projection.Column)
 			}
+			if projection.Column == "" && (projection.Table.Member != "" || projection.Table.Symbol != "") {
+				return fmt.Errorf("%w: count star table", ErrInvalidSchema)
+			}
 			if projection.Alias == "" {
 				return fmt.Errorf("%w: aggregate projection alias", ErrInvalidSchema)
 			}

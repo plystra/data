@@ -51,7 +51,9 @@ explicit alias and one required non-null `int64` result mapping. COUNT is a
 single-output SELECT with no ordinary projection, aggregate ordering, limit,
 or offset. `COUNT(column)` ignores NULL values, including unmatched LEFT JOIN
 rows; `COUNT(*)` counts joined rows. Other aggregates and conflict/upsert intent
-remain unsupported. Queries without joins retain their existing SQL bytes.
+remain unsupported. `COUNT(*)` cannot name a table; count an introduced column
+to exclude unmatched LEFT JOIN rows. Queries without joins retain their existing
+SQL bytes.
 `postgres.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.
