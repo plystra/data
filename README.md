@@ -27,6 +27,10 @@ typed `Member[Access]` roots, tables, columns, constraints, indexes, queries,
 atomic plans, migrations, and explicit references. `Normalize` validates the
 closed model and returns a stable sorted copy; `Digest` binds that normalized
 logical model without including the access Resource value or runtime secrets.
+The `postgres.CompileSchema` lowerer turns normalized models assigned to one
+database Resource into deterministic PostgreSQL schema DDL, including scalar
+types, defaults, constraints, indexes, and same-Resource foreign keys; it
+rejects cross-Resource foreign keys before any backend operation.
 The `analyzer` package statically discovers directive-bound declaration roots
 from a caller-supplied, module-relative source snapshot. It type-checks the
 snapshot without executing package initialization, accepts only the closed
