@@ -140,8 +140,64 @@ func TestNormalizeInsertConflictByNamedConstraint(t *testing.T) {
 	}{
 		{"unknown constraint", func(query *declaration.Query) { query.Conflict.Constraint = "missing" }, declaration.ErrReference},
 		{"foreign key", func(query *declaration.Query) { query.Conflict.Constraint = "accounts-fk" }, declaration.ErrReference},
-		{"wrong action", func(query *declaration.Query) { query.Conflict.Action = "do-update" }, declaration.ErrInvalidSchema},
+		{"missing update columns", func(query *declaration.Query) { query.Conflict.Action = declaration.ConflictDoUpdate }, declaration.ErrInvalidSchema},
 		{"select conflict", func(query *declaration.Query) { query.Operation = declaration.OperationSelect }, declaration.ErrInvalidSchema},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := member
+			changed.Queries = append([]declaration.Query(nil), member.Queries...)
+			test.edit(&changed.Queries[0])
+			_, err := changed.Normalize()
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeConflictUpdateColumns(t *testing.T) {
+	member := declaration.Member[access]{
+		Namespace: "authn",
+		Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{
+			{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}, {ID: "name", Type: declaration.TypeString},
+		}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}},
+		Queries: []declaration.Query{{ID: "insert", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "accounts"},
+			Assignments: []declaration.Assignment{{Column: "name", Value: declaration.String("N")}, {Column: "id", Value: declaration.Int64(1)}, {Column: "email", Value: declaration.String("e")}},
+			Conflict:    declaration.Conflict{Constraint: "accounts-pk", Action: declaration.ConflictDoUpdate, UpdateColumns: []string{"name", "email"}},
+		}},
+	}
+	model, err := member.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := model.Queries[0].Conflict.UpdateColumns; len(got) != 2 || got[0] != "email" || got[1] != "name" || member.Queries[0].Conflict.UpdateColumns[0] != "name" {
+		t.Fatalf("normalized update columns = %v", got)
+	}
+	first, err := member.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered := member
+	reordered.Queries = append([]declaration.Query(nil), member.Queries...)
+	reordered.Queries[0].Conflict.UpdateColumns = []string{"email", "name"}
+	second, err := reordered.Digest()
+	if err != nil || first != second {
+		t.Fatalf("equivalent update digests = %q, %q, %v", first, second, err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Query)
+		want error
+	}{
+		{"duplicate", func(query *declaration.Query) { query.Conflict.UpdateColumns = []string{"email", "email"} }, declaration.ErrDuplicate},
+		{"unassigned", func(query *declaration.Query) { query.Conflict.UpdateColumns = []string{"id", "missing"} }, declaration.ErrReference},
+		{"absent target column", func(query *declaration.Query) {
+			query.Assignments = append(query.Assignments, declaration.Assignment{Column: "missing", Value: declaration.String("x")})
+			query.Conflict.UpdateColumns = []string{"missing"}
+		}, declaration.ErrReference},
+		{"empty", func(query *declaration.Query) { query.Conflict.UpdateColumns = nil }, declaration.ErrInvalidSchema},
+		{"do nothing columns", func(query *declaration.Query) { query.Conflict.Action = declaration.ConflictDoNothing }, declaration.ErrInvalidSchema},
+		{"unknown action", func(query *declaration.Query) { query.Conflict.Action = "replace" }, declaration.ErrInvalidSchema},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			changed := member

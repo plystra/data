@@ -658,8 +658,9 @@ func metadataForQuery(query declaration.Query) QueryMetadata {
 		Parameters: append([]declaration.Parameter{}, query.Parameters...),
 		Results:    append([]declaration.ResultField{}, query.Results...),
 	}
-	if query.Conflict.Action != "" || query.Conflict.Constraint != "" {
+	if query.Conflict.Action != "" || query.Conflict.Constraint != "" || len(query.Conflict.UpdateColumns) != 0 {
 		conflict := query.Conflict
+		conflict.UpdateColumns = append([]string(nil), query.Conflict.UpdateColumns...)
 		metadata.Conflict = &conflict
 	}
 	return metadata

@@ -85,8 +85,11 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 		if !ok {
 			continue
 		}
-		if query.Table.Member != "" && (query.Conflict.Constraint != "" || query.Conflict.Action != "") && !hasConflictConstraint(target, query.Conflict.Constraint) {
+		if query.Table.Member != "" && (query.Conflict.Constraint != "" || query.Conflict.Action != "" || len(query.Conflict.UpdateColumns) != 0) && !hasConflictConstraint(target, query.Conflict.Constraint) {
 			a.referenceDiagnostic(root, CodeUnresolvedReference, "Data conflict target is not a primary-key or unique table constraint", "Name a primary-key or unique constraint on the explicitly referenced table.", query.Conflict.Constraint)
+		}
+		for _, column := range query.Conflict.UpdateColumns {
+			a.validateColumn(root, target, column)
 		}
 		a.validateJoinReferences(root, query, target, symbols)
 		introduced := map[declaration.Ref]declaration.Table{query.Table: target}

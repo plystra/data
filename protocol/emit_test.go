@@ -192,6 +192,69 @@ func TestEmitIncludesConflictMetadataForInsert(t *testing.T) {
 	}
 }
 
+func TestEmitConflictUpdateMetadataAndTamperValidation(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Tables[0].Columns = append(model.Tables[0].Columns, declaration.Column{ID: "email", Type: declaration.TypeString})
+	model.Queries = []declaration.Query{{
+		ID: "upsert-account", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "accounts"},
+		Parameters:  []declaration.Parameter{{ID: "email", Type: declaration.TypeString}},
+		Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Int64(1)}, {Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "email"}}},
+		Conflict:    declaration.Conflict{Constraint: "pk-accounts", Action: declaration.ConflictDoUpdate, UpdateColumns: []string{"email"}},
+		Returning:   []declaration.Projection{{Column: "id"}}, Results: []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded {
+		t.Fatalf("response = %#v", response)
+	}
+	var query *protocol.StagedArtifact
+	for index := range response.Output.Artifacts {
+		if strings.HasSuffix(response.Output.Artifacts[index].Path, "/upsert-account.sql") {
+			query = &response.Output.Artifacts[index]
+		}
+	}
+	if query == nil || query.Query == nil || query.Query.Conflict == nil || !reflect.DeepEqual(query.Query.Conflict.UpdateColumns, []string{"email"}) || !bytes.Contains(query.Bytes, []byte(`DO UPDATE SET "email" = EXCLUDED."email" RETURNING "id";`)) {
+		t.Fatalf("upsert artifact = %#v", query)
+	}
+	var manifest struct {
+		Artifacts []struct {
+			Path  string                  `json:"path"`
+			Query *protocol.QueryMetadata `json:"query"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(response.Output.Artifacts[0].Bytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range manifest.Artifacts {
+		if entry.Path == query.Path {
+			found = reflect.DeepEqual(entry.Query, query.Query)
+		}
+	}
+	if !found {
+		t.Fatalf("manifest has no matching upsert metadata: %#v", manifest)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+	query.Query.Conflict.UpdateColumns[0] = "id"
+	manifestArtifact := &response.Output.Artifacts[0]
+	changed := bytes.Replace(manifestArtifact.Bytes, []byte(`"update_columns":["email"]`), []byte(`"update_columns":["id"]`), 1)
+	if bytes.Equal(changed, manifestArtifact.Bytes) {
+		t.Fatal("manifest has no update columns")
+	}
+	manifestArtifact.Bytes = changed
+	manifestArtifact.Digest = postgres.DigestSQL(string(changed))
+	refreshEmitOutputDigest(t, &response)
+	if err := protocol.ValidateEmitResponse(request, response); err == nil {
+		t.Fatal("self-consistent conflict update metadata tamper was accepted")
+	}
+}
+
 func TestEmitIncludesTypedReturningMutation(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model

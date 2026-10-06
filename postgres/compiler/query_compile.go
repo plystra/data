@@ -247,10 +247,7 @@ func compileInsert(owner, tableMember SchemaMember, table declaration.Table, que
 		}
 		fmt.Fprintf(&sql, " (%s) VALUES (%s)", columns, values)
 	}
-	if query.Conflict.Action != "" || query.Conflict.Constraint != "" {
-		if query.Conflict.Action != declaration.ConflictDoNothing {
-			return "", fmt.Errorf("unsupported conflict action %q", query.Conflict.Action)
-		}
+	if query.Conflict.Action != "" || query.Conflict.Constraint != "" || len(query.Conflict.UpdateColumns) != 0 {
 		found := false
 		for _, constraint := range table.Constraints {
 			if constraint.ID == query.Conflict.Constraint && (constraint.Kind == declaration.ConstraintPrimaryKey || constraint.Kind == declaration.ConstraintUnique) {
@@ -261,7 +258,23 @@ func compileInsert(owner, tableMember SchemaMember, table declaration.Table, que
 		if !found {
 			return "", fmt.Errorf("conflict constraint %q is not a primary or unique table constraint", query.Conflict.Constraint)
 		}
-		fmt.Fprintf(&sql, " ON CONFLICT ON CONSTRAINT %s DO NOTHING", quoteIdentifier(query.Conflict.Constraint))
+		fmt.Fprintf(&sql, " ON CONFLICT ON CONSTRAINT %s", quoteIdentifier(query.Conflict.Constraint))
+		switch query.Conflict.Action {
+		case declaration.ConflictDoNothing:
+			sql.WriteString(" DO NOTHING")
+		case declaration.ConflictDoUpdate:
+			updates := make([]string, len(query.Conflict.UpdateColumns))
+			for index, column := range query.Conflict.UpdateColumns {
+				if !hasColumn(table, column) {
+					return "", fmt.Errorf("conflict update column %s is not present", column)
+				}
+				updates[index] = quoteIdentifier(column) + " = EXCLUDED." + quoteIdentifier(column)
+			}
+			sql.WriteString(" DO UPDATE SET ")
+			sql.WriteString(strings.Join(updates, ", "))
+		default:
+			return "", fmt.Errorf("unsupported conflict action %q", query.Conflict.Action)
+		}
 	}
 	returning, err := returningSQL(table, query.Returning)
 	if err != nil {
