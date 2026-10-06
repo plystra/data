@@ -523,12 +523,16 @@ func predicateSQL(predicate declaration.Predicate, base declaration.Ref, aliases
 			declaration.PredicateGreaterEqual: ">=",
 		}[predicate.Kind]
 		return columnSQL(left.alias, column.ID) + " " + operator + " " + right, nil
-	case declaration.PredicateIsNull:
+	case declaration.PredicateIsNull, declaration.PredicateIsNotNull:
 		left, column, err := resolvePredicateColumn(predicate.Left, base, aliases)
 		if err != nil {
 			return "", err
 		}
-		return columnSQL(left.alias, column.ID) + " IS NULL", nil
+		suffix := " IS NULL"
+		if predicate.Kind == declaration.PredicateIsNotNull {
+			suffix = " IS NOT NULL"
+		}
+		return columnSQL(left.alias, column.ID) + suffix, nil
 	case declaration.PredicateAnd, declaration.PredicateOr:
 		parts := make([]string, len(predicate.Items))
 		joiner := " AND "

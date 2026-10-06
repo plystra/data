@@ -184,6 +184,22 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeDecodesNotNullPredicate(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "email", Type: "string", Nullable: true}}}},
+	Queries: []declaration.Query{{ID: "active-users", Operation: "select", Table: declaration.Ref{Symbol: "users"}, Predicate: declaration.Predicate{Kind: "is-not-null", Left: declaration.ColumnRef{Column: "email"}}}},
+}`))
+	if err != nil || !result.Valid || len(result.Diagnostics) != 0 || result.Roots[0].Model.Queries[0].Predicate.Kind != declaration.PredicateIsNotNull {
+		t.Fatalf("decoded not-null predicate = %#v, %v", result, err)
+	}
+}
+
 func TestAnalyzeDecodesSelectJoins(t *testing.T) {
 	result, err := analyzer.Analyze(sourceSnapshot(`package model
 

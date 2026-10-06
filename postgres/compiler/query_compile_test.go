@@ -350,6 +350,28 @@ func TestCompileQueriesRejectsInvalidIntent(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersNotNullPredicate(t *testing.T) {
+	member := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts",
+			Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "email", Type: declaration.TypeString, Nullable: true}}}},
+			Queries: []declaration.Query{{
+				ID: "active-users", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+				Predicate: declaration.Predicate{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "email"}},
+			}},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
+	}
+	want := "-- plystra.data.postgres-query/v1 accounts.user/v1#active-users\nSELECT * FROM \"accounts\".\"users\" WHERE \"email\" IS NOT NULL;\n"
+	if artifacts[0].SQL != want {
+		t.Fatalf("SQL = %q, want %q", artifacts[0].SQL, want)
+	}
+}
+
 func TestCompileQueriesRejectsCrossResourceTable(t *testing.T) {
 	left := postgres.SchemaMember{
 		MemberID: "left.app/v1", Resource: "database.primary",

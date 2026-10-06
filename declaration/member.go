@@ -249,6 +249,7 @@ const (
 	PredicateGreater      PredicateKind = "greater"
 	PredicateGreaterEqual PredicateKind = "greater-equal"
 	PredicateIsNull       PredicateKind = "is-null"
+	PredicateIsNotNull    PredicateKind = "is-not-null"
 	PredicateAnd          PredicateKind = "and"
 	PredicateOr           PredicateKind = "or"
 )
@@ -861,7 +862,7 @@ func validatePredicate(predicate Predicate, imports map[string]struct{}, paramet
 			return validatePredicateColumn(predicate.Right, imports, introduced, base)
 		}
 		return validateQueryValue(predicate.Value, parameters)
-	case PredicateIsNull:
+	case PredicateIsNull, PredicateIsNotNull:
 		if err := validatePredicateColumn(predicate.Left, imports, introduced, base); err != nil {
 			return err
 		}

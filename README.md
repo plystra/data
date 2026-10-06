@@ -35,10 +35,11 @@ rejects cross-Resource foreign keys before any backend operation.
 `UPDATE`, and `DELETE` intent. `INSERT` may target a named local primary-key or
 unique table constraint with PostgreSQL `ON CONFLICT ... DO NOTHING`. Other
 conflict actions, conflict targets, and upsert behavior remain unsupported.
-Query predicate operands use explicit
-`ColumnRef` values and accept either an introduced column or a declared typed
-parameter/literal; assignments accept only declared typed parameters or closed
-literal values. Projections, ordering, limit, offset, and cross-Resource
+Query predicates support comparisons, `IS NULL`, `IS NOT NULL`, `AND`, and `OR`;
+comparison operands use explicit `ColumnRef` values and accept either an
+introduced column or a declared typed parameter/literal. Assignments accept
+only declared typed parameters or closed literal values. Projections, ordering,
+limit, offset, and cross-Resource
 references are validated before lowering.
 `SELECT` queries can declare ordered `INNER` and `LEFT` equality joins through
 `Query.Joins`. Each join names one table and compares a column on an already

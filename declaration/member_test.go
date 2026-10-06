@@ -351,3 +351,17 @@ func TestNormalizeRejectsInvalidJoins(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeAcceptsNotNullPredicate(t *testing.T) {
+	member := declaration.Member[access]{
+		Namespace: "accounts",
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "email", Type: declaration.TypeString, Nullable: true}}}},
+		Queries: []declaration.Query{{
+			ID: "active", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+			Predicate: declaration.Predicate{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "email"}},
+		}},
+	}
+	if _, err := member.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+}
