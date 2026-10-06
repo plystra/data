@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/plystra/data/analyzer"
+	"github.com/plystra/data/declaration"
 )
 
 const resourceID = "data.database/v1"
@@ -188,6 +189,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 			},
 		}},
 		Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "team-id"}},
+		Ordering: []declaration.Ordering{{Table: declaration.Ref{Symbol: "teams"}, Column: "id", Direction: "desc"}},
 	}},
 }`))
 	if err != nil {
@@ -198,7 +200,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 	joins := result.Roots[0].Model.Queries[0].Joins
 	query := result.Roots[0].Model.Queries[0]
-	if len(joins) != 1 || joins[0].Kind != "left" || joins[0].On.Left.Column != "team-id" || joins[0].On.Right.Table.Symbol != "teams" || query.Projection[0].Table.Symbol != "teams" {
+	if len(joins) != 1 || joins[0].Kind != "left" || joins[0].On.Left.Column != "team-id" || joins[0].On.Right.Table.Symbol != "teams" || query.Projection[0].Table.Symbol != "teams" || len(query.Ordering) != 1 || query.Ordering[0].Table.Symbol != "teams" || query.Ordering[0].Direction != declaration.OrderingDescending {
 		t.Fatalf("decoded joins = %#v", joins)
 	}
 }

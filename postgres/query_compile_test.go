@@ -243,7 +243,10 @@ func TestCompileQueriesLowersQualifiedJoinsAndOwnerHeader(t *testing.T) {
 				Projection: []declaration.Projection{{Table: users, Column: "id", Alias: "user-id"}, {Table: regions, Column: "id", Alias: "region-id"}},
 				Results:    []declaration.ResultField{{ID: "id", Source: "user-id", Type: declaration.TypeInt64}, {ID: "region", Source: "region-id", Type: declaration.TypeInt64, Nullable: true}},
 				Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: "active", Value: declaration.Bool(true)},
-				Ordering:   []declaration.Ordering{{Column: "id", Direction: declaration.OrderingAscending}},
+				Ordering: []declaration.Ordering{
+					{Column: "id", Direction: declaration.OrderingAscending},
+					{Table: regions, Column: "id", Direction: declaration.OrderingDescending},
+				},
 			},
 			{ID: "remote-regions", Operation: declaration.OperationSelect, Table: regions, Projection: []declaration.Projection{{Column: "id"}}},
 		},
@@ -266,7 +269,7 @@ func TestCompileQueriesLowersQualifiedJoinsAndOwnerHeader(t *testing.T) {
 		switch artifact.Path {
 		case "queries/accounts.user/v1/joined-users.sql":
 			want := "-- plystra.data.postgres-query/v1 accounts.user/v1#joined-users\n" +
-				`SELECT "t0"."id" AS "user-id", "t2"."id" AS "region-id" FROM "accounts"."users" AS "t0" INNER JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id" LEFT JOIN "geo"."regions" AS "t2" ON "t1"."region-id" = "t2"."id" WHERE "t0"."active" = TRUE ORDER BY "t0"."id" ASC;` + "\n"
+				`SELECT "t0"."id" AS "user-id", "t2"."id" AS "region-id" FROM "accounts"."users" AS "t0" INNER JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id" LEFT JOIN "geo"."regions" AS "t2" ON "t1"."region-id" = "t2"."id" WHERE "t0"."active" = TRUE ORDER BY "t0"."id" ASC, "t2"."id" DESC;` + "\n"
 			if artifact.SQL != want {
 				t.Fatalf("joined SQL = %q, want %q", artifact.SQL, want)
 			}
