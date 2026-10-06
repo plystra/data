@@ -63,24 +63,63 @@ func TestCompileQueriesIsDeterministicAndLowersSelectIntent(t *testing.T) {
 	}
 }
 
-func TestCompileQueriesRejectsInvalidAndUnsupportedIntent(t *testing.T) {
+func TestCompileQueriesSupportsTypedMutationIntent(t *testing.T) {
 	base := postgres.SchemaMember{
 		MemberID: "accounts.user/v1", Resource: "database.primary",
 		Model: declaration.Model{
 			Namespace: "accounts",
-			Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+			Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{
+				{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString},
+			}}},
 		},
 	}
-	tests := []struct {
+	base.Model.Queries = []declaration.Query{
+		{
+			ID: "insert", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"},
+			Parameters:  []declaration.Parameter{{ID: "email", Type: declaration.TypeString}},
+			Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "email"}}},
+		},
+		{
+			ID: "update", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "users"},
+			Parameters:  []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
+			Assignments: []declaration.Assignment{{Column: "email", Value: declaration.String("updated")}},
+			Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+		},
+		{
+			ID: "delete", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "users"},
+			Parameters: []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
+			Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{base})
+	if err != nil || len(artifacts) != 3 {
+		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
+	}
+	joined := artifacts[0].SQL + artifacts[1].SQL + artifacts[2].SQL
+	for _, want := range []string{
+		`INSERT INTO "accounts"."users" ("email") VALUES ($1);`,
+		`UPDATE "accounts"."users" SET "email" = 'updated' WHERE "id" = $1;`,
+		`DELETE FROM "accounts"."users" WHERE "id" = $1;`,
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("SQL missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+func TestCompileQueriesRejectsInvalidIntent(t *testing.T) {
+	base := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{Namespace: "accounts", Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}}},
+	}
+	for _, test := range []struct {
 		name  string
 		query declaration.Query
 		want  string
 	}{
-		{name: "mutation", query: declaration.Query{ID: "update", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "users"}}, want: "typed mutation inputs"},
 		{name: "unknown projection", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Projection: []declaration.Projection{{Column: "missing"}}}, want: "projection column missing"},
 		{name: "unknown predicate", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Predicate: declaration.Predicate{Kind: declaration.PredicateIsNull, Left: "missing"}}, want: "predicate column missing"},
-	}
-	for _, test := range tests {
+	} {
 		t.Run(test.name, func(t *testing.T) {
 			base.Model.Queries = []declaration.Query{test.query}
 			_, err := postgres.CompileQueries([]postgres.SchemaMember{base})

@@ -660,7 +660,7 @@ func (c *literalChecker) check(expr ast.Expr, depth int) {
 		}
 	case *ast.Ident:
 		object := info.Uses[value]
-		if object == nil && (value.Name == "true" || value.Name == "false") {
+		if object == types.Universe.Lookup(value.Name) && (value.Name == "true" || value.Name == "false") {
 			return
 		}
 		constant, ok := object.(*types.Const)
@@ -791,7 +791,7 @@ func allowedElementType(value types.Type) bool {
 
 func allowedDeclarationName(name string) bool {
 	switch name {
-	case "Member", "Table", "Column", "Constraint", "Index", "Query", "Projection", "Predicate", "Ordering", "Plan", "PlanStatement", "AffectedRows", "Migration", "MigrationOperation", "Ref", "Value":
+	case "Member", "Table", "Column", "Constraint", "Index", "Query", "Parameter", "Assignment", "Projection", "Predicate", "Ordering", "Plan", "PlanStatement", "AffectedRows", "Migration", "MigrationOperation", "Ref", "Value":
 		return true
 	default:
 		return false

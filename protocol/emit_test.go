@@ -83,12 +83,26 @@ func TestEmitIncludesOwnedQueryArtifactAndManifestEntry(t *testing.T) {
 	if err := protocol.ValidateEmitResponse(request, response); err != nil {
 		t.Fatal(err)
 	}
+	response.Output.Artifacts = append([]protocol.StagedArtifact(nil), response.Output.Artifacts...)
+	for index := range response.Output.Artifacts {
+		if response.Output.Artifacts[index].Path == query.Path {
+			response.Output.Artifacts[index].OwningMembers = []string{"other.member/v1"}
+		}
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err == nil {
+		t.Fatal("query with an unrelated owner was accepted")
+	}
 }
 
-func TestEmitRejectsUnsupportedMutationQueryWithoutArtifacts(t *testing.T) {
+func TestEmitIncludesTypedMutationQueryArtifact(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model
-	model.Queries = []declaration.Query{{ID: "update-account", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"}}}
+	model.Queries = []declaration.Query{{
+		ID: "update-account", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"},
+		Parameters:  []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
+		Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}}},
+		Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+	}}
 	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
 		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
 	})
@@ -96,7 +110,36 @@ func TestEmitRejectsUnsupportedMutationQueryWithoutArtifacts(t *testing.T) {
 	request.AnalyzeDigest = request.Analyze.Digest
 	refreshEmitDigest(t, &request)
 	response := protocol.HandleEmit(request)
-	if response.Status != protocol.StatusRejected || response.Diagnostics[0].Code != analyzer.CodeEmitBackend || len(response.Output.Artifacts) != 0 {
+	if response.Status != protocol.StatusSucceeded || len(response.Output.Artifacts) != 4 {
+		t.Fatalf("response = %#v", response)
+	}
+	var query protocol.StagedArtifact
+	for _, artifact := range response.Output.Artifacts {
+		if artifact.Path == "generated/data/database.primary/queries/accounts.user/v1/update-account.sql" {
+			query = artifact
+		}
+	}
+	if query.Path == "" || !bytes.Contains(query.Bytes, []byte(`UPDATE "accounts"."accounts" SET "id" = $1 WHERE "id" = $1;`)) || query.Migration != nil {
+		t.Fatalf("query artifact = %#v", query)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEmitRejectsAtomicPlansUntilExecutableArtifactsExist(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Queries = []declaration.Query{{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}}}
+	model.Plans = []declaration.Plan{{ID: "read-plan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read"}, Cardinality: declaration.CardinalityMany}}}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
+		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Plans: model.Plans, Migrations: model.Migrations,
+	})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusRejected || len(response.Output.Artifacts) != 0 || len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != analyzer.CodeEmitBackend {
 		t.Fatalf("response = %#v", response)
 	}
 }

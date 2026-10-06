@@ -80,16 +80,18 @@ const (
 	TypeUUID      ScalarType = "uuid"
 )
 
-// Value is a closed literal value used by defaults and predicates.
+// Value is a closed literal value used by defaults and query expressions. A
+// query value may instead name one declared typed parameter.
 type Value struct {
-	Kind    ScalarType `json:"kind"`
-	Set     bool       `json:"set"`
-	String  string     `json:"string,omitempty"`
-	Int64   int64      `json:"int64,omitempty"`
-	Uint64  uint64     `json:"uint64,omitempty"`
-	Float64 float64    `json:"float64,omitempty"`
-	Bool    bool       `json:"bool,omitempty"`
-	Bytes   string     `json:"bytes,omitempty"`
+	Kind      ScalarType `json:"kind"`
+	Set       bool       `json:"set"`
+	Parameter string     `json:"parameter,omitempty"`
+	String    string     `json:"string,omitempty"`
+	Int64     int64      `json:"int64,omitempty"`
+	Uint64    uint64     `json:"uint64,omitempty"`
+	Float64   float64    `json:"float64,omitempty"`
+	Bool      bool       `json:"bool,omitempty"`
+	Bytes     string     `json:"bytes,omitempty"`
 }
 
 func String(value string) Value   { return Value{Kind: TypeString, Set: true, String: value} }
@@ -98,6 +100,18 @@ func Uint64(value uint64) Value   { return Value{Kind: TypeUint64, Set: true, Ui
 func Float64(value float64) Value { return Value{Kind: TypeFloat64, Set: true, Float64: value} }
 func Bool(value bool) Value       { return Value{Kind: TypeBool, Set: true, Bool: value} }
 func Bytes(value string) Value    { return Value{Kind: TypeBytes, Set: true, Bytes: value} }
+
+// Parameter is one named typed query input.
+type Parameter struct {
+	ID   string     `json:"id"`
+	Type ScalarType `json:"type"`
+}
+
+// Assignment binds one table column to a literal or typed query parameter.
+type Assignment struct {
+	Column string `json:"column"`
+	Value  Value  `json:"value"`
+}
 
 // Table is one logical relational table.
 type Table struct {
@@ -150,16 +164,18 @@ const (
 
 // Query is deterministic typed query intent. SQL text is deliberately absent.
 type Query struct {
-	ID         string        `json:"id"`
-	Operation  OperationKind `json:"operation"`
-	Table      Ref           `json:"table"`
-	Projection []Projection  `json:"projection,omitempty"`
-	Predicate  Predicate     `json:"predicate,omitempty"`
-	Ordering   []Ordering    `json:"ordering,omitempty"`
-	Limit      uint64        `json:"limit,omitempty"`
-	HasLimit   bool          `json:"has_limit,omitempty"`
-	Offset     uint64        `json:"offset,omitempty"`
-	HasOffset  bool          `json:"has_offset,omitempty"`
+	ID          string        `json:"id"`
+	Operation   OperationKind `json:"operation"`
+	Table       Ref           `json:"table"`
+	Parameters  []Parameter   `json:"parameters,omitempty"`
+	Assignments []Assignment  `json:"assignments,omitempty"`
+	Projection  []Projection  `json:"projection,omitempty"`
+	Predicate   Predicate     `json:"predicate,omitempty"`
+	Ordering    []Ordering    `json:"ordering,omitempty"`
+	Limit       uint64        `json:"limit,omitempty"`
+	HasLimit    bool          `json:"has_limit,omitempty"`
+	Offset      uint64        `json:"offset,omitempty"`
+	HasOffset   bool          `json:"has_offset,omitempty"`
 }
 
 type Projection struct {
@@ -281,6 +297,12 @@ func (m Member[Access]) Normalize() (Model, error) {
 		sort.Slice(model.Tables[i].Constraints, func(a, b int) bool { return model.Tables[i].Constraints[a].ID < model.Tables[i].Constraints[b].ID })
 		sort.Slice(model.Tables[i].Indexes, func(a, b int) bool { return model.Tables[i].Indexes[a].ID < model.Tables[i].Indexes[b].ID })
 	}
+	for i := range model.Queries {
+		sort.Slice(model.Queries[i].Parameters, func(a, b int) bool { return model.Queries[i].Parameters[a].ID < model.Queries[i].Parameters[b].ID })
+		sort.Slice(model.Queries[i].Assignments, func(a, b int) bool {
+			return model.Queries[i].Assignments[a].Column < model.Queries[i].Assignments[b].Column
+		})
+	}
 	for i := range model.Migrations {
 		sort.Slice(model.Migrations[i].Predecessors, func(a, b int) bool {
 			return refKey(model.Migrations[i].Predecessors[a]) < refKey(model.Migrations[i].Predecessors[b])
@@ -336,6 +358,11 @@ func cloneQueries(queries []Query) []Query {
 	result := make([]Query, len(queries))
 	for i, query := range queries {
 		result[i] = query
+		result[i].Parameters = append([]Parameter(nil), query.Parameters...)
+		result[i].Assignments = make([]Assignment, len(query.Assignments))
+		for assignment := range query.Assignments {
+			result[i].Assignments[assignment] = query.Assignments[assignment]
+		}
 		result[i].Projection = append([]Projection(nil), query.Projection...)
 		result[i].Ordering = append([]Ordering(nil), query.Ordering...)
 		result[i].Predicate = clonePredicate(query.Predicate)
@@ -521,12 +548,53 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]s
 			return fmt.Errorf("%w: table %q", ErrReference, query.Table.Symbol)
 		}
 	}
+	parameters := make(map[string]ScalarType, len(query.Parameters))
+	for _, parameter := range query.Parameters {
+		if !validSymbol(parameter.ID) || !validScalar(parameter.Type) {
+			return fmt.Errorf("%w: query parameter %q", ErrInvalidSchema, parameter.ID)
+		}
+		if _, exists := parameters[parameter.ID]; exists {
+			return fmt.Errorf("%w: query parameter %q", ErrDuplicate, parameter.ID)
+		}
+		parameters[parameter.ID] = parameter.Type
+	}
+	switch query.Operation {
+	case OperationSelect:
+		if len(query.Assignments) != 0 {
+			return fmt.Errorf("%w: select query assignments", ErrInvalidSchema)
+		}
+	case OperationInsert:
+		if len(query.Predicate.Items) != 0 || query.Predicate.Kind != "" || len(query.Ordering) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
+			return fmt.Errorf("%w: insert query shape", ErrInvalidSchema)
+		}
+	case OperationUpdate:
+		if len(query.Assignments) == 0 || query.Predicate.Kind == "" || len(query.Ordering) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
+			return fmt.Errorf("%w: update query shape", ErrInvalidSchema)
+		}
+	case OperationDelete:
+		if len(query.Assignments) != 0 || query.Predicate.Kind == "" || len(query.Ordering) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
+			return fmt.Errorf("%w: delete query shape", ErrInvalidSchema)
+		}
+	}
+	seenAssignments := make(map[string]struct{}, len(query.Assignments))
+	for _, assignment := range query.Assignments {
+		if !validSymbol(assignment.Column) {
+			return fmt.Errorf("%w: query assignment %q", ErrInvalidSchema, assignment.Column)
+		}
+		if _, exists := seenAssignments[assignment.Column]; exists {
+			return fmt.Errorf("%w: query assignment %q", ErrDuplicate, assignment.Column)
+		}
+		seenAssignments[assignment.Column] = struct{}{}
+		if err := validateQueryValue(assignment.Value, parameters); err != nil {
+			return fmt.Errorf("%w: assignment %s: %v", ErrInvalidSchema, assignment.Column, err)
+		}
+	}
 	for _, projection := range query.Projection {
 		if !validSymbol(projection.Column) || projection.Alias != "" && !validSymbol(projection.Alias) {
 			return fmt.Errorf("%w: query projection %q", ErrInvalidSchema, projection.Column)
 		}
 	}
-	if err := validatePredicate(query.Predicate, imports, 0); err != nil {
+	if err := validatePredicate(query.Predicate, imports, parameters, 0); err != nil {
 		return err
 	}
 	for _, ordering := range query.Ordering {
@@ -568,7 +636,7 @@ func validatePlan(plan Plan, imports map[string]struct{}, queries map[string]str
 	return nil
 }
 
-func validatePredicate(predicate Predicate, imports map[string]struct{}, depth int) error {
+func validatePredicate(predicate Predicate, imports map[string]struct{}, parameters map[string]ScalarType, depth int) error {
 	if predicate.Kind == "" {
 		return nil
 	}
@@ -580,7 +648,10 @@ func validatePredicate(predicate Predicate, imports map[string]struct{}, depth i
 		if !validSymbol(predicate.Left) {
 			return fmt.Errorf("%w: predicate column %q", ErrReference, predicate.Left)
 		}
-		return validateValue(predicate.Value)
+		if !predicate.Value.Set {
+			return fmt.Errorf("%w: predicate value is missing", ErrInvalidSchema)
+		}
+		return validateQueryValue(predicate.Value, parameters)
 	case PredicateIsNull:
 		if !validSymbol(predicate.Left) {
 			return fmt.Errorf("%w: predicate column %q", ErrReference, predicate.Left)
@@ -590,7 +661,7 @@ func validatePredicate(predicate Predicate, imports map[string]struct{}, depth i
 			return fmt.Errorf("%w: predicate requires two items", ErrInvalidSchema)
 		}
 		for _, item := range predicate.Items {
-			if err := validatePredicate(item, imports, depth+1); err != nil {
+			if err := validatePredicate(item, imports, parameters, depth+1); err != nil {
 				return err
 			}
 		}
@@ -601,6 +672,9 @@ func validatePredicate(predicate Predicate, imports map[string]struct{}, depth i
 }
 
 func validateValue(value Value) error {
+	if value.Parameter != "" {
+		return fmt.Errorf("%w: parameter reference is not a literal", ErrUnsupported)
+	}
 	if !value.Set {
 		return nil
 	}
@@ -609,6 +683,25 @@ func validateValue(value Value) error {
 	}
 	if value.Kind == TypeString && !utf8.ValidString(value.String) {
 		return fmt.Errorf("%w: value is not UTF-8", ErrInvalidSchema)
+	}
+	return nil
+}
+
+func validateQueryValue(value Value, parameters map[string]ScalarType) error {
+	if !value.Set {
+		return fmt.Errorf("%w: query value is missing", ErrInvalidSchema)
+	}
+	if value.Parameter == "" {
+		return validateValue(value)
+	}
+	if !validSymbol(value.Parameter) || !validScalar(value.Kind) {
+		return fmt.Errorf("%w: invalid parameter reference", ErrInvalidSchema)
+	}
+	if expected, exists := parameters[value.Parameter]; !exists || expected != value.Kind {
+		return fmt.Errorf("%w: parameter %q type", ErrReference, value.Parameter)
+	}
+	if value.String != "" || value.Int64 != 0 || value.Uint64 != 0 || value.Float64 != 0 || value.Bool || value.Bytes != "" {
+		return fmt.Errorf("%w: parameter reference carries literal data", ErrInvalidSchema)
 	}
 	return nil
 }
@@ -647,7 +740,7 @@ func nodeCount(model Model) int {
 		count += len(table.Columns) + len(table.Constraints) + len(table.Indexes)
 	}
 	for _, query := range model.Queries {
-		count += len(query.Projection) + len(query.Ordering) + predicateCount(query.Predicate)
+		count += len(query.Parameters) + len(query.Assignments) + len(query.Projection) + len(query.Ordering) + predicateCount(query.Predicate)
 	}
 	for _, plan := range model.Plans {
 		count += len(plan.Statements)

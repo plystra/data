@@ -249,6 +249,70 @@ func (d modelDecoder) value(value ast.Expr) (declaration.Value, error) {
 			return declaration.Value{}, fmt.Errorf("bytes: %w", err)
 		}
 	}
+	if field, ok := fields["Parameter"]; ok {
+		result.Parameter, err = d.string(field)
+		if err != nil {
+			return declaration.Value{}, fmt.Errorf("parameter: %w", err)
+		}
+	}
+	return result, nil
+}
+
+func (d modelDecoder) parameters(value ast.Expr) ([]declaration.Parameter, error) {
+	elements, err := d.slice(value)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]declaration.Parameter, len(elements))
+	for index, element := range elements {
+		fields, fieldErr := d.fieldsExpr(element)
+		if fieldErr != nil {
+			return nil, fieldErr
+		}
+		parameter := declaration.Parameter{}
+		if field, ok := fields["ID"]; ok {
+			parameter.ID, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Type"]; ok {
+			parameter.Type, err = d.scalar(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		result[index] = parameter
+	}
+	return result, nil
+}
+
+func (d modelDecoder) assignments(value ast.Expr) ([]declaration.Assignment, error) {
+	elements, err := d.slice(value)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]declaration.Assignment, len(elements))
+	for index, element := range elements {
+		fields, fieldErr := d.fieldsExpr(element)
+		if fieldErr != nil {
+			return nil, fieldErr
+		}
+		assignment := declaration.Assignment{}
+		if field, ok := fields["Column"]; ok {
+			assignment.Column, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Value"]; ok {
+			assignment.Value, err = d.value(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		result[index] = assignment
+	}
 	return result, nil
 }
 
@@ -451,6 +515,18 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 		}
 		if field, ok := fields["Table"]; ok {
 			query.Table, err = d.ref(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Parameters"]; ok {
+			query.Parameters, err = d.parameters(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Assignments"]; ok {
+			query.Assignments, err = d.assignments(field)
 			if err != nil {
 				return nil, err
 			}

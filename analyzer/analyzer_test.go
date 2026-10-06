@@ -105,6 +105,38 @@ import "github.com/plystra/data/declaration"
 	}
 }
 
+func TestAnalyzeDecodesTypedMutationQuery(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{
+		{ID: "id", Type: "int64"}, {ID: "email", Type: "string"},
+	}}},
+	Queries: []declaration.Query{{
+		ID: "update-email", Operation: "update", Table: declaration.Ref{Symbol: "users"},
+		Parameters: []declaration.Parameter{
+			{ID: "email", Type: "string"}, {ID: "user-id", Type: "int64"},
+		},
+		Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: "string", Set: true, Parameter: "email"}}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: "id", Value: declaration.Value{Kind: "int64", Set: true, Parameter: "user-id"}},
+	}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || len(result.Diagnostics) != 0 || len(result.Roots) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	query := result.Roots[0].Model.Queries[0]
+	if len(query.Parameters) != 2 || query.Parameters[0].ID != "email" || len(query.Assignments) != 1 || query.Assignments[0].Value.Parameter != "email" || query.Predicate.Value.Parameter != "user-id" {
+		t.Fatalf("decoded mutation query = %#v", query)
+	}
+}
+
 func TestAnalyzeResolvesImportedReferences(t *testing.T) {
 	result, err := analyzer.Analyze(sourceSnapshot(`package model
 
@@ -390,7 +422,7 @@ type NoAccess struct{}
 type Ref struct { Member string; Symbol string }
 type ScalarType string
 const TypeUUID ScalarType = "uuid"
-type Value struct { Kind ScalarType; Set bool; String string; Int64 int64; Uint64 uint64; Float64 float64; Bool bool; Bytes string }
+type Value struct { Kind ScalarType; Set bool; Parameter string; String string; Int64 int64; Uint64 uint64; Float64 float64; Bool bool; Bytes string }
 type Member[Access any] struct { Namespace string; Imports []string; Tables []Table; Queries []Query; Plans []Plan; Migrations []Migration; Access Access }
 type Table struct { ID string; Columns []Column; Constraints []Constraint; Indexes []Index }
 type Column struct { ID string; Type ScalarType; Nullable bool; Default Value }
@@ -398,7 +430,9 @@ type ConstraintKind string
 type Constraint struct { ID string; Kind ConstraintKind; Columns []string; ReferencedTable Ref; ReferencedCols []string }
 type Index struct { ID string; Columns []string; Unique bool }
 type OperationKind string
-type Query struct { ID string; Operation OperationKind; Table Ref; Projection []Projection; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
+type Parameter struct { ID string; Type ScalarType }
+type Assignment struct { Column string; Value Value }
+type Query struct { ID string; Operation OperationKind; Table Ref; Parameters []Parameter; Assignments []Assignment; Projection []Projection; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 type Projection struct { Column string; Alias string }
 type PredicateKind string
 type Predicate struct { Kind PredicateKind; Left string; Right string; Value Value; Items []Predicate }

@@ -83,3 +83,41 @@ func TestNormalizeDoesNotMutateAuthoredSlices(t *testing.T) {
 		t.Fatal("Normalize mutated authored slices")
 	}
 }
+
+func TestNormalizeQueryParametersAndAssignments(t *testing.T) {
+	member := declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts"}}, Queries: []declaration.Query{{
+		ID: "update", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"},
+		Parameters:  []declaration.Parameter{{ID: "z-id", Type: declaration.TypeInt64}, {ID: "a-email", Type: declaration.TypeString}},
+		Assignments: []declaration.Assignment{{Column: "z-column", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "a-email"}}, {Column: "a-column", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "a-email"}}},
+		Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "z-id"}},
+	}}}
+	model, err := member.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Queries[0].Parameters[0].ID != "a-email" || model.Queries[0].Assignments[0].Column != "a-column" || member.Queries[0].Parameters[0].ID != "z-id" || member.Queries[0].Assignments[0].Column != "z-column" {
+		t.Fatalf("normalization or authored isolation failed: model=%#v authored=%#v", model.Queries[0], member.Queries[0])
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Query)
+		want error
+	}{
+		{"duplicate parameter", func(query *declaration.Query) { query.Parameters[1].ID = "z-id" }, declaration.ErrDuplicate},
+		{"unknown parameter", func(query *declaration.Query) { query.Assignments[0].Value.Parameter = "missing" }, declaration.ErrInvalidSchema},
+		{"type mismatch", func(query *declaration.Query) { query.Assignments[0].Value.Kind = declaration.TypeInt64 }, declaration.ErrInvalidSchema},
+		{"unbounded update", func(query *declaration.Query) { query.Predicate = declaration.Predicate{} }, declaration.ErrInvalidSchema},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := member
+			changed.Queries = append([]declaration.Query(nil), member.Queries...)
+			changed.Queries[0].Parameters = append([]declaration.Parameter(nil), member.Queries[0].Parameters...)
+			changed.Queries[0].Assignments = append([]declaration.Assignment(nil), member.Queries[0].Assignments...)
+			test.edit(&changed.Queries[0])
+			_, err := changed.Normalize()
+			if !errors.Is(err, test.want) {
+				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}

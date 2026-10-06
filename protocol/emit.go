@@ -270,6 +270,7 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 		roots[root.MemberID] = root
 	}
 	expected := map[string]map[string]struct{}{}
+	queryOwners := map[string]string{}
 	owners := map[string][]string{}
 	for _, assignment := range request.Assignments {
 		resource := assignment.Resource
@@ -281,7 +282,9 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 		}
 		owners[resource] = append(owners[resource], assignment.MemberID)
 		for _, query := range roots[assignment.MemberID].Model.Queries {
-			expected[resource]["generated/data/"+resource+"/queries/"+assignment.MemberID+"/"+query.ID+".sql"] = struct{}{}
+			queryPath := "generated/data/" + resource + "/queries/" + assignment.MemberID + "/" + query.ID + ".sql"
+			expected[resource][queryPath] = struct{}{}
+			queryOwners[queryPath] = assignment.MemberID
 		}
 		for _, item := range roots[assignment.MemberID].Model.Migrations {
 			expected[resource]["generated/data/"+resource+"/migrations/"+assignment.MemberID+"/"+item.ID+".sql"] = struct{}{}
@@ -299,6 +302,9 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 			artifact := &instanceArtifacts[index]
 			if _, allowed := expected[resource][artifact.Path]; !allowed {
 				return fmt.Errorf("Resource %s has unexpected staged artifact", resource)
+			}
+			if owner, queryArtifact := queryOwners[artifact.Path]; queryArtifact && (len(artifact.OwningMembers) != 1 || artifact.OwningMembers[0] != owner || artifact.Migration != nil) {
+				return fmt.Errorf("Resource %s has invalid query artifact ownership", resource)
 			}
 			if artifact.Path == "generated/data/"+resource+"/manifest.json" {
 				manifestArtifact = artifact
@@ -348,6 +354,9 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 		model, err := (declaration.Member[struct{}]{Namespace: root.Model.Namespace, Imports: root.Model.Imports, Tables: root.Model.Tables, Queries: root.Model.Queries, Plans: root.Model.Plans, Migrations: root.Model.Migrations}).Normalize()
 		if err != nil {
 			return nil, analyzer.CodeEmitInput, fmt.Errorf("invalid member model: %w", err)
+		}
+		if len(model.Plans) != 0 {
+			return nil, analyzer.CodeEmitBackend, fmt.Errorf("atomic plan execution is not yet supported")
 		}
 		normalizedJSON, err := json.Marshal(model)
 		if err != nil {

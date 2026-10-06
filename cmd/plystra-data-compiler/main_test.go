@@ -15,7 +15,15 @@ import (
 )
 
 func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
-	model, err := (declaration.Member[struct{}]{Namespace: "accounts", Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}}}).Normalize()
+	model, err := (declaration.Member[struct{}]{
+		Namespace: "accounts",
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{
+			ID: "delete-account", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "accounts"},
+			Parameters: []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
+			Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+		}},
+	}).Normalize()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +68,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	if err := protocol.ReadFrame(&stdout, &response); err != nil {
 		t.Fatal(err)
 	}
-	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 2 {
+	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 3 {
 		t.Fatalf("invalid command response: %v, bytes=%d, artifacts=%d", err, stdout.Len(), len(response.Output.Artifacts))
 	}
 	after, err := os.ReadDir(".")
