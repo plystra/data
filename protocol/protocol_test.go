@@ -159,6 +159,8 @@ func TestParseDistributionManifestRejectsInvalidContract(t *testing.T) {
 		{name: "wrong identity", data: strings.Replace(valid, "plystra.data-emit/v1", "plystra.data-emit/v2", 1)},
 		{name: "zero bound", data: strings.Replace(valid, `"max_roots":1024`, `"max_roots":0`, 1)},
 		{name: "out of range bound", data: strings.Replace(valid, `"max_nodes":65536`, `"max_nodes":65537`, 1)},
+		{name: "duplicate identity", data: strings.Replace(valid, `"schema":"plystra.data-compiler-distribution/v1",`, `"schema":"plystra.data-compiler-distribution/v1","schema":"plystra.data-compiler-distribution/v1",`, 1)},
+		{name: "duplicate limit", data: strings.Replace(valid, `"max_roots":1024,`, `"max_roots":1024,"max_roots":1024,`, 1)},
 		{name: "trailing json", data: valid + ` {}`},
 	}
 	for _, test := range tests {

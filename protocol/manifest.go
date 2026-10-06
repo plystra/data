@@ -53,11 +53,14 @@ type DistributionManifest struct {
 }
 
 // ParseDistributionManifest parses one strict distribution manifest and
-// returns the digest of the exact published bytes. Unknown fields and trailing
-// JSON are rejected before its identities and bounds are validated.
+// returns the digest of the exact published bytes. Unknown fields, duplicate
+// fields, and trailing JSON are rejected before validation.
 func ParseDistributionManifest(data []byte) (DistributionManifest, string, error) {
 	if len(data) == 0 || len(data) > MaxFrameBytes {
 		return DistributionManifest{}, "", fmt.Errorf("%w: manifest size is invalid", ErrInvalidDistributionManifest)
+	}
+	if err := rejectDuplicateJSONFields(data); err != nil {
+		return DistributionManifest{}, "", fmt.Errorf("%w: %v", ErrInvalidDistributionManifest, err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -115,4 +118,71 @@ func (manifest DistributionManifest) Digest() (string, error) {
 func digestBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func rejectDuplicateJSONFields(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := scanJSONValue(decoder); err != nil {
+		return fmt.Errorf("invalid JSON: %v", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return errors.New("trailing JSON")
+	}
+	return nil
+}
+
+func scanJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delim {
+	case '{':
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			name, ok := key.(string)
+			if !ok {
+				return errors.New("object key is not a string")
+			}
+			if _, exists := seen[name]; exists {
+				return errors.New("duplicate JSON field")
+			}
+			seen[name] = struct{}{}
+			if err := scanJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim('}') {
+			return errors.New("object is not closed")
+		}
+	case '[':
+		for decoder.More() {
+			if err := scanJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		if closing != json.Delim(']') {
+			return errors.New("array is not closed")
+		}
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
+	return nil
 }
