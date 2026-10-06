@@ -94,16 +94,17 @@ type Span struct {
 
 // Root is one statically recognized Data declaration root.
 type Root struct {
-	MemberID       string `json:"member_id"`
-	PackagePath    string `json:"package_path"`
-	FilePath       string `json:"file_path"`
-	Symbol         string `json:"symbol"`
-	AccessPackage  string `json:"access_package,omitempty"`
-	AccessType     string `json:"access_type,omitempty"`
-	AccessID       string `json:"access_id,omitempty"`
-	MigrationOnly  bool   `json:"migration_only"`
-	SourceDigest   string `json:"source_digest"`
-	DeclarationPos Span   `json:"declaration_pos"`
+	MemberID       string            `json:"member_id"`
+	PackagePath    string            `json:"package_path"`
+	FilePath       string            `json:"file_path"`
+	Symbol         string            `json:"symbol"`
+	Model          declaration.Model `json:"model"`
+	AccessPackage  string            `json:"access_package,omitempty"`
+	AccessType     string            `json:"access_type,omitempty"`
+	AccessID       string            `json:"access_id,omitempty"`
+	MigrationOnly  bool              `json:"migration_only"`
+	SourceDigest   string            `json:"source_digest"`
+	DeclarationPos Span              `json:"declaration_pos"`
 }
 
 // DiagnosticCode is a stable source-facing failure class.
@@ -114,6 +115,7 @@ const (
 	CodeUnsupportedExpression  DiagnosticCode = "unsupported-expression"
 	CodeInvalidID              DiagnosticCode = "invalid-id"
 	CodeDuplicateSymbol        DiagnosticCode = "duplicate-symbol"
+	CodeUnresolvedReference    DiagnosticCode = "unresolved-reference"
 	CodeAccessContractMismatch DiagnosticCode = "access-contract-mismatch"
 	CodeLimitExceeded          DiagnosticCode = "limit-exceeded"
 	CodeTypeCheck              DiagnosticCode = "type-check"
@@ -514,6 +516,15 @@ func (a *analysis) inspectRoot(pkg *parsedPackage, file *ast.File, spec *ast.Val
 	if checker.failed {
 		return
 	}
+	model, err := decodeModel(pkg.info, initializer)
+	if err != nil {
+		code := CodeInvalidRootShape
+		if errors.Is(err, declaration.ErrReference) {
+			code = CodeUnresolvedReference
+		}
+		a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, code, "Data declaration could not be normalized", "Correct the typed Data literal and its references before retrying.", memberID, name.Name)
+		return
+	}
 	if checker.imports > a.limits.MaxImports {
 		a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeLimitExceeded, "Data member import limit exceeded", "Reduce the member Imports list to the advertised analysis limit.", memberID, name.Name)
 		return
@@ -535,6 +546,7 @@ func (a *analysis) inspectRoot(pkg *parsedPackage, file *ast.File, spec *ast.Val
 		PackagePath:    pkg.source.ImportPath,
 		FilePath:       fileName(pkg, file),
 		Symbol:         name.Name,
+		Model:          model,
 		AccessPackage:  accessPackage,
 		AccessType:     accessName,
 		AccessID:       accessID,
@@ -933,5 +945,7 @@ func (a *analysis) finish() {
 	if err == nil {
 		a.result.Digest = digestBytes(append([]byte("plystra.data.analyze/v1\x00"), payload...))
 	}
-	a.result.Valid = len(a.result.Diagnostics) == 0
+	// A truncated diagnostic set still represents a rejected declaration. The
+	// caller must not treat an omitted diagnostic as proof that analysis passed.
+	a.result.Valid = len(a.result.Diagnostics) == 0 && !a.result.Truncated
 }

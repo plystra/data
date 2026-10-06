@@ -50,6 +50,84 @@ func init() { panic("must not execute") }
 	}
 }
 
+func TestAnalyzeDecodesAndNormalizesModel(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Imports: []string{"orders.audit/v1"},
+	Tables: []declaration.Table{
+		{ID: "z-users", Columns: []declaration.Column{{ID: "id", Type: "uuid"}, {ID: "email", Type: "string"}}},
+		{ID: "a-users", Columns: []declaration.Column{{ID: "id", Type: "uuid"}}},
+	},
+	Queries: []declaration.Query{{
+		ID: "list-users",
+		Operation: "select",
+		Table: declaration.Ref{Symbol: "a-users"},
+		Projection: []declaration.Projection{{Column: "id", Alias: "user-id"}},
+	}},
+	Plans: []declaration.Plan{{
+		ID: "list-plan",
+		Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "list-users"}, Cardinality: "many"}},
+	}},
+	Migrations: []declaration.Migration{{
+		ID: "initial",
+		Version: 1,
+		Operations: []declaration.MigrationOperation{{Kind: "create-table", Table: declaration.Ref{Symbol: "a-users"}}},
+	}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || len(result.Roots) != 1 || len(result.Diagnostics) != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	model := result.Roots[0].Model
+	if model.Namespace != "accounts" || len(model.Imports) != 1 || model.Imports[0] != "orders.audit/v1" {
+		t.Fatalf("model identity = %#v", model)
+	}
+	if len(model.Tables) != 2 || model.Tables[0].ID != "a-users" || model.Tables[1].ID != "z-users" {
+		t.Fatalf("normalized tables = %#v", model.Tables)
+	}
+	if len(model.Tables[1].Columns) != 2 || model.Tables[1].Columns[0].ID != "email" || model.Tables[1].Columns[1].ID != "id" {
+		t.Fatalf("normalized columns = %#v", model.Tables[1].Columns)
+	}
+	if len(model.Queries) != 1 || model.Queries[0].Operation != "select" || model.Queries[0].Table.Symbol != "a-users" || model.Queries[0].Projection[0].Alias != "user-id" {
+		t.Fatalf("decoded query = %#v", model.Queries)
+	}
+	if len(model.Plans) != 1 || model.Plans[0].Statements[0].Query.Symbol != "list-users" {
+		t.Fatalf("decoded plan = %#v", model.Plans)
+	}
+	if len(model.Migrations) != 1 || model.Migrations[0].Version != 1 || model.Migrations[0].Operations[0].Table.Symbol != "a-users" {
+		t.Fatalf("decoded migration = %#v", model.Migrations)
+	}
+}
+
+func TestAnalyzeRejectsInvalidNormalizedReferences(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{
+		ID: "users",
+		Columns: []declaration.Column{{ID: "id", Type: "uuid"}},
+		Indexes: []declaration.Index{{ID: "by-missing", Columns: []string{"missing"}}},
+	}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Valid || len(result.Roots) != 0 || len(result.Diagnostics) != 1 || result.Diagnostics[0].Code != analyzer.CodeUnresolvedReference {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestAnalyzeIsDeterministicAcrossInputOrder(t *testing.T) {
 	first := sourceSnapshot(`package model
 
@@ -99,7 +177,7 @@ func TestAnalyzeRejectsClosedGrammarViolations(t *testing.T) {
 		},
 		{
 			name: "unkeyed",
-			code: `var Accounts = declaration.Member[declaration.NoAccess]{"accounts", nil}`,
+			code: `var Accounts = declaration.Member[declaration.NoAccess]{"accounts", nil, nil, nil, nil, nil, declaration.NoAccess{}}`,
 			want: analyzer.CodeUnsupportedExpression,
 		},
 		{
@@ -186,7 +264,25 @@ var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Truncated || len(result.Diagnostics) != 1 {
+	if result.Valid || !result.Truncated || len(result.Diagnostics) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestAnalyzeDoesNotTreatZeroDiagnosticBudgetAsValid(t *testing.T) {
+	snapshot := sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts", Tables: []declaration.Table{{ID: "users", Indexes: []declaration.Index{{ID: "bad", Columns: []string{"missing"}}}}}}
+`, analyzer.ResourceContract{})
+	snapshot.Limits.MaxDiagnosticBytes = 1
+	result, err := analyzer.Analyze(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Valid || !result.Truncated || len(result.Diagnostics) != 0 {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -207,11 +303,30 @@ func sourceSnapshotFile(fileName, body string, resources ...analyzer.ResourceCon
 			{ImportPath: "github.com/plystra/data/declaration", Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(`package declaration
 
 type NoAccess struct{}
+type Ref struct { Member string; Symbol string }
 type ScalarType string
 const TypeUUID ScalarType = "uuid"
-type Column struct { ID string; Type ScalarType }
-type Table struct { ID string; Columns []Column }
-type Member[Access any] struct { Namespace string; Tables []Table }
+type Value struct { Kind ScalarType; Set bool; String string; Int64 int64; Uint64 uint64; Float64 float64; Bool bool; Bytes string }
+type Member[Access any] struct { Namespace string; Imports []string; Tables []Table; Queries []Query; Plans []Plan; Migrations []Migration; Access Access }
+type Table struct { ID string; Columns []Column; Constraints []Constraint; Indexes []Index }
+type Column struct { ID string; Type ScalarType; Nullable bool; Default Value }
+type ConstraintKind string
+type Constraint struct { ID string; Kind ConstraintKind; Columns []string; ReferencedTable Ref; ReferencedCols []string }
+type Index struct { ID string; Columns []string; Unique bool }
+type OperationKind string
+type Query struct { ID string; Operation OperationKind; Table Ref; Projection []Projection; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
+type Projection struct { Column string; Alias string }
+type PredicateKind string
+type Predicate struct { Kind PredicateKind; Left string; Right string; Value Value; Items []Predicate }
+type OrderingDirection string
+type Ordering struct { Column string; Direction OrderingDirection }
+type Plan struct { ID string; Statements []PlanStatement }
+type PlanStatement struct { ID string; Query Ref; Cardinality Cardinality; Affected AffectedRows }
+type Cardinality string
+type AffectedRows struct { Set bool; Min uint64; Max uint64; Unbounded bool }
+type Migration struct { ID string; Version uint64; Predecessors []Ref; Operations []MigrationOperation }
+type MigrationOperationKind string
+type MigrationOperation struct { Kind MigrationOperationKind; Table Ref; Column Column; Index Index }
 `)}}},
 			{ImportPath: "github.com/plystra/data/database", Files: []analyzer.SourceFile{{Path: "resource.go", Content: []byte(`package database
 
