@@ -4,6 +4,7 @@ package protocol
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -299,13 +300,21 @@ func validateCompilerAndBuild(identity CompilerIdentity, build BuildContext) err
 	if identity.ModulePath != ModulePath || strings.TrimSpace(identity.ModuleVersion) == "" || identity.CommandImportPath != CommandImportPath || identity.AnalyzeProtocol != AnalyzeSchema || identity.EmitProtocol != EmitSchema || identity.DeclarationLanguage != DeclarationLanguage || strings.TrimSpace(identity.GoToolchain) == "" {
 		return fmt.Errorf("compiler identity is incomplete or incompatible")
 	}
-	if !validDigest(identity.ModuleChecksum) || !validDigest(identity.ManifestDigest) {
+	if !validModuleChecksum(identity.ModuleChecksum) || !validDigest(identity.ManifestDigest) {
 		return fmt.Errorf("compiler identity digest is invalid")
 	}
 	if strings.TrimSpace(build.GOOS) == "" || strings.TrimSpace(build.GOARCH) == "" {
 		return fmt.Errorf("Go build context is incomplete")
 	}
 	return nil
+}
+
+func validModuleChecksum(value string) bool {
+	if !strings.HasPrefix(value, "h1:") {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(value, "h1:"))
+	return err == nil && len(decoded) == sha256.Size
 }
 
 func validDigest(value string) bool {

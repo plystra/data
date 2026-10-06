@@ -2,6 +2,7 @@ package protocol_test
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"os"
@@ -42,6 +43,15 @@ func TestAnalyzeFrameRoundTripAndNoGeneratedOutput(t *testing.T) {
 func TestValidateAnalyzeRequestRejectsDigestMismatch(t *testing.T) {
 	request := validRequest(t)
 	request.InputDigest = "sha256:" + strings.Repeat("0", 64)
+	response := protocol.HandleAnalyze(request)
+	if response.Status != protocol.StatusRejected || len(response.Diagnostics) != 1 {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestValidateAnalyzeRequestRequiresGoModuleChecksum(t *testing.T) {
+	request := validRequest(t)
+	request.Compiler.ModuleChecksum = "sha256:" + strings.Repeat("1", 64)
 	response := protocol.HandleAnalyze(request)
 	if response.Status != protocol.StatusRejected || len(response.Diagnostics) != 1 {
 		t.Fatalf("response = %#v", response)
@@ -195,11 +205,15 @@ var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
 	return protocol.AnalyzeRequest{
 		Schema: protocol.AnalyzeSchema, Phase: protocol.AnalyzePhase, RequestID: "request-1",
 		Compiler: protocol.CompilerIdentity{
-			ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "sha256:" + strings.Repeat("1", 64), ManifestDigest: "sha256:" + strings.Repeat("2", 64),
+			ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: testModuleChecksum(), ManifestDigest: "sha256:" + strings.Repeat("2", 64),
 			CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26",
 		},
 		Build: build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
 	}
+}
+
+func testModuleChecksum() string {
+	return "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32))
 }
 
 func hasDiagnosticCode(diagnostics []analyzer.Diagnostic, want analyzer.DiagnosticCode) bool {
