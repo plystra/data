@@ -85,6 +85,9 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 		if !ok {
 			continue
 		}
+		if query.Table.Member != "" && (query.Conflict.Constraint != "" || query.Conflict.Action != "") && !hasConflictConstraint(target, query.Conflict.Constraint) {
+			a.referenceDiagnostic(root, CodeUnresolvedReference, "Data conflict target is not a primary-key or unique table constraint", "Name a primary-key or unique constraint on the explicitly referenced table.", query.Conflict.Constraint)
+		}
 		a.validateJoinReferences(root, query, target, symbols)
 		introduced := map[declaration.Ref]declaration.Table{query.Table: target}
 		for _, join := range query.Joins {
@@ -169,6 +172,15 @@ func columnByID(table declaration.Table, id string) (declaration.Column, bool) {
 		}
 	}
 	return declaration.Column{}, false
+}
+
+func hasConflictConstraint(table declaration.Table, id string) bool {
+	for _, constraint := range table.Constraints {
+		if constraint.ID == id && (constraint.Kind == declaration.ConstraintPrimaryKey || constraint.Kind == declaration.ConstraintUnique) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *analysis) resolveTable(root Root, ref declaration.Ref, symbols map[string]memberSymbols) (declaration.Table, bool) {

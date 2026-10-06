@@ -340,18 +340,16 @@ import "github.com/plystra/data/declaration"
 var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts",
 	Imports: []string{"orders.audit/v1"},
-	Queries: []declaration.Query{{
-		ID: "audit-events",
-		Operation: "select",
-		Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"},
-		Projection: []declaration.Projection{{Column: "id"}},
-	}},
+	Queries: []declaration.Query{
+		{ID: "audit-events", Operation: "select", Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"}, Projection: []declaration.Projection{{Column: "id"}}},
+		{ID: "insert-event", Operation: "insert", Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"}, Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: "string", Set: true, String: "event"}}}, Conflict: declaration.Conflict{Constraint: "events-key", Action: "do-nothing"}},
+	},
 }
 
 //plystra:data orders.audit/v1
 var Audit = declaration.Member[declaration.NoAccess]{
 	Namespace: "orders",
-	Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "uuid"}}}},
+	Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "string"}}, Constraints: []declaration.Constraint{{ID: "events-key", Kind: "unique", Columns: []string{"id"}}}}},
 }`))
 	if err != nil {
 		t.Fatal(err)

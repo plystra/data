@@ -33,8 +33,9 @@ types, defaults, constraints, indexes, and same-Resource foreign keys; it
 rejects cross-Resource foreign keys before any backend operation.
 `postgres/compiler.CompileQueries` emits deterministic SQL for `SELECT`, `INSERT`,
 `UPDATE`, and `DELETE` intent. `INSERT` may target a named local primary-key or
-unique table constraint with PostgreSQL `ON CONFLICT ... DO NOTHING`. Other
-conflict actions, conflict targets, and upsert behavior remain unsupported.
+unique table constraint on a local or explicitly imported same-Resource table
+with PostgreSQL `ON CONFLICT ... DO NOTHING`. Other conflict actions, cross-
+Resource targets, index targets, and upsert behavior remain unsupported.
 Query predicates support comparisons, `IS NULL`, `IS NOT NULL`, `AND`, and `OR`;
 comparison operands use explicit `ColumnRef` values and accept either an
 introduced column or a declared typed parameter/literal. Assignments accept

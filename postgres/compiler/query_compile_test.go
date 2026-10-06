@@ -263,6 +263,35 @@ func TestCompileQueriesLowersUniqueConstraintConflictIgnore(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersImportedSameResourceConflictIgnore(t *testing.T) {
+	owner := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts", Imports: []string{"orders.audit/v1"},
+			Queries: []declaration.Query{{
+				ID: "insert-event", Operation: declaration.OperationInsert, Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"},
+				Assignments: []declaration.Assignment{{Column: "id", Value: declaration.String("event")}},
+				Conflict:    declaration.Conflict{Constraint: "events-key", Action: declaration.ConflictDoNothing},
+			}},
+		},
+	}
+	remote := postgres.SchemaMember{
+		MemberID: "orders.audit/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "orders",
+			Tables:    []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeString}}, Constraints: []declaration.Constraint{{ID: "events-key", Kind: declaration.ConstraintUnique, Columns: []string{"id"}}}}},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
+	}
+	want := "-- plystra.data.postgres-query/v1 accounts.user/v1#insert-event\nINSERT INTO \"orders\".\"events\" (\"id\") VALUES ('event') ON CONFLICT ON CONSTRAINT \"events-key\" DO NOTHING;\n"
+	if artifacts[0].SQL != want {
+		t.Fatalf("SQL = %q, want %q", artifacts[0].SQL, want)
+	}
+}
+
 func TestCompileQueriesRejectsUnsupportedConflictTargets(t *testing.T) {
 	base := postgres.SchemaMember{
 		MemberID: "accounts.user/v1", Resource: "database.primary",

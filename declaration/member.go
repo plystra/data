@@ -118,7 +118,7 @@ type ConflictAction string
 const ConflictDoNothing ConflictAction = "do-nothing"
 
 // Conflict describes the bounded PostgreSQL conflict behavior of an insert.
-// Only a named local primary-key or unique constraint may be ignored.
+// Only a named primary-key or unique constraint on the target may be ignored.
 type Conflict struct {
 	Constraint string         `json:"constraint"`
 	Action     ConflictAction `json:"action"`
@@ -674,18 +674,20 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 		}
 	}
 	if query.Conflict.Action != "" || query.Conflict.Constraint != "" {
-		if query.Operation != OperationInsert || query.Table.Member != "" || query.Conflict.Action != ConflictDoNothing || !validSymbol(query.Conflict.Constraint) {
+		if query.Operation != OperationInsert || query.Conflict.Action != ConflictDoNothing || !validSymbol(query.Conflict.Constraint) {
 			return fmt.Errorf("%w: query conflict", ErrInvalidSchema)
 		}
-		found := false
-		for _, constraint := range tables[query.Table.Symbol].Constraints {
-			if constraint.ID == query.Conflict.Constraint && (constraint.Kind == ConstraintPrimaryKey || constraint.Kind == ConstraintUnique) {
-				found = true
-				break
+		if query.Table.Member == "" {
+			found := false
+			for _, constraint := range tables[query.Table.Symbol].Constraints {
+				if constraint.ID == query.Conflict.Constraint && (constraint.Kind == ConstraintPrimaryKey || constraint.Kind == ConstraintUnique) {
+					found = true
+					break
+				}
 			}
-		}
-		if !found {
-			return fmt.Errorf("%w: conflict constraint %q", ErrReference, query.Conflict.Constraint)
+			if !found {
+				return fmt.Errorf("%w: conflict constraint %q", ErrReference, query.Conflict.Constraint)
+			}
 		}
 	}
 	seenAssignments := make(map[string]struct{}, len(query.Assignments))
