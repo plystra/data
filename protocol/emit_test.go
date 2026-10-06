@@ -54,6 +54,53 @@ func TestEmitFrameProducesFrozenStagedPostgresArtifacts(t *testing.T) {
 	}
 }
 
+func TestEmitIncludesOwnedQueryArtifactAndManifestEntry(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Queries = []declaration.Query{{
+		ID: "list-accounts", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+		Projection: []declaration.Projection{{Column: "id"}},
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
+		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
+	})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded || len(response.Output.Artifacts) != 4 {
+		t.Fatalf("response = %#v", response)
+	}
+	var query protocol.StagedArtifact
+	for _, artifact := range response.Output.Artifacts {
+		if artifact.Path == "generated/data/database.primary/queries/accounts.user/v1/list-accounts.sql" {
+			query = artifact
+		}
+	}
+	if query.Path == "" || query.Migration != nil || !bytes.Contains(query.Bytes, []byte(`SELECT "id" FROM "accounts"."accounts";`)) || !reflect.DeepEqual(query.OwningMembers, []string{"accounts.user/v1"}) {
+		t.Fatalf("query artifact = %#v", query)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEmitRejectsUnsupportedMutationQueryWithoutArtifacts(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Queries = []declaration.Query{{ID: "update-account", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"}}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
+		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
+	})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusRejected || response.Diagnostics[0].Code != analyzer.CodeEmitBackend || len(response.Output.Artifacts) != 0 {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestEmitRejectsChangedFrozenInputs(t *testing.T) {
 	base := validEmitRequest(t)
 	tests := []struct {

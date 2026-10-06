@@ -344,8 +344,9 @@ func cloneQueries(queries []Query) []Query {
 }
 
 func clonePredicate(predicate Predicate) Predicate {
-	predicate.Items = make([]Predicate, len(predicate.Items))
-	for i, item := range predicate.Items {
+	items := predicate.Items
+	predicate.Items = make([]Predicate, len(items))
+	for i, item := range items {
 		predicate.Items[i] = clonePredicate(item)
 	}
 	return predicate

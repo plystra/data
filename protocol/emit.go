@@ -280,6 +280,9 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact) error {
 			}
 		}
 		owners[resource] = append(owners[resource], assignment.MemberID)
+		for _, query := range roots[assignment.MemberID].Model.Queries {
+			expected[resource]["generated/data/"+resource+"/queries/"+assignment.MemberID+"/"+query.ID+".sql"] = struct{}{}
+		}
 		for _, item := range roots[assignment.MemberID].Model.Migrations {
 			expected[resource]["generated/data/"+resource+"/migrations/"+assignment.MemberID+"/"+item.ID+".sql"] = struct{}{}
 		}
@@ -409,6 +412,13 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 			return nil, analyzer.CodeEmitBackend, err
 		}
 		artifacts = append(artifacts, stagedSQL(item.assignment, item.memberIDs, request, schema.Path, schema.SQL, nil))
+		queries, err := postgres.CompileQueries(item.members)
+		if err != nil {
+			return nil, analyzer.CodeEmitBackend, err
+		}
+		for _, query := range queries {
+			artifacts = append(artifacts, stagedSQL(item.assignment, []string{query.MemberID}, request, query.Path, query.SQL, nil))
+		}
 		migrations, err := postgres.CompileMigrations(item.members, compiler)
 		if err != nil {
 			return nil, analyzer.CodeEmitBackend, err

@@ -31,6 +31,10 @@ The `postgres.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
 rejects cross-Resource foreign keys before any backend operation.
+`postgres.CompileQueries` emits deterministic read-only `SELECT` SQL with
+validated projections, predicates, ordering, limit, and offset, and rejects
+mutation operations until the logical model carries typed mutation parameters
+and assignments.
 `postgres.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.
@@ -55,12 +59,12 @@ The command writes no generated files and emits no non-protocol stdout. The
 distribution contract is recorded in `plystra-data-compiler.json`.
 
 The command also implements `plystra.data-emit/v1` for the currently supported
-PostgreSQL schema and migration SQL. An emit request carries the accepted
+PostgreSQL schema, read-only query, and migration SQL. An emit request carries the accepted
 analyze-result digest, the frozen application-model digest, and explicit active
 member assignments to selected `data.database/v1` Resource instances and
 `postgres/v1` backends. The input digest binds these facts to the exact compiler
 identity and Go build context. For each selected instance, the compiler returns
-in-memory staged `schema/schema.sql`, immutable migration SQL, and a
+in-memory staged `schema/schema.sql`, query SQL, immutable migration SQL, and a
 `manifest.json` under its allowed `generated/data/<instance>/` root. Every
 artifact includes mode, bytes, SHA-256 digest, owning members, Resource,
 provider, backend, compiler, and frozen-model provenance. The manifest binds
@@ -71,8 +75,8 @@ manifest consistency before any caller installs output. Frames are limited to
 artifact path. The compiler does not read source files or write generated files
 during emit.
 
-This emit phase does not yet generate query SQL, typed access providers or
-codecs, or install staged files in Core CLI. CLI compiler acquisition, member
+This emit phase does not yet generate typed access providers or codecs, or
+install staged files in Core CLI. CLI compiler acquisition, member
 activation, graph projection, transactional installation, and drift checks
 remain separate unfinished integration work.
 
