@@ -11,6 +11,7 @@ import (
 
 	"github.com/plystra/data/analyzer"
 	"github.com/plystra/data/declaration"
+	"github.com/plystra/data/migration"
 	"github.com/plystra/data/postgres"
 	"github.com/plystra/data/protocol"
 )
@@ -45,6 +46,18 @@ func TestEmitFrameProducesFrozenStagedPostgresArtifacts(t *testing.T) {
 	}
 	if response.Output.Artifacts[1].Path != "generated/data/database.primary/migrations/accounts.user/v1/create-accounts.sql" || response.Output.Artifacts[1].Migration == nil || response.Output.Artifacts[1].Migration.ArtifactDigest != response.Output.Artifacts[1].Digest {
 		t.Fatalf("migration artifact = %#v", response.Output.Artifacts[1])
+	}
+	var manifest struct {
+		Artifacts []struct {
+			Path      string                `json:"path"`
+			Migration *migration.Definition `json:"migration,omitempty"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(response.Output.Artifacts[0].Bytes, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Artifacts) != 2 || manifest.Artifacts[0].Migration == nil || !reflect.DeepEqual(manifest.Artifacts[0].Migration, response.Output.Artifacts[1].Migration) {
+		t.Fatalf("manifest migration provenance = %#v", manifest.Artifacts)
 	}
 	if response.Output.Artifacts[2].Path != "generated/data/database.primary/schema/schema.sql" || !reflect.DeepEqual(response.Output.Artifacts[2].OwningMembers, []string{"accounts.user/v1"}) {
 		t.Fatalf("schema artifact = %#v", response.Output.Artifacts[2])
@@ -311,6 +324,76 @@ func TestValidateEmitResponseRejectsSelfConsistentQueryMetadataTamper(t *testing
 	}
 }
 
+func TestValidateEmitResponseRejectsSelfConsistentMigrationDefinitionTamper(t *testing.T) {
+	request := validEmitRequest(t)
+	base := protocol.HandleEmit(request)
+	if base.Status != protocol.StatusSucceeded {
+		t.Fatalf("base = %#v", base)
+	}
+	tests := []struct {
+		name string
+		edit func(*migration.Definition)
+	}{
+		{"version", func(definition *migration.Definition) { definition.Version++ }},
+		{"predecessors", func(definition *migration.Definition) {
+			definition.Predecessors = []migration.Identity{{Member: "accounts.user/v1", Name: "previous"}}
+		}},
+		{"logical digest", func(definition *migration.Definition) { definition.LogicalDigest = "sha256:" + strings.Repeat("9", 64) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := cloneEmitResponse(base)
+			var migrationPath string
+			var definition migration.Definition
+			for index := range response.Output.Artifacts {
+				if response.Output.Artifacts[index].Migration == nil {
+					continue
+				}
+				definition = *response.Output.Artifacts[index].Migration
+				test.edit(&definition)
+				response.Output.Artifacts[index].Migration = &definition
+				migrationPath = response.Output.Artifacts[index].Path
+				break
+			}
+			if migrationPath == "" {
+				t.Fatal("base response has no migration artifact")
+			}
+			setManifestMigration(t, &response, migrationPath, &definition)
+			refreshEmitOutputDigest(t, &response)
+			if err := protocol.ValidateEmitResponse(request, response); err == nil {
+				t.Fatal("self-consistent migration definition tamper was accepted")
+			}
+		})
+	}
+}
+
+func TestValidateEmitResponseRejectsMigrationMetadataOnNonMigrationArtifact(t *testing.T) {
+	request := validEmitRequest(t)
+	base := protocol.HandleEmit(request)
+	if base.Status != protocol.StatusSucceeded {
+		t.Fatalf("base = %#v", base)
+	}
+	response := cloneEmitResponse(base)
+	var definition migration.Definition
+	var schemaPath string
+	for index := range response.Output.Artifacts {
+		if strings.HasSuffix(response.Output.Artifacts[index].Path, "/schema/schema.sql") {
+			definition = *base.Output.Artifacts[1].Migration
+			response.Output.Artifacts[index].Migration = &definition
+			schemaPath = response.Output.Artifacts[index].Path
+			break
+		}
+	}
+	if schemaPath == "" {
+		t.Fatal("base response has no schema artifact")
+	}
+	setManifestMigration(t, &response, schemaPath, &definition)
+	refreshEmitOutputDigest(t, &response)
+	if err := protocol.ValidateEmitResponse(request, response); err == nil {
+		t.Fatal("non-migration artifact with self-consistent migration metadata was accepted")
+	}
+}
+
 func TestEmitRejectsUnsafeRootAndUnsupportedBackend(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -501,4 +584,64 @@ func refreshEmitOutputDigest(t *testing.T, response *protocol.EmitResponse) {
 	}
 	sum := sha256.Sum256(append([]byte("plystra.data.emit-output/v1\x00"), payload...))
 	response.OutputDigest = "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func cloneEmitResponse(base protocol.EmitResponse) protocol.EmitResponse {
+	response := base
+	response.Output.Artifacts = append([]protocol.StagedArtifact(nil), base.Output.Artifacts...)
+	for index := range response.Output.Artifacts {
+		if definition := response.Output.Artifacts[index].Migration; definition != nil {
+			copy := *definition
+			copy.Predecessors = append([]migration.Identity(nil), definition.Predecessors...)
+			response.Output.Artifacts[index].Migration = &copy
+		}
+	}
+	return response
+}
+
+func setManifestMigration(t *testing.T, response *protocol.EmitResponse, path string, definition *migration.Definition) {
+	t.Helper()
+	var manifestIndex int
+	for index := range response.Output.Artifacts {
+		if strings.HasSuffix(response.Output.Artifacts[index].Path, "/manifest.json") {
+			manifestIndex = index
+			break
+		}
+	}
+	manifestArtifact := &response.Output.Artifacts[manifestIndex]
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(manifestArtifact.Bytes, &document); err != nil {
+		t.Fatal(err)
+	}
+	var entries []map[string]json.RawMessage
+	if err := json.Unmarshal(document["artifacts"], &entries); err != nil {
+		t.Fatal(err)
+	}
+	definitionJSON, err := json.Marshal(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, entry := range entries {
+		var entryPath string
+		if err := json.Unmarshal(entry["path"], &entryPath); err != nil {
+			t.Fatal(err)
+		}
+		if entryPath == path {
+			entry["migration"] = definitionJSON
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("manifest has no entry for %s", path)
+	}
+	document["artifacts"], err = json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestArtifact.Bytes, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestArtifact.Digest = postgres.DigestSQL(string(manifestArtifact.Bytes))
 }
