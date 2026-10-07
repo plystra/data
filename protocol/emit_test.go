@@ -442,6 +442,46 @@ func TestEmitIncludesMaxQueryArtifactAndMetadata(t *testing.T) {
 	}
 }
 
+func TestEmitIncludesGroupedQueryArtifactAndMetadata(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Tables[0].Columns = append(model.Tables[0].Columns, declaration.Column{ID: "region", Type: declaration.TypeString})
+	model.Queries = []declaration.Query{{
+		ID: "count-by-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+		GroupBy:    []declaration.ColumnRef{{Column: "region"}},
+		Projection: []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
+		Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
+		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
+	})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded {
+		t.Fatalf("response = %#v", response)
+	}
+	var query protocol.StagedArtifact
+	for _, artifact := range response.Output.Artifacts {
+		if artifact.Query != nil && artifact.Query.ID == "count-by-region" {
+			query = artifact
+			break
+		}
+	}
+	wantSQL := `SELECT "region", COUNT("id") AS "total" FROM "accounts"."accounts" GROUP BY "region";`
+	if query.Path == "" || !bytes.Contains(query.Bytes, []byte(wantSQL)) || query.Query == nil ||
+		!reflect.DeepEqual(query.Query.GroupBy, []declaration.ColumnRef{{Column: "region"}}) ||
+		!reflect.DeepEqual(query.Query.Projection, []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}}) ||
+		!reflect.DeepEqual(query.Query.Results, []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}}) {
+		t.Fatalf("grouped query artifact = %#v", query)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEmitIncludesJoinedSelect(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model

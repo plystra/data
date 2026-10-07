@@ -56,16 +56,19 @@ deterministically. Predicates may compare columns from the base or an already
 introduced join table, or compare an introduced column with a typed value;
 the closed `COUNT` aggregate may project `*` or an introduced column with an
 explicit alias and one required non-null `int64` result mapping. The closed
-`MIN` aggregate may project one introduced `int64` column with an explicit alias
-and one required nullable `int64` result mapping. Both are single-output
-`MAX` has the same shape and result contract as `MIN`; both are single-output
-SELECTs with no ordinary projection, aggregate ordering, limit, or offset.
+`MIN` and `MAX` aggregates may each project one introduced `int64` column with
+an explicit alias and one required nullable `int64` result mapping. These
+ungrouped forms are single-output SELECTs with no ordinary projection,
+aggregate ordering, limit, or offset. A bounded grouped SELECT may project one
+local table column named by one `GroupBy` column plus one `COUNT`, `MIN`, or
+`MAX` output; it emits one deterministic `GROUP BY` column and matching typed
+result mappings, with no joins, `HAVING`, aggregate ordering, limit, or offset.
 `COUNT(column)` ignores NULL values, including unmatched LEFT JOIN rows;
 `COUNT(*)` counts joined rows. `MIN` and `MAX` are nullable because an empty
-input (or no non-null values) produces SQL NULL. Grouping, `HAVING`, and other
-aggregate functions remain unsupported. `COUNT(*)` cannot name a table; count
-an introduced column to exclude unmatched LEFT JOIN rows. Queries without
-joins retain their existing SQL bytes.
+input (or no non-null values) produces SQL NULL. `HAVING` and other aggregate
+functions remain unsupported. `COUNT(*)` cannot name a table; count an
+introduced column to exclude unmatched LEFT JOIN rows. Queries without joins
+retain their existing SQL bytes.
 `postgres/compiler.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.
@@ -76,8 +79,8 @@ does not match the selected table column. Result mappings are compiler
 metadata; typed access provider and codec generation remains a later
 integration boundary.
 Staged query artifacts and their manifest entries include the declaring query
-operation, projection aggregate descriptors, parameters in PostgreSQL
-positional order, and typed result metadata.
+operation, group-by and projection aggregate descriptors, parameters in
+PostgreSQL positional order, and typed result metadata.
 The `analyzer` package statically discovers directive-bound declaration roots
 from a caller-supplied, module-relative source snapshot. Every package has a
 required closed `root_eligibility` value: `eligible` packages may contribute

@@ -187,6 +187,7 @@ type Query struct {
 	Assignments []Assignment  `json:"assignments,omitempty"`
 	Conflict    Conflict      `json:"conflict,omitempty"`
 	Projection  []Projection  `json:"projection,omitempty"`
+	GroupBy     []ColumnRef   `json:"group_by,omitempty"`
 	Returning   []Projection  `json:"returning,omitempty"`
 	Results     []ResultField `json:"results,omitempty"`
 	Predicate   Predicate     `json:"predicate,omitempty"`
@@ -431,6 +432,7 @@ func cloneQueries(queries []Query) []Query {
 		}
 		result[i].Conflict.UpdateColumns = append([]string(nil), query.Conflict.UpdateColumns...)
 		result[i].Projection = append([]Projection(nil), query.Projection...)
+		result[i].GroupBy = append([]ColumnRef(nil), query.GroupBy...)
 		result[i].Returning = append([]Projection(nil), query.Returning...)
 		result[i].Results = append([]ResultField(nil), query.Results...)
 		result[i].Ordering = append([]Ordering(nil), query.Ordering...)
@@ -669,15 +671,15 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			return fmt.Errorf("%w: select query assignments", ErrInvalidSchema)
 		}
 	case OperationInsert:
-		if len(query.Predicate.Items) != 0 || query.Predicate.Kind != "" || len(query.Ordering) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
+		if len(query.Predicate.Items) != 0 || query.Predicate.Kind != "" || len(query.Ordering) != 0 || len(query.GroupBy) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
 			return fmt.Errorf("%w: insert query shape", ErrInvalidSchema)
 		}
 	case OperationUpdate:
-		if len(query.Assignments) == 0 || query.Predicate.Kind == "" || len(query.Ordering) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
+		if len(query.Assignments) == 0 || query.Predicate.Kind == "" || len(query.Ordering) != 0 || len(query.GroupBy) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
 			return fmt.Errorf("%w: update query shape", ErrInvalidSchema)
 		}
 	case OperationDelete:
-		if len(query.Assignments) != 0 || query.Predicate.Kind == "" || len(query.Ordering) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
+		if len(query.Assignments) != 0 || query.Predicate.Kind == "" || len(query.Ordering) != 0 || len(query.GroupBy) != 0 || query.HasLimit || query.HasOffset || len(query.Projection) != 0 {
 			return fmt.Errorf("%w: delete query shape", ErrInvalidSchema)
 		}
 	}
@@ -753,17 +755,40 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 		}
 	}
 	if aggregateOutputs != 0 && (aggregateOutputs != 1 || len(outputs) != 1) {
-		return fmt.Errorf("%w: aggregate query projection", ErrUnsupported)
+		if len(query.GroupBy) == 0 || aggregateOutputs != 1 || len(outputs) != 2 {
+			return fmt.Errorf("%w: aggregate query projection", ErrUnsupported)
+		}
 	}
-	if aggregateOutputs != 0 && len(query.Results) != 1 {
+	if len(query.GroupBy) > 1 {
+		return fmt.Errorf("%w: query grouping", ErrUnsupported)
+	}
+	if len(query.GroupBy) != 0 && (query.Operation != OperationSelect || len(query.Joins) != 0 || aggregateOutputs != 1 || len(outputs) != 2) {
+		return fmt.Errorf("%w: grouped query shape", ErrUnsupported)
+	}
+	if aggregateOutputs == 0 && len(query.GroupBy) != 0 {
+		return fmt.Errorf("%w: grouped query aggregate", ErrUnsupported)
+	}
+	if aggregateOutputs != 0 && len(query.Results) != len(outputs) {
 		return fmt.Errorf("%w: aggregate query result mapping", ErrInvalidSchema)
 	}
 	if aggregateOutputs != 0 {
-		result := query.Results[0]
-		projection := outputs[0]
-		wantNullable := projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax
-		if result.Source != projection.Alias || result.Type != TypeInt64 || result.Nullable != wantNullable {
-			return fmt.Errorf("%w: aggregate query result type", ErrInvalidSchema)
+		for _, projection := range outputs {
+			if projection.Aggregate == "" {
+				continue
+			}
+			var result ResultField
+			found := false
+			for _, candidate := range query.Results {
+				if candidate.Source == projection.Alias {
+					result = candidate
+					found = true
+					break
+				}
+			}
+			wantNullable := projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax
+			if !found || result.Type != TypeInt64 || result.Nullable != wantNullable {
+				return fmt.Errorf("%w: aggregate query result type", ErrInvalidSchema)
+			}
 		}
 	}
 	if aggregateOutputs != 0 && (len(query.Ordering) != 0 || query.HasLimit || query.HasOffset) {
@@ -814,6 +839,22 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			if _, exists := introduced[refKey(projection.Table)]; !exists {
 				return fmt.Errorf("%w: query projection table %q", ErrReference, projection.Table.Symbol)
 			}
+		}
+	}
+	if len(query.GroupBy) != 0 {
+		group := query.GroupBy[0]
+		if err := validatePredicateColumn(group, imports, introduced, query.Table); err != nil {
+			return fmt.Errorf("group by: %w", err)
+		}
+		matched := false
+		for _, projection := range outputs {
+			if projection.Aggregate == "" && sameColumnRef(ColumnRef{Table: projection.Table, Column: projection.Column}, group, query.Table) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("%w: group by projection", ErrReference)
 		}
 	}
 	if len(query.Results) != 0 {
@@ -955,6 +996,16 @@ func validatePredicateColumn(ref ColumnRef, imports map[string]struct{}, introdu
 	return nil
 }
 
+func sameColumnRef(left, right ColumnRef, base Ref) bool {
+	if left.Table.Member == "" && left.Table.Symbol == "" {
+		left.Table = base
+	}
+	if right.Table.Member == "" && right.Table.Symbol == "" {
+		right.Table = base
+	}
+	return left == right
+}
+
 func predicateColumnSet(ref ColumnRef) bool {
 	return ref.Table.Member != "" || ref.Table.Symbol != "" || ref.Column != ""
 }
@@ -1032,7 +1083,7 @@ func nodeCount(model Model) int {
 		if query.Conflict.Constraint != "" || query.Conflict.Action != "" || len(query.Conflict.UpdateColumns) != 0 {
 			conflictNodes = 1
 		}
-		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + conflictNodes + len(query.Conflict.UpdateColumns) + len(query.Projection) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
+		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + conflictNodes + len(query.Conflict.UpdateColumns) + len(query.Projection) + len(query.GroupBy) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
 	}
 	for _, plan := range model.Plans {
 		count += len(plan.Statements)

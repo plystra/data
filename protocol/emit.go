@@ -71,6 +71,7 @@ type QueryMetadata struct {
 	Operation  declaration.OperationKind `json:"operation"`
 	Parameters []declaration.Parameter   `json:"parameters"`
 	Projection []declaration.Projection  `json:"projection"`
+	GroupBy    []declaration.ColumnRef   `json:"group_by"`
 	Results    []declaration.ResultField `json:"results"`
 	Conflict   *declaration.Conflict     `json:"conflict,omitempty"`
 }
@@ -658,6 +659,7 @@ func metadataForQuery(query declaration.Query) QueryMetadata {
 		ID: query.ID, Operation: query.Operation,
 		Parameters: append([]declaration.Parameter{}, query.Parameters...),
 		Projection: append([]declaration.Projection{}, query.Projection...),
+		GroupBy:    append([]declaration.ColumnRef{}, query.GroupBy...),
 		Results:    append([]declaration.ResultField{}, query.Results...),
 	}
 	if query.Conflict.Action != "" || query.Conflict.Constraint != "" || len(query.Conflict.UpdateColumns) != 0 {

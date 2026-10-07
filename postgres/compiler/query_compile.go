@@ -155,6 +155,25 @@ func compileSelect(owner, tableMember SchemaMember, table declaration.Table, que
 		sql.WriteString(" WHERE ")
 		sql.WriteString(predicate)
 	}
+	if len(query.GroupBy) != 0 {
+		grouping := make([]string, len(query.GroupBy))
+		for index, item := range query.GroupBy {
+			groupingTable := item.Table
+			if groupingTable.Member == "" && groupingTable.Symbol == "" {
+				groupingTable = query.Table
+			}
+			introduced, exists := aliases[groupingTable]
+			if !exists {
+				return "", fmt.Errorf("group by table %s is not introduced", groupingTable.Symbol)
+			}
+			if !hasColumn(introduced.table, item.Column) {
+				return "", fmt.Errorf("group by column %s is not present", item.Column)
+			}
+			grouping[index] = columnSQL(introduced.alias, item.Column)
+		}
+		sql.WriteString(" GROUP BY ")
+		sql.WriteString(strings.Join(grouping, ", "))
+	}
 	if len(query.Ordering) != 0 {
 		ordering := make([]string, len(query.Ordering))
 		for index, item := range query.Ordering {

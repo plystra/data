@@ -143,6 +143,30 @@ func TestCompileQueriesLowersMaxProjection(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersGroupedAggregate(t *testing.T) {
+	member := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts",
+			Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: declaration.TypeString}, {ID: "id", Type: declaration.TypeInt64}}}},
+			Queries: []declaration.Query{{
+				ID: "count-by-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+				GroupBy:    []declaration.ColumnRef{{Column: "region"}},
+				Projection: []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
+				Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+			}},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("grouped artifacts = %#v, error = %v", artifacts, err)
+	}
+	want := `SELECT "region", COUNT("id") AS "total" FROM "accounts"."users" GROUP BY "region";`
+	if !strings.Contains(artifacts[0].SQL, want) {
+		t.Fatalf("grouped artifact = %#v, want %q", artifacts[0], want)
+	}
+}
+
 func TestCompileQueriesCountsNullableJoinedColumn(t *testing.T) {
 	users := declaration.Ref{Symbol: "users"}
 	teams := declaration.Ref{Symbol: "teams"}

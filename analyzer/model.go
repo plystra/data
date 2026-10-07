@@ -549,6 +549,12 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 				return nil, err
 			}
 		}
+		if field, ok := fields["GroupBy"]; ok {
+			query.GroupBy, err = d.columnRefs(field)
+			if err != nil {
+				return nil, fmt.Errorf("group by: %w", err)
+			}
+		}
 		if field, ok := fields["Returning"]; ok {
 			query.Returning, err = d.projections(field)
 			if err != nil {
@@ -701,6 +707,21 @@ func (d modelDecoder) columnRef(value ast.Expr) (declaration.ColumnRef, error) {
 		result.Column, err = d.string(field)
 		if err != nil {
 			return declaration.ColumnRef{}, err
+		}
+	}
+	return result, nil
+}
+
+func (d modelDecoder) columnRefs(value ast.Expr) ([]declaration.ColumnRef, error) {
+	elements, err := d.slice(value)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]declaration.ColumnRef, len(elements))
+	for index, element := range elements {
+		result[index], err = d.columnRef(element)
+		if err != nil {
+			return nil, fmt.Errorf("element %d: %w", index, err)
 		}
 	}
 	return result, nil

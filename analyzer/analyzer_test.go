@@ -348,6 +348,34 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeDecodesGroupedAggregate(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: "string"}, {ID: "id", Type: "int64"}}}},
+	Queries: []declaration.Query{{
+		ID: "count-by-region", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		GroupBy: []declaration.ColumnRef{{Column: "region"}},
+		Projection: []declaration.Projection{{Column: "region"}, {Aggregate: "count", Column: "id", Alias: "total"}},
+		Results: []declaration.ResultField{{ID: "region", Source: "region", Type: "string"}, {ID: "total", Source: "total", Type: "int64"}},
+	}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || len(result.Diagnostics) != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	query := result.Roots[0].Model.Queries[0]
+	if len(query.GroupBy) != 1 || query.GroupBy[0].Column != "region" || len(query.Projection) != 2 || query.Projection[1].Aggregate != declaration.AggregateCount {
+		t.Fatalf("decoded grouped query = %#v", query)
+	}
+}
+
 func TestAnalyzeRejectsInvalidJoinReferences(t *testing.T) {
 	source := `package model
 
@@ -784,7 +812,7 @@ type JoinCondition struct { Left ColumnRef; Right ColumnRef }
 type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
 type ConflictAction string
 type Conflict struct { Constraint string; Action ConflictAction; UpdateColumns []string }
-type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
+type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; GroupBy []ColumnRef; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 type Projection struct { Table Ref; Column string; Alias string; Aggregate string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string
