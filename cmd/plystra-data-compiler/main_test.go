@@ -1,11 +1,17 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -183,5 +189,155 @@ func TestCompilerCommandInstallsWithoutCoreModuleCache(t *testing.T) {
 	}
 	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "plystra-data-compiler") {
 		t.Fatalf("isolated compiler install output = %#v", entries)
+	}
+}
+
+func TestCompilerCommandInstallsFromPublishedModuleArchive(t *testing.T) {
+	const version = "v0.0.0-test"
+
+	moduleRoot := findModuleRoot(t)
+	proxy := filepath.Join(t.TempDir(), "proxy")
+	writePublishedModule(t, proxy, moduleRoot, version)
+	cache := filepath.Join(t.TempDir(), "module-cache")
+	bin := filepath.Join(t.TempDir(), "bin")
+	work := t.TempDir()
+	proxyPath := filepath.ToSlash(proxy)
+	if runtime.GOOS == "windows" {
+		proxyPath = "/" + proxyPath
+	}
+	proxyURL := (&url.URL{Scheme: "file", Path: proxyPath}).String()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "install", protocol.CommandImportPath+"@"+version)
+	command.Dir = work
+	command.Env = append(os.Environ(),
+		"GOENV=off", "GOWORK=off", "GOMODCACHE="+cache, "GOPROXY="+proxyURL,
+		"GOSUMDB=off", "GONOSUMDB=*", "GONOPROXY=none", "GOTOOLCHAIN=local", "GOBIN="+bin,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("published compiler install: %v; output=%s", err, output)
+	}
+	entries, err := os.ReadDir(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "plystra-data-compiler") {
+		t.Fatalf("published compiler install output = %#v", entries)
+	}
+
+	installed := filepath.Join(bin, entries[0].Name())
+	info, err := exec.CommandContext(ctx, "go", "version", "-m", installed).CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect published compiler: %v; output=%s", err, info)
+	}
+	if !strings.Contains(string(info), "mod\t"+protocol.ModulePath+"\t"+version) {
+		t.Fatalf("installed compiler module info = %s", info)
+	}
+}
+
+func findModuleRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			return root
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Fatal("could not locate module root")
+		}
+		root = parent
+	}
+}
+
+func writePublishedModule(t *testing.T, proxy, moduleRoot, version string) {
+	t.Helper()
+	versionRoot := filepath.Join(proxy, "github.com", "plystra", "data", "@v")
+	if err := os.MkdirAll(versionRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(versionRoot, "list"), version+"\n")
+	writeTestFile(t, filepath.Join(versionRoot, version+".info"), fmt.Sprintf("{\"Version\":%q,\"Time\":%q}\n", version, "2026-10-08T00:00:00Z"))
+	goMod, err := os.ReadFile(filepath.Join(moduleRoot, "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(versionRoot, version+".mod"), string(goMod))
+	archiveFile, err := os.Create(filepath.Join(versionRoot, version+".zip"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(archiveFile)
+	prefix := "github.com/plystra/data@" + version + "/"
+	var names []string
+	err = filepath.WalkDir(moduleRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		relative, err := filepath.Rel(moduleRoot, path)
+		if err != nil {
+			return err
+		}
+		names = append(names, filepath.ToSlash(relative))
+		return nil
+	})
+	if err != nil {
+		_ = archive.Close()
+		_ = archiveFile.Close()
+		t.Fatal(err)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Join(moduleRoot, filepath.FromSlash(name)))
+		if err != nil {
+			_ = archive.Close()
+			_ = archiveFile.Close()
+			t.Fatal(err)
+		}
+		header := &zip.FileHeader{Name: prefix + name, Method: zip.Deflate}
+		header.SetMode(0o644)
+		header.Modified = time.Date(1980, time.January, 1, 0, 0, 0, 0, time.UTC)
+		writer, err := archive.CreateHeader(header)
+		if err != nil {
+			_ = archive.Close()
+			_ = archiveFile.Close()
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(data); err != nil {
+			_ = archive.Close()
+			_ = archiveFile.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		_ = archiveFile.Close()
+		t.Fatal(err)
+	}
+	if err := archiveFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeTestFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
