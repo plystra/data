@@ -505,12 +505,12 @@ func validateModel(model *Model) error {
 			return err
 		}
 	}
-	queries := make(map[string]struct{}, len(model.Queries))
+	queries := make(map[string]Query, len(model.Queries))
 	for _, query := range model.Queries {
 		if err := addSymbol(symbols, query.ID, "query"); err != nil {
 			return err
 		}
-		queries[query.ID] = struct{}{}
+		queries[query.ID] = query
 		if err := validateQuery(query, imports, tables); err != nil {
 			return err
 		}
@@ -910,7 +910,7 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 	return nil
 }
 
-func validatePlan(plan Plan, imports map[string]struct{}, queries map[string]struct{}) error {
+func validatePlan(plan Plan, imports map[string]struct{}, queries map[string]Query) error {
 	if !validSymbol(plan.ID) || len(plan.Statements) == 0 || len(plan.Statements) > 64 {
 		return fmt.Errorf("%w: plan %q", ErrInvalidSchema, plan.ID)
 	}
@@ -927,9 +927,26 @@ func validatePlan(plan Plan, imports map[string]struct{}, queries map[string]str
 			return err
 		}
 		if statement.Query.Member == "" {
-			if _, exists := queries[statement.Query.Symbol]; !exists {
+			query, exists := queries[statement.Query.Symbol]
+			if !exists {
 				return fmt.Errorf("%w: query %q", ErrReference, statement.Query.Symbol)
 			}
+			switch query.Operation {
+			case OperationSelect:
+				if statement.Cardinality == CardinalityNone || statement.Affected.Set {
+					return fmt.Errorf("%w: select plan statement %q assertion", ErrInvalidSchema, statement.ID)
+				}
+			case OperationInsert, OperationUpdate, OperationDelete:
+				if len(query.Returning) != 0 {
+					return fmt.Errorf("%w: mutation plan statement %q returning", ErrUnsupported, statement.ID)
+				}
+				if statement.Cardinality != CardinalityNone || !statement.Affected.Set {
+					return fmt.Errorf("%w: mutation plan statement %q assertion", ErrInvalidSchema, statement.ID)
+				}
+			}
+		}
+		if statement.Cardinality == "" {
+			return fmt.Errorf("%w: plan statement %q cardinality", ErrInvalidSchema, statement.ID)
 		}
 		if statement.Cardinality != CardinalityNone && statement.Cardinality != CardinalityExactlyOne && statement.Cardinality != CardinalityZeroOrOne && statement.Cardinality != CardinalityMany {
 			return fmt.Errorf("%w: cardinality %q", ErrUnsupported, statement.Cardinality)

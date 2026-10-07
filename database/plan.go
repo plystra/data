@@ -66,6 +66,14 @@ func NullArgument() Argument { return Argument{Kind: ValueNull} }
 // Value is one typed scalar returned by a generated query.
 type Value = Argument
 
+// ResultColumn describes one typed column returned by a query statement.
+// Kind is the non-null backend value kind; Nullable controls whether NULL is
+// accepted for that column.
+type ResultColumn struct {
+	Kind     ValueKind
+	Nullable bool
+}
+
 // ExactAffectedRows creates an assertion for one exact mutation count.
 func ExactAffectedRows(count uint64) AffectedRows {
 	return AffectedRows{Min: count, Max: count, Set: true}
@@ -88,12 +96,13 @@ func (a AffectedRows) accepts(count uint64) bool {
 // Data access code supplies literal SQL and typed arguments; callers do not
 // receive a transaction handle or a callback escape hatch.
 type Statement struct {
-	ID          string
-	SQL         string
-	Args        []Argument
-	ReturnsRows bool
-	Cardinality Cardinality
-	Affected    AffectedRows
+	ID            string
+	SQL           string
+	Args          []Argument
+	ReturnsRows   bool
+	Cardinality   Cardinality
+	Affected      AffectedRows
+	ResultColumns []ResultColumn
 }
 
 // StatementResult contains only the result of one statement in the plan.
@@ -141,12 +150,26 @@ func validateStatement(index int, statement Statement, seen map[string]struct{})
 		if cardinalityNone(statement.Cardinality) || statement.Affected != (AffectedRows{}) {
 			return fmt.Errorf("%w: statement %s query assertion", ErrInvalidPlan, statement.ID)
 		}
+		for _, column := range statement.ResultColumns {
+			if column.Kind == ValueNull || !validValueKind(column.Kind) {
+				return fmt.Errorf("%w: statement %s result column", ErrInvalidPlan, statement.ID)
+			}
+		}
 		return nil
 	}
-	if !cardinalityNone(statement.Cardinality) || !statement.Affected.valid() {
+	if !cardinalityNone(statement.Cardinality) || !statement.Affected.valid() || len(statement.ResultColumns) != 0 {
 		return fmt.Errorf("%w: statement %s mutation assertion", ErrInvalidPlan, statement.ID)
 	}
 	return nil
+}
+
+func validValueKind(value ValueKind) bool {
+	switch value {
+	case ValueString, ValueInt64, ValueFloat64, ValueBool, ValueBytes:
+		return true
+	default:
+		return false
+	}
 }
 
 func cardinalityNone(value Cardinality) bool {

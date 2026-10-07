@@ -44,6 +44,31 @@ func TestNormalizeErrorClassifiesBoundedBackendErrors(t *testing.T) {
 	}
 }
 
+func TestValidateResultColumnsChecksWidthTypeAndNullability(t *testing.T) {
+	columns := []db.ResultColumn{
+		{Kind: db.ValueInt64},
+		{Kind: db.ValueString, Nullable: true},
+	}
+	tests := []struct {
+		name string
+		rows [][]db.Value
+		want bool
+	}{
+		{name: "valid", rows: [][]db.Value{{db.Int64Argument(1), db.NullArgument()}}, want: true},
+		{name: "wrong width", rows: [][]db.Value{{db.Int64Argument(1)}}},
+		{name: "wrong type", rows: [][]db.Value{{db.StringArgument("1"), db.StringArgument("x")}}},
+		{name: "unexpected null", rows: [][]db.Value{{db.NullArgument(), db.StringArgument("x")}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateResultColumns(columns, test.rows)
+			if (err == nil) != test.want {
+				t.Fatalf("validateResultColumns() error = %v, want success = %t", err, test.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeErrorPreservesContextAndCommitUncertainty(t *testing.T) {
 	tests := []struct {
 		name          string

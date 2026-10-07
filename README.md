@@ -73,6 +73,13 @@ retain their existing SQL bytes.
 `postgres/compiler.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.
+`postgres/compiler.CompilePlans` currently lowers the initial executable-plan
+subset: local, parameter-free `SELECT` statements with explicit cardinality
+and typed projected results become ordered `database.Plan` statements. The
+database contract carries result width, scalar kind, and nullability into the
+PostgreSQL transaction, which validates those facts before commit. Joins,
+parameters, imported queries, mutation plans, generated access methods, and
+protocol plan artifacts remain separate integration boundaries.
 Mutation queries may additionally declare explicit `Returning` projections and
 typed `Results` mappings. The lowerer emits deterministic PostgreSQL
 `RETURNING` clauses and rejects result sources whose scalar type or nullability

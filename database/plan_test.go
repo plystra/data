@@ -15,7 +15,9 @@ func TestPlanValidateRequiresClosedAssertions(t *testing.T) {
 	}{
 		{name: "empty", plan: database.Plan{}},
 		{name: "query without cardinality", plan: database.Plan{Statements: []database.Statement{{ID: "read", SQL: "SELECT 1", ReturnsRows: true}}}},
+		{name: "query with null result kind", plan: database.Plan{Statements: []database.Statement{{ID: "read", SQL: "SELECT 1", ReturnsRows: true, Cardinality: database.CardinalityMany, ResultColumns: []database.ResultColumn{{Kind: database.ValueNull}}}}}},
 		{name: "mutation without affected rows", plan: database.Plan{Statements: []database.Statement{{ID: "write", SQL: "UPDATE records SET value = $1", Affected: database.AffectedRows{}}}}},
+		{name: "mutation with result columns", plan: database.Plan{Statements: []database.Statement{{ID: "write", SQL: "UPDATE records SET value = $1", Affected: database.ExactAffectedRows(1), ResultColumns: []database.ResultColumn{{Kind: database.ValueInt64}}}}}},
 		{name: "duplicate ids", plan: database.Plan{Statements: []database.Statement{{ID: "write", SQL: "DELETE FROM records", Affected: database.ExactAffectedRows(1)}, {ID: "write", SQL: "DELETE FROM records", Affected: database.ExactAffectedRows(1)}}}},
 	}
 	for _, test := range tests {

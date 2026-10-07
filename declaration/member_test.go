@@ -18,7 +18,7 @@ func TestNormalizeSortsAndDigestsTheLogicalModel(t *testing.T) {
 			{ID: "sessions", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeUUID}}},
 		},
 		Queries:    []declaration.Query{{ID: "find-account", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}}},
-		Plans:      []declaration.Plan{{ID: "create-account", Statements: []declaration.PlanStatement{{ID: "insert", Query: declaration.Ref{Symbol: "find-account"}, Cardinality: declaration.CardinalityNone, Affected: declaration.AffectedRows{Set: true, Min: 1, Max: 1}}}}},
+		Plans:      []declaration.Plan{{ID: "create-account", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "find-account"}, Cardinality: declaration.CardinalityMany}}}},
 		Migrations: []declaration.Migration{{ID: "create-accounts", Version: 1, Operations: []declaration.MigrationOperation{{Kind: declaration.MigrationCreateTable, Table: declaration.Ref{Symbol: "accounts"}}}}},
 	}
 	model, err := member.Normalize()
@@ -82,6 +82,55 @@ func TestNormalizeDoesNotMutateAuthoredSlices(t *testing.T) {
 	}
 	if member.Imports[0] != "z.audit/v1" || member.Tables[0].ID != "z-table" || member.Tables[0].Columns[0].ID != "z-column" {
 		t.Fatal("Normalize mutated authored slices")
+	}
+}
+
+func TestNormalizeRequiresPlanAssertionsMatchingQueryOperation(t *testing.T) {
+	base := func(query declaration.Query, statement declaration.PlanStatement) declaration.Member[access] {
+		return declaration.Member[access]{
+			Namespace: "accounts",
+			Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "name", Type: declaration.TypeString}}}},
+			Queries:   []declaration.Query{query},
+			Plans:     []declaration.Plan{{ID: "read-plan", Statements: []declaration.PlanStatement{statement}}},
+		}
+	}
+	selectQuery := declaration.Query{
+		ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+		Projection: []declaration.Projection{{Column: "id"}},
+	}
+	insertQuery := declaration.Query{
+		ID: "insert", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"},
+		Assignments: []declaration.Assignment{{Column: "name", Value: declaration.String("Ada")}},
+	}
+	tests := []struct {
+		name   string
+		member declaration.Member[access]
+	}{
+		{
+			name:   "select requires cardinality",
+			member: base(selectQuery, declaration.PlanStatement{ID: "read", Query: declaration.Ref{Symbol: "read"}}),
+		},
+		{
+			name: "select rejects affected rows",
+			member: base(selectQuery, declaration.PlanStatement{ID: "read", Query: declaration.Ref{Symbol: "read"}, Cardinality: declaration.CardinalityMany,
+				Affected: declaration.AffectedRows{Set: true, Min: 1, Max: 1}}),
+		},
+		{
+			name:   "mutation requires affected rows",
+			member: base(insertQuery, declaration.PlanStatement{ID: "insert", Query: declaration.Ref{Symbol: "insert"}}),
+		},
+		{
+			name: "mutation rejects cardinality",
+			member: base(insertQuery, declaration.PlanStatement{ID: "insert", Query: declaration.Ref{Symbol: "insert"}, Cardinality: declaration.CardinalityMany,
+				Affected: declaration.AffectedRows{Set: true, Min: 1, Max: 1}}),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := test.member.Normalize(); !errors.Is(err, declaration.ErrInvalidSchema) {
+				t.Fatalf("Normalize() error = %v, want ErrInvalidSchema", err)
+			}
+		})
 	}
 }
 

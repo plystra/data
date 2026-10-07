@@ -213,7 +213,34 @@ func queryStatement(ctx context.Context, tx pgx.Tx, statement db.Statement) (db.
 	if err := validateRowCardinality(statement.Cardinality, len(values)); err != nil {
 		return db.StatementResult{}, err
 	}
+	if err := validateResultColumns(statement.ResultColumns, values); err != nil {
+		return db.StatementResult{}, err
+	}
 	return db.StatementResult{Rows: values}, nil
+}
+
+func validateResultColumns(columns []db.ResultColumn, rows [][]db.Value) error {
+	if len(columns) == 0 {
+		return nil
+	}
+	for rowIndex, row := range rows {
+		if len(row) != len(columns) {
+			return fmt.Errorf("%w: result row %d width", db.ErrBackend, rowIndex)
+		}
+		for columnIndex, value := range row {
+			column := columns[columnIndex]
+			if value.Kind == db.ValueNull {
+				if column.Nullable {
+					continue
+				}
+				return fmt.Errorf("%w: result row %d nullability", db.ErrBackend, rowIndex)
+			}
+			if value.Kind != column.Kind {
+				return fmt.Errorf("%w: result row %d type", db.ErrBackend, rowIndex)
+			}
+		}
+	}
+	return nil
 }
 
 func validateRowCardinality(cardinality db.Cardinality, count int) error {
