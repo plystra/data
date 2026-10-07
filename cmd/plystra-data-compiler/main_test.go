@@ -162,3 +162,26 @@ func TestCompilerCommandDoesNotDependOnCorePackages(t *testing.T) {
 		}
 	}
 }
+
+func TestCompilerCommandInstallsWithoutCoreModuleCache(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cache := t.TempDir()
+	bin := t.TempDir()
+	command := exec.CommandContext(ctx, "go", "install", "-mod=readonly", ".")
+	command.Env = append(os.Environ(),
+		"GOWORK=off", "GOMODCACHE="+cache, "GOPROXY=off", "GOSUMDB=off",
+		"GOTOOLCHAIN=local", "GOBIN="+bin,
+	)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("isolated compiler install: %v; output=%s", err, output)
+	}
+	entries, err := os.ReadDir(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "plystra-data-compiler") {
+		t.Fatalf("isolated compiler install output = %#v", entries)
+	}
+}

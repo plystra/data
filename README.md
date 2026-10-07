@@ -99,8 +99,9 @@ implementation packages.
 
 The pure `postgres/compiler` package owns SQL lowering and does not import the
 runtime `postgres` provider. The public compiler command's build dependency
-closure excludes Kernel and CLI; the runtime `postgres.New` provider remains a
-separate consumer of Kernel's Secret contract.
+closure excludes Kernel and CLI and installs successfully with `GOWORK=off`,
+`GOPROXY=off`, and an empty module cache; the runtime `postgres.New` provider
+remains a separate consumer of Kernel's Secret contract.
 
 The `database` package exposes bounded backend errors for not-found,
 uniqueness or exclusion conflict, foreign-key violation, concurrent mutation,
