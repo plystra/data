@@ -226,6 +226,7 @@ type AggregateKind string
 
 const (
 	AggregateCount AggregateKind = "count"
+	AggregateMin   AggregateKind = "min"
 )
 
 type Projection struct {
@@ -759,7 +760,8 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 	if aggregateOutputs != 0 {
 		result := query.Results[0]
 		projection := outputs[0]
-		if result.Source != projection.Alias || result.Type != TypeInt64 || result.Nullable {
+		wantNullable := projection.Aggregate == AggregateMin
+		if result.Source != projection.Alias || result.Type != TypeInt64 || result.Nullable != wantNullable {
 			return fmt.Errorf("%w: aggregate query result type", ErrInvalidSchema)
 		}
 	}
@@ -772,11 +774,27 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 				return fmt.Errorf("%w: query projection %q", ErrInvalidSchema, projection.Column)
 			}
 		} else {
-			if query.Operation != OperationSelect || projection.Aggregate != AggregateCount {
+			if query.Operation != OperationSelect || (projection.Aggregate != AggregateCount && projection.Aggregate != AggregateMin) {
 				return fmt.Errorf("%w: query aggregate %q", ErrUnsupported, projection.Aggregate)
 			}
 			if projection.Column != "" && !validSymbol(projection.Column) {
 				return fmt.Errorf("%w: query aggregate column %q", ErrInvalidSchema, projection.Column)
+			}
+			if projection.Aggregate == AggregateMin && projection.Column == "" {
+				return fmt.Errorf("%w: min aggregate column", ErrInvalidSchema)
+			}
+			if projection.Aggregate == AggregateMin && projection.Table.Member == "" {
+				target := query.Table.Symbol
+				if projection.Table.Symbol != "" {
+					target = projection.Table.Symbol
+				}
+				if table, exists := tables[target]; exists {
+					for _, column := range table.Columns {
+						if column.ID == projection.Column && column.Type != TypeInt64 {
+							return fmt.Errorf("%w: min aggregate column type", ErrInvalidSchema)
+						}
+					}
+				}
 			}
 			if projection.Column == "" && (projection.Table.Member != "" || projection.Table.Symbol != "") {
 				return fmt.Errorf("%w: count star table", ErrInvalidSchema)

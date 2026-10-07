@@ -358,10 +358,18 @@ func validateQueryResults(owner, tableMember SchemaMember, table declaration.Tab
 			if !exists {
 				return fmt.Errorf("result column %s is not present", item.Column)
 			}
+		} else if item.Aggregate == declaration.AggregateMin {
+			input, exists := columnByID(outputTable, item.Column)
+			if !exists {
+				return fmt.Errorf("result column %s is not present", item.Column)
+			}
+			if input.Type != declaration.TypeInt64 {
+				return fmt.Errorf("min aggregate column %s is not int64", item.Column)
+			}
 		} else if item.Aggregate != declaration.AggregateCount {
 			return fmt.Errorf("unsupported aggregate %q", item.Aggregate)
 		}
-		if item.Aggregate == "" && projectionCanBeNull(query, item.Table) {
+		if item.Aggregate == declaration.AggregateMin || item.Aggregate == "" && projectionCanBeNull(query, item.Table) {
 			column.Nullable = true
 		}
 		name := item.Column
@@ -388,7 +396,7 @@ func validateQueryResults(owner, tableMember SchemaMember, table declaration.Tab
 }
 
 func itemResultType(item declaration.Projection) declaration.ScalarType {
-	if item.Aggregate == declaration.AggregateCount {
+	if item.Aggregate == declaration.AggregateCount || item.Aggregate == declaration.AggregateMin {
 		return declaration.TypeInt64
 	}
 	return ""
@@ -468,7 +476,7 @@ func selectQueryColumns(query declaration.Query, aliases map[declaration.Ref]joi
 		if item.Aggregate == declaration.AggregateCount && item.Column != "" && !hasColumn(introduced.table, item.Column) {
 			return "", fmt.Errorf("projection column %s is not present", item.Column)
 		}
-		if item.Aggregate != "" && item.Aggregate != declaration.AggregateCount {
+		if item.Aggregate != "" && item.Aggregate != declaration.AggregateCount && item.Aggregate != declaration.AggregateMin {
 			return "", fmt.Errorf("unsupported aggregate %q", item.Aggregate)
 		}
 		qualifier := baseQualifier
@@ -481,6 +489,8 @@ func selectQueryColumns(query declaration.Query, aliases map[declaration.Ref]joi
 				argument = qualifier + quoteIdentifier(item.Column)
 			}
 			columns[index] = "COUNT(" + argument + ")"
+		} else if item.Aggregate == declaration.AggregateMin {
+			columns[index] = "MIN(" + qualifier + quoteIdentifier(item.Column) + ")"
 		} else {
 			columns[index] = qualifier + quoteIdentifier(item.Column)
 		}

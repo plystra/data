@@ -55,14 +55,16 @@ table; the SQL lowerer uses stable aliases and qualifies those columns
 deterministically. Predicates may compare columns from the base or an already
 introduced join table, or compare an introduced column with a typed value;
 the closed `COUNT` aggregate may project `*` or an introduced column with an
-explicit alias and one required non-null `int64` result mapping. COUNT is a
-single-output SELECT with no ordinary projection, aggregate ordering, limit,
-or offset. `COUNT(column)` ignores NULL values, including unmatched LEFT JOIN
-rows; `COUNT(*)` counts joined rows. Other aggregate functions, conflict
-actions, and conflict targets remain unsupported. `COUNT(*)` cannot name a
-table; count an introduced column
-to exclude unmatched LEFT JOIN rows. Queries without joins retain their existing
-SQL bytes.
+explicit alias and one required non-null `int64` result mapping. The closed
+`MIN` aggregate may project one introduced `int64` column with an explicit alias
+and one required nullable `int64` result mapping. Both are single-output
+SELECTs with no ordinary projection, aggregate ordering, limit, or offset.
+`COUNT(column)` ignores NULL values, including unmatched LEFT JOIN rows;
+`COUNT(*)` counts joined rows. `MIN` is nullable because an empty input (or no
+non-null values) produces SQL NULL. Grouping, `HAVING`, and other aggregate
+functions remain unsupported. `COUNT(*)` cannot name a table; count an
+introduced column to exclude unmatched LEFT JOIN rows. Queries without joins
+retain their existing SQL bytes.
 `postgres/compiler.CompileMigrations` lowers immutable migration operations into
 planner-validated SQL artifacts with logical and compiled digests, predecessor
 identity, compiler identity, and PostgreSQL backend identity.
@@ -73,8 +75,8 @@ does not match the selected table column. Result mappings are compiler
 metadata; typed access provider and codec generation remains a later
 integration boundary.
 Staged query artifacts and their manifest entries include the declaring query
-operation, parameters in PostgreSQL positional order, and typed result
-metadata.
+operation, projection aggregate descriptors, parameters in PostgreSQL
+positional order, and typed result metadata.
 The `analyzer` package statically discovers directive-bound declaration roots
 from a caller-supplied, module-relative source snapshot. Every package has a
 required closed `root_eligibility` value: `eligible` packages may contribute
