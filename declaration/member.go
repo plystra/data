@@ -227,6 +227,7 @@ type AggregateKind string
 const (
 	AggregateCount AggregateKind = "count"
 	AggregateMin   AggregateKind = "min"
+	AggregateMax   AggregateKind = "max"
 )
 
 type Projection struct {
@@ -760,7 +761,7 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 	if aggregateOutputs != 0 {
 		result := query.Results[0]
 		projection := outputs[0]
-		wantNullable := projection.Aggregate == AggregateMin
+		wantNullable := projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax
 		if result.Source != projection.Alias || result.Type != TypeInt64 || result.Nullable != wantNullable {
 			return fmt.Errorf("%w: aggregate query result type", ErrInvalidSchema)
 		}
@@ -774,16 +775,16 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 				return fmt.Errorf("%w: query projection %q", ErrInvalidSchema, projection.Column)
 			}
 		} else {
-			if query.Operation != OperationSelect || (projection.Aggregate != AggregateCount && projection.Aggregate != AggregateMin) {
+			if query.Operation != OperationSelect || (projection.Aggregate != AggregateCount && projection.Aggregate != AggregateMin && projection.Aggregate != AggregateMax) {
 				return fmt.Errorf("%w: query aggregate %q", ErrUnsupported, projection.Aggregate)
 			}
 			if projection.Column != "" && !validSymbol(projection.Column) {
 				return fmt.Errorf("%w: query aggregate column %q", ErrInvalidSchema, projection.Column)
 			}
-			if projection.Aggregate == AggregateMin && projection.Column == "" {
-				return fmt.Errorf("%w: min aggregate column", ErrInvalidSchema)
+			if (projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax) && projection.Column == "" {
+				return fmt.Errorf("%w: %s aggregate column", ErrInvalidSchema, projection.Aggregate)
 			}
-			if projection.Aggregate == AggregateMin && projection.Table.Member == "" {
+			if (projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax) && projection.Table.Member == "" {
 				target := query.Table.Symbol
 				if projection.Table.Symbol != "" {
 					target = projection.Table.Symbol
@@ -791,7 +792,7 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 				if table, exists := tables[target]; exists {
 					for _, column := range table.Columns {
 						if column.ID == projection.Column && column.Type != TypeInt64 {
-							return fmt.Errorf("%w: min aggregate column type", ErrInvalidSchema)
+							return fmt.Errorf("%w: %s aggregate column type", ErrInvalidSchema, projection.Aggregate)
 						}
 					}
 				}

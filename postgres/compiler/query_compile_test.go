@@ -120,6 +120,29 @@ func TestCompileQueriesLowersMinProjection(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersMaxProjection(t *testing.T) {
+	member := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts",
+			Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "score", Type: declaration.TypeInt64}}}},
+			Queries: []declaration.Query{{
+				ID: "maximum-score", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+				Projection: []declaration.Projection{{Aggregate: declaration.AggregateMax, Column: "score", Alias: "maximum"}},
+				Results:    []declaration.ResultField{{ID: "maximum", Source: "maximum", Type: declaration.TypeInt64, Nullable: true}},
+			}},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("max artifacts = %#v, error = %v", artifacts, err)
+	}
+	want := `SELECT MAX("score") AS "maximum" FROM "accounts"."users";`
+	if !strings.Contains(artifacts[0].SQL, want) || !artifacts[0].Results[0].Nullable {
+		t.Fatalf("max artifact = %#v, want %q", artifacts[0], want)
+	}
+}
+
 func TestCompileQueriesCountsNullableJoinedColumn(t *testing.T) {
 	users := declaration.Ref{Symbol: "users"}
 	teams := declaration.Ref{Symbol: "teams"}

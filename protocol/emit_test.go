@@ -405,6 +405,43 @@ func TestEmitIncludesMinQueryArtifactAndMetadata(t *testing.T) {
 	}
 }
 
+func TestEmitIncludesMaxQueryArtifactAndMetadata(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Queries = []declaration.Query{{
+		ID: "maximum-account", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+		Projection: []declaration.Projection{{Aggregate: declaration.AggregateMax, Column: "id", Alias: "maximum"}},
+		Results:    []declaration.ResultField{{ID: "maximum", Source: "maximum", Type: declaration.TypeInt64, Nullable: true}},
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
+		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
+	})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusSucceeded {
+		t.Fatalf("response = %#v", response)
+	}
+	var query protocol.StagedArtifact
+	for _, artifact := range response.Output.Artifacts {
+		if artifact.Query != nil && artifact.Query.ID == "maximum-account" {
+			query = artifact
+			break
+		}
+	}
+	wantSQL := `SELECT MAX("id") AS "maximum" FROM "accounts"."accounts";`
+	if query.Path == "" || !bytes.Contains(query.Bytes, []byte(wantSQL)) || query.Query == nil ||
+		!reflect.DeepEqual(query.Query.Projection, []declaration.Projection{{Aggregate: declaration.AggregateMax, Column: "id", Alias: "maximum"}}) ||
+		!reflect.DeepEqual(query.Query.Results, []declaration.ResultField{{ID: "maximum", Source: "maximum", Type: declaration.TypeInt64, Nullable: true}}) {
+		t.Fatalf("max query artifact = %#v", query)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestEmitIncludesJoinedSelect(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model

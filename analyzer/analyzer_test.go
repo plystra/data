@@ -321,6 +321,33 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeDecodesMaxProjection(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "score", Type: "int64"}}}},
+	Queries: []declaration.Query{{
+		ID: "maximum-score", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		Projection: []declaration.Projection{{Aggregate: "max", Column: "score", Alias: "maximum"}},
+		Results: []declaration.ResultField{{ID: "maximum", Source: "maximum", Type: "int64", Nullable: true}},
+	}},
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Valid || len(result.Diagnostics) != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+	query := result.Roots[0].Model.Queries[0]
+	if len(query.Projection) != 1 || query.Projection[0].Aggregate != declaration.AggregateMax || query.Projection[0].Column != "score" || !query.Results[0].Nullable {
+		t.Fatalf("decoded max query = %#v", query)
+	}
+}
+
 func TestAnalyzeRejectsInvalidJoinReferences(t *testing.T) {
 	source := `package model
 
