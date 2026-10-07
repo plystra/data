@@ -60,9 +60,10 @@ explicit alias and one required non-null `int64` result mapping. The closed
 an explicit alias and one required nullable `int64` result mapping. These
 ungrouped forms are single-output SELECTs with no ordinary projection,
 aggregate ordering, limit, or offset. A bounded grouped SELECT may project one
-local table column named by one `GroupBy` column plus one `COUNT`, `MIN`, or
-`MAX` output; it emits one deterministic `GROUP BY` column and matching typed
-result mappings, with no joins, `HAVING`, aggregate ordering, limit, or offset.
+or more local table columns named by matching `GroupBy` columns plus one
+`COUNT`, `MIN`, or `MAX` output; it emits deterministic ordered `GROUP BY`
+columns and matching typed result mappings, with no joins, `HAVING`, aggregate
+ordering, limit, or offset.
 `COUNT(column)` ignores NULL values, including unmatched LEFT JOIN rows;
 `COUNT(*)` counts joined rows. `MIN` and `MAX` are nullable because an empty
 input (or no non-null values) produces SQL NULL. `HAVING` and other aggregate
