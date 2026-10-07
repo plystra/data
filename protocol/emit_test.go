@@ -847,6 +847,43 @@ func TestEmitRejectsOversizedArtifactWithoutPartialOutput(t *testing.T) {
 	}
 }
 
+func TestValidateEmitResponseRejectsDiagnosticBounds(t *testing.T) {
+	base := validEmitRequest(t)
+	tests := []struct {
+		name   string
+		limits analyzer.Limits
+		items  []analyzer.Diagnostic
+	}{
+		{
+			name:   "count",
+			limits: analyzer.Limits{MaxDiagnostics: 1},
+			items: []analyzer.Diagnostic{
+				{Code: analyzer.CodeEmitInput, Message: "one", Action: "correct"},
+				{Code: analyzer.CodeEmitInput, Message: "two", Action: "correct"},
+			},
+		},
+		{
+			name:   "bytes",
+			limits: analyzer.Limits{MaxDiagnosticBytes: 1},
+			items:  []analyzer.Diagnostic{{Code: analyzer.CodeEmitInput, Message: "too large", Action: "correct"}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := base
+			request.Limits = test.limits
+			refreshEmitDigest(t, &request)
+			response := protocol.EmitResponse{
+				Schema: protocol.EmitSchema, Phase: protocol.EmitPhase, RequestID: request.RequestID,
+				InputDigest: request.InputDigest, Status: protocol.StatusRejected, Diagnostics: test.items,
+			}
+			if err := protocol.ValidateEmitResponse(request, response); err == nil {
+				t.Fatal("out-of-bounds diagnostics accepted")
+			}
+		})
+	}
+}
+
 func validEmitRequest(t *testing.T) protocol.EmitRequest {
 	t.Helper()
 	model := normalized(t, declaration.Member[struct{}]{Namespace: "accounts", Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "pk-accounts", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}}, Migrations: []declaration.Migration{{ID: "create-accounts", Version: 1, Operations: []declaration.MigrationOperation{{Kind: declaration.MigrationCreateTable, Table: declaration.Ref{Symbol: "accounts"}}}}}})

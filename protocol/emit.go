@@ -196,6 +196,9 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 	if response.Schema != EmitSchema || response.Phase != EmitPhase || response.RequestID != request.RequestID || response.InputDigest != request.InputDigest || response.Truncated {
 		return fmt.Errorf("emit response identity or truncation mismatch")
 	}
+	if err := validateEmitDiagnostics(response.Diagnostics, request.Limits); err != nil {
+		return err
+	}
 	if response.Status == StatusRejected {
 		if response.OutputDigest != "" || len(response.Output.Artifacts) != 0 || len(response.Diagnostics) == 0 {
 			return fmt.Errorf("rejected emit response contains artifacts or no diagnostic")
@@ -267,6 +270,29 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 	encoded, err := json.Marshal(response)
 	if err != nil || len(encoded) > MaxFrameBytes {
 		return fmt.Errorf("emit output frame exceeds limit")
+	}
+	return nil
+}
+
+func validateEmitDiagnostics(diagnostics []analyzer.Diagnostic, limits analyzer.Limits) error {
+	maxDiagnostics := limits.MaxDiagnostics
+	if maxDiagnostics == 0 {
+		maxDiagnostics = MaxDiagnostics
+	}
+	maxDiagnosticBytes := limits.MaxDiagnosticBytes
+	if maxDiagnosticBytes == 0 {
+		maxDiagnosticBytes = MaxDiagnosticBytes
+	}
+	if len(diagnostics) > maxDiagnostics {
+		return fmt.Errorf("emit diagnostic count exceeds the limit")
+	}
+	bytesUsed := 0
+	for _, diagnostic := range diagnostics {
+		encoded, err := json.Marshal(diagnostic)
+		if err != nil || len(encoded) == 0 || bytesUsed+len(encoded) > maxDiagnosticBytes {
+			return fmt.Errorf("emit diagnostics exceed the limit")
+		}
+		bytesUsed += len(encoded)
 	}
 	return nil
 }
