@@ -98,6 +98,18 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 				introduced[join.Table] = joined
 			}
 		}
+		for _, grouping := range query.GroupBy {
+			groupingTable := grouping.Table
+			if groupingTable.Member == "" && groupingTable.Symbol == "" {
+				groupingTable = query.Table
+			}
+			groupingTarget, exists := introduced[groupingTable]
+			if !exists {
+				a.referenceDiagnostic(root, CodeUnresolvedReference, "Data group-by table is not introduced by the query", "Group only by columns from the base table or an earlier join.", groupingTable.Symbol)
+				continue
+			}
+			a.validateColumn(root, groupingTarget, grouping.Column)
+		}
 		for _, projection := range query.Projection {
 			projectionTable := projection.Table
 			if projectionTable.Member == "" && projectionTable.Symbol == "" {

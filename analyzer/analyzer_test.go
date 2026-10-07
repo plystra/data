@@ -356,12 +356,12 @@ import "github.com/plystra/data/declaration"
 //plystra:data accounts.user/v1
 var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts",
-	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: "string"}, {ID: "id", Type: "int64"}}}},
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: "string"}, {ID: "tier", Type: "string"}, {ID: "id", Type: "int64"}}}},
 	Queries: []declaration.Query{{
 		ID: "count-by-region", Operation: "select", Table: declaration.Ref{Symbol: "users"},
-		GroupBy: []declaration.ColumnRef{{Column: "region"}},
-		Projection: []declaration.Projection{{Column: "region"}, {Aggregate: "count", Column: "id", Alias: "total"}},
-		Results: []declaration.ResultField{{ID: "region", Source: "region", Type: "string"}, {ID: "total", Source: "total", Type: "int64"}},
+		GroupBy: []declaration.ColumnRef{{Column: "region"}, {Column: "tier"}},
+		Projection: []declaration.Projection{{Column: "region"}, {Column: "tier"}, {Aggregate: "count", Column: "id", Alias: "total"}},
+		Results: []declaration.ResultField{{ID: "region", Source: "region", Type: "string"}, {ID: "tier", Source: "tier", Type: "string"}, {ID: "total", Source: "total", Type: "int64"}},
 	}},
 }`))
 	if err != nil {
@@ -371,7 +371,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		t.Fatalf("result = %#v", result)
 	}
 	query := result.Roots[0].Model.Queries[0]
-	if len(query.GroupBy) != 1 || query.GroupBy[0].Column != "region" || len(query.Projection) != 2 || query.Projection[1].Aggregate != declaration.AggregateCount {
+	if len(query.GroupBy) != 2 || query.GroupBy[0].Column != "region" || query.GroupBy[1].Column != "tier" || len(query.Projection) != 3 || query.Projection[2].Aggregate != declaration.AggregateCount {
 		t.Fatalf("decoded grouped query = %#v", query)
 	}
 }

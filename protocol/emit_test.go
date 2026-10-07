@@ -446,11 +446,12 @@ func TestEmitIncludesGroupedQueryArtifactAndMetadata(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model
 	model.Tables[0].Columns = append(model.Tables[0].Columns, declaration.Column{ID: "region", Type: declaration.TypeString})
+	model.Tables[0].Columns = append(model.Tables[0].Columns, declaration.Column{ID: "tier", Type: declaration.TypeString})
 	model.Queries = []declaration.Query{{
 		ID: "count-by-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
-		GroupBy:    []declaration.ColumnRef{{Column: "region"}},
-		Projection: []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
-		Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+		GroupBy:    []declaration.ColumnRef{{Column: "region"}, {Column: "tier"}},
+		Projection: []declaration.Projection{{Column: "region"}, {Column: "tier"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
+		Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "tier", Source: "tier", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
 	}}
 	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
 		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
@@ -470,11 +471,11 @@ func TestEmitIncludesGroupedQueryArtifactAndMetadata(t *testing.T) {
 			break
 		}
 	}
-	wantSQL := `SELECT "region", COUNT("id") AS "total" FROM "accounts"."accounts" GROUP BY "region";`
+	wantSQL := `SELECT "region", "tier", COUNT("id") AS "total" FROM "accounts"."accounts" GROUP BY "region", "tier";`
 	if query.Path == "" || !bytes.Contains(query.Bytes, []byte(wantSQL)) || query.Query == nil ||
-		!reflect.DeepEqual(query.Query.GroupBy, []declaration.ColumnRef{{Column: "region"}}) ||
-		!reflect.DeepEqual(query.Query.Projection, []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}}) ||
-		!reflect.DeepEqual(query.Query.Results, []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}}) {
+		!reflect.DeepEqual(query.Query.GroupBy, []declaration.ColumnRef{{Column: "region"}, {Column: "tier"}}) ||
+		!reflect.DeepEqual(query.Query.Projection, []declaration.Projection{{Column: "region"}, {Column: "tier"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}}) ||
+		!reflect.DeepEqual(query.Query.Results, []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "tier", Source: "tier", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}}) {
 		t.Fatalf("grouped query artifact = %#v", query)
 	}
 	if err := protocol.ValidateEmitResponse(request, response); err != nil {

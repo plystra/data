@@ -755,14 +755,11 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 		}
 	}
 	if aggregateOutputs != 0 && (aggregateOutputs != 1 || len(outputs) != 1) {
-		if len(query.GroupBy) == 0 || aggregateOutputs != 1 || len(outputs) != 2 {
+		if len(query.GroupBy) == 0 || aggregateOutputs != 1 || len(outputs) != len(query.GroupBy)+1 {
 			return fmt.Errorf("%w: aggregate query projection", ErrUnsupported)
 		}
 	}
-	if len(query.GroupBy) > 1 {
-		return fmt.Errorf("%w: query grouping", ErrUnsupported)
-	}
-	if len(query.GroupBy) != 0 && (query.Operation != OperationSelect || len(query.Joins) != 0 || aggregateOutputs != 1 || len(outputs) != 2) {
+	if len(query.GroupBy) != 0 && (query.Operation != OperationSelect || len(query.Joins) != 0 || aggregateOutputs != 1 || len(outputs) != len(query.GroupBy)+1) {
 		return fmt.Errorf("%w: grouped query shape", ErrUnsupported)
 	}
 	if aggregateOutputs == 0 && len(query.GroupBy) != 0 {
@@ -842,19 +839,25 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 		}
 	}
 	if len(query.GroupBy) != 0 {
-		group := query.GroupBy[0]
-		if err := validatePredicateColumn(group, imports, introduced, query.Table); err != nil {
-			return fmt.Errorf("group by: %w", err)
-		}
-		matched := false
-		for _, projection := range outputs {
-			if projection.Aggregate == "" && sameColumnRef(ColumnRef{Table: projection.Table, Column: projection.Column}, group, query.Table) {
-				matched = true
-				break
+		for index, group := range query.GroupBy {
+			if err := validatePredicateColumn(group, imports, introduced, query.Table); err != nil {
+				return fmt.Errorf("group by: %w", err)
 			}
-		}
-		if !matched {
-			return fmt.Errorf("%w: group by projection", ErrReference)
+			for _, previous := range query.GroupBy[:index] {
+				if sameColumnRef(previous, group, query.Table) {
+					return fmt.Errorf("%w: group by column", ErrDuplicate)
+				}
+			}
+			matched := false
+			for _, projection := range outputs {
+				if projection.Aggregate == "" && sameColumnRef(ColumnRef{Table: projection.Table, Column: projection.Column}, group, query.Table) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fmt.Errorf("%w: group by projection", ErrReference)
+			}
 		}
 	}
 	if len(query.Results) != 0 {

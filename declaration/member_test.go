@@ -388,16 +388,17 @@ func TestNormalizeGroupedAggregate(t *testing.T) {
 	member := declaration.Member[access]{
 		Namespace: "authn",
 		Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{
-			{ID: "region", Type: declaration.TypeString}, {ID: "id", Type: declaration.TypeInt64},
+			{ID: "region", Type: declaration.TypeString}, {ID: "tier", Type: declaration.TypeString}, {ID: "id", Type: declaration.TypeInt64},
 		}}},
 		Queries: []declaration.Query{{
 			ID: "count-by-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
-			GroupBy: []declaration.ColumnRef{{Column: "region"}},
+			GroupBy: []declaration.ColumnRef{{Column: "region"}, {Column: "tier"}},
 			Projection: []declaration.Projection{
-				{Column: "region"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"},
+				{Column: "region"}, {Column: "tier"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"},
 			},
 			Results: []declaration.ResultField{
 				{ID: "region", Source: "region", Type: declaration.TypeString},
+				{ID: "tier", Source: "tier", Type: declaration.TypeString},
 				{ID: "total", Source: "total", Type: declaration.TypeInt64},
 			},
 		}},
@@ -406,7 +407,7 @@ func TestNormalizeGroupedAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(model.Queries[0].GroupBy) != 1 || model.Queries[0].GroupBy[0].Column != "region" {
+	if len(model.Queries[0].GroupBy) != 2 || model.Queries[0].GroupBy[0].Column != "region" || model.Queries[0].GroupBy[1].Column != "tier" {
 		t.Fatalf("normalized grouping = %#v", model.Queries[0].GroupBy)
 	}
 	for _, test := range []struct {
@@ -414,16 +415,18 @@ func TestNormalizeGroupedAggregate(t *testing.T) {
 		edit func(*declaration.Query)
 		want error
 	}{
-		{"multiple grouping columns", func(query *declaration.Query) {
-			query.GroupBy = append(query.GroupBy, declaration.ColumnRef{Column: "id"})
-		}, declaration.ErrUnsupported},
+		{"duplicate grouping columns", func(query *declaration.Query) {
+			query.GroupBy = append(query.GroupBy, declaration.ColumnRef{Column: "region"})
+			query.Projection = append(query.Projection, declaration.Projection{Column: "region"})
+			query.Results = append(query.Results, declaration.ResultField{ID: "region-copy", Source: "region", Type: declaration.TypeString})
+		}, declaration.ErrDuplicate},
 		{"grouping without aggregate", func(query *declaration.Query) {
 			query.Projection = []declaration.Projection{{Column: "region"}}
 			query.Results = []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}}
 		}, declaration.ErrUnsupported},
 		{"grouping column not projected", func(query *declaration.Query) {
-			query.Projection = []declaration.Projection{{Column: "id"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}}
-			query.Results = []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}, {ID: "total", Source: "total", Type: declaration.TypeInt64}}
+			query.Projection = []declaration.Projection{{Column: "region"}, {Column: "id"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}}
+			query.Results = []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "id", Source: "id", Type: declaration.TypeInt64}, {ID: "total", Source: "total", Type: declaration.TypeInt64}}
 		}, declaration.ErrReference},
 	} {
 		t.Run(test.name, func(t *testing.T) {
