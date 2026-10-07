@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/plystra/data/analyzer"
+	"github.com/plystra/data/database"
 	"github.com/plystra/data/declaration"
 	"github.com/plystra/data/migration"
 	postgres "github.com/plystra/data/postgres/compiler"
@@ -61,6 +62,7 @@ type StagedArtifact struct {
 	Compiler          CompilerIdentity      `json:"compiler"`
 	FrozenModelDigest string                `json:"frozen_model_digest"`
 	Query             *QueryMetadata        `json:"query,omitempty"`
+	Plan              *PlanMetadata         `json:"plan,omitempty"`
 	Migration         *migration.Definition `json:"migration,omitempty"`
 }
 
@@ -76,12 +78,36 @@ type QueryMetadata struct {
 	Conflict   *declaration.Conflict     `json:"conflict,omitempty"`
 }
 
+// PlanMetadata binds one staged executable plan to its accepted declaration.
+// SQL remains in the plan artifact so a runtime access provider can submit the
+// exact statements without receiving a transaction handle or callback.
+type PlanMetadata struct {
+	ID         string                  `json:"id"`
+	Digest     string                  `json:"digest"`
+	Statements []PlanStatementMetadata `json:"statements"`
+}
+
+type PlanStatementMetadata struct {
+	ID            string               `json:"id"`
+	Query         string               `json:"query"`
+	SQL           string               `json:"sql"`
+	SQLDigest     string               `json:"sql_digest"`
+	Cardinality   database.Cardinality `json:"cardinality"`
+	ResultColumns []PlanResultColumn   `json:"result_columns"`
+}
+
+type PlanResultColumn struct {
+	Kind     database.ValueKind `json:"kind"`
+	Nullable bool               `json:"nullable,omitempty"`
+}
+
 type manifestEntry struct {
 	Path          string                `json:"path"`
 	Mode          uint32                `json:"mode"`
 	Digest        string                `json:"digest"`
 	OwningMembers []string              `json:"owning_members"`
 	Query         *QueryMetadata        `json:"query,omitempty"`
+	Plan          *PlanMetadata         `json:"plan,omitempty"`
 	Migration     *migration.Definition `json:"migration,omitempty"`
 }
 
@@ -327,6 +353,11 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact, migratio
 	expected := map[string]map[string]struct{}{}
 	queryOwners := map[string]string{}
 	queryMetadata := map[string]QueryMetadata{}
+	planOwners := map[string]string{}
+	planMetadata, err := expectedPlanMetadata(request)
+	if err != nil {
+		return fmt.Errorf("accepted plan definitions are invalid: %w", err)
+	}
 	owners := map[string][]string{}
 	for _, assignment := range request.Assignments {
 		resource := assignment.Resource
@@ -342,6 +373,11 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact, migratio
 			expected[resource][queryPath] = struct{}{}
 			queryOwners[queryPath] = assignment.MemberID
 			queryMetadata[queryPath] = metadataForQuery(query)
+		}
+		for _, plan := range roots[assignment.MemberID].Model.Plans {
+			planPath := "generated/data/" + resource + "/plans/" + assignment.MemberID + "/" + plan.ID + ".json"
+			expected[resource][planPath] = struct{}{}
+			planOwners[planPath] = assignment.MemberID
 		}
 		for _, item := range roots[assignment.MemberID].Model.Migrations {
 			expected[resource]["generated/data/"+resource+"/migrations/"+assignment.MemberID+"/"+item.ID+".sql"] = struct{}{}
@@ -361,17 +397,26 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact, migratio
 				return fmt.Errorf("Resource %s has unexpected staged artifact", resource)
 			}
 			if expectedMigration, migrationArtifact := migrationDefinitions[artifact.Path]; migrationArtifact {
-				if artifact.Migration == nil || !jsonEqual(*artifact.Migration, expectedMigration) || artifact.Query != nil {
+				if artifact.Migration == nil || !jsonEqual(*artifact.Migration, expectedMigration) || artifact.Query != nil || artifact.Plan != nil {
 					return fmt.Errorf("Resource %s has invalid migration artifact metadata", resource)
 				}
 			} else if artifact.Migration != nil {
 				return fmt.Errorf("Resource %s has migration metadata on a non-migration artifact", resource)
 			}
 			if owner, queryArtifact := queryOwners[artifact.Path]; queryArtifact {
-				if len(artifact.OwningMembers) != 1 || artifact.OwningMembers[0] != owner || artifact.Migration != nil || artifact.Query == nil || !reflect.DeepEqual(*artifact.Query, queryMetadata[artifact.Path]) {
+				if len(artifact.OwningMembers) != 1 || artifact.OwningMembers[0] != owner || artifact.Migration != nil || artifact.Plan != nil || artifact.Query == nil || !reflect.DeepEqual(*artifact.Query, queryMetadata[artifact.Path]) {
 					return fmt.Errorf("Resource %s has invalid query artifact ownership or metadata", resource)
 				}
-			} else if artifact.Query != nil {
+			} else if owner, planArtifact := planOwners[artifact.Path]; planArtifact {
+				metadata, exists := planMetadata[artifact.Path]
+				var encoded PlanMetadata
+				if artifact.Plan != nil {
+					_ = decodeRequest(artifact.Bytes, &encoded)
+				}
+				if !exists || len(artifact.OwningMembers) != 1 || artifact.OwningMembers[0] != owner || artifact.Migration != nil || artifact.Query != nil || artifact.Plan == nil || !reflect.DeepEqual(*artifact.Plan, metadata) || !reflect.DeepEqual(encoded, metadata) {
+					return fmt.Errorf("Resource %s has invalid plan artifact ownership or metadata", resource)
+				}
+			} else if artifact.Query != nil || artifact.Plan != nil {
 				return fmt.Errorf("Resource %s has unexpected query metadata", resource)
 			}
 			if artifact.Path == "generated/data/"+resource+"/manifest.json" {
@@ -381,7 +426,7 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact, migratio
 			if artifact.Path == "generated/data/"+resource+"/schema/schema.sql" {
 				schemaArtifact = artifact
 			}
-			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query, Migration: artifact.Migration})
+			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query, Plan: artifact.Plan, Migration: artifact.Migration})
 		}
 		if manifestArtifact == nil || schemaArtifact == nil || !reflect.DeepEqual(manifestArtifact.OwningMembers, owners[resource]) || !reflect.DeepEqual(schemaArtifact.OwningMembers, owners[resource]) || manifestArtifact.Migration != nil || schemaArtifact.Migration != nil {
 			return fmt.Errorf("Resource %s has invalid schema or manifest ownership", resource)
@@ -450,6 +495,52 @@ func expectedMigrationDefinitions(request EmitRequest) (map[string]migration.Def
 	return definitions, nil
 }
 
+func expectedPlanMetadata(request EmitRequest) (map[string]PlanMetadata, error) {
+	assignments := make(map[string]EmitAssignment, len(request.Assignments))
+	membersByResource := map[string][]postgres.SchemaMember{}
+	for _, assignment := range request.Assignments {
+		root, exists := findRoot(request.Analyze.Roots, assignment.MemberID)
+		if !exists {
+			return nil, fmt.Errorf("assignment %s has no accepted member model", assignment.MemberID)
+		}
+		assignments[assignment.MemberID] = assignment
+		membersByResource[assignment.Resource] = append(membersByResource[assignment.Resource], postgres.SchemaMember{
+			MemberID: assignment.MemberID, Resource: assignment.Resource, Model: root.Model,
+		})
+	}
+	definitions := map[string]PlanMetadata{}
+	for resource, members := range membersByResource {
+		compiled, err := postgres.CompilePlans(members)
+		if err != nil {
+			return nil, fmt.Errorf("Resource %s: %w", resource, err)
+		}
+		for _, artifact := range compiled {
+			assignment, exists := assignments[artifact.MemberID]
+			if !exists {
+				return nil, fmt.Errorf("plan %s has no active assignment", artifact.ID)
+			}
+			root, exists := findRoot(request.Analyze.Roots, artifact.MemberID)
+			if !exists {
+				return nil, fmt.Errorf("plan %s has no accepted member model", artifact.ID)
+			}
+			plan, exists := findPlan(root.Model.Plans, artifact.ID)
+			if !exists {
+				return nil, fmt.Errorf("plan %s has no declaration", artifact.ID)
+			}
+			metadata, err := metadataForPlan(plan, artifact)
+			if err != nil {
+				return nil, err
+			}
+			path := "generated/data/" + assignment.Resource + "/" + artifact.Path
+			if _, duplicate := definitions[path]; duplicate {
+				return nil, fmt.Errorf("duplicate accepted plan path %s", path)
+			}
+			definitions[path] = metadata
+		}
+	}
+	return definitions, nil
+}
+
 func findRoot(roots []analyzer.Root, memberID string) (analyzer.Root, bool) {
 	for _, root := range roots {
 		if root.MemberID == memberID {
@@ -457,6 +548,24 @@ func findRoot(roots []analyzer.Root, memberID string) (analyzer.Root, bool) {
 		}
 	}
 	return analyzer.Root{}, false
+}
+
+func findMemberModel(members []postgres.SchemaMember, memberID string) declaration.Model {
+	for _, member := range members {
+		if member.MemberID == memberID {
+			return member.Model
+		}
+	}
+	return declaration.Model{}
+}
+
+func findPlan(plans []declaration.Plan, id string) (declaration.Plan, bool) {
+	for _, plan := range plans {
+		if plan.ID == id {
+			return plan, true
+		}
+	}
+	return declaration.Plan{}, false
 }
 
 func hasMigrations(members []postgres.SchemaMember) bool {
@@ -480,9 +589,6 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 		model, err := (declaration.Member[struct{}]{Namespace: root.Model.Namespace, Imports: root.Model.Imports, Tables: root.Model.Tables, Queries: root.Model.Queries, Plans: root.Model.Plans, Migrations: root.Model.Migrations}).Normalize()
 		if err != nil {
 			return nil, analyzer.CodeEmitInput, fmt.Errorf("invalid member model: %w", err)
-		}
-		if len(model.Plans) != 0 {
-			return nil, analyzer.CodeEmitBackend, fmt.Errorf("atomic plan execution is not yet supported")
 		}
 		normalizedJSON, err := json.Marshal(model)
 		if err != nil {
@@ -566,6 +672,27 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 			artifact.Query = &metadata
 			artifacts = append(artifacts, artifact)
 		}
+		plans, err := postgres.CompilePlans(item.members)
+		if err != nil {
+			return nil, analyzer.CodeEmitBackend, err
+		}
+		for _, planArtifact := range plans {
+			plan, exists := findPlan(findMemberModel(item.members, planArtifact.MemberID).Plans, planArtifact.ID)
+			if !exists {
+				return nil, analyzer.CodeEmitArtifact, fmt.Errorf("plan artifact has no declaration")
+			}
+			metadata, err := metadataForPlan(plan, planArtifact)
+			if err != nil {
+				return nil, analyzer.CodeEmitArtifact, err
+			}
+			content, err := json.Marshal(metadata)
+			if err != nil {
+				return nil, analyzer.CodeEmitArtifact, err
+			}
+			artifact := stagedSQL(item.assignment, []string{planArtifact.MemberID}, request, planArtifact.Path, string(content), nil)
+			artifact.Plan = &metadata
+			artifacts = append(artifacts, artifact)
+		}
 		migrations, err := postgres.CompileMigrations(item.members, compiler)
 		if err != nil {
 			return nil, analyzer.CodeEmitBackend, err
@@ -577,7 +704,7 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 		}
 		entries := make([]manifestEntry, 0, len(artifacts)-start)
 		for _, artifact := range artifacts[start:] {
-			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query, Migration: artifact.Migration})
+			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query, Plan: artifact.Plan, Migration: artifact.Migration})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 		modelDigests := make(map[string]string, len(item.members))
@@ -694,6 +821,26 @@ func metadataForQuery(query declaration.Query) QueryMetadata {
 		metadata.Conflict = &conflict
 	}
 	return metadata
+}
+
+func metadataForPlan(plan declaration.Plan, artifact postgres.PlanArtifact) (PlanMetadata, error) {
+	if plan.ID != artifact.ID || len(plan.Statements) != len(artifact.Plan.Statements) {
+		return PlanMetadata{}, fmt.Errorf("plan %s statement inventory mismatch", plan.ID)
+	}
+	metadata := PlanMetadata{ID: plan.ID, Digest: artifact.Digest, Statements: make([]PlanStatementMetadata, len(plan.Statements))}
+	for index, statement := range artifact.Plan.Statements {
+		declared := plan.Statements[index]
+		resultColumns := make([]PlanResultColumn, len(statement.ResultColumns))
+		for columnIndex, column := range statement.ResultColumns {
+			resultColumns[columnIndex] = PlanResultColumn{Kind: column.Kind, Nullable: column.Nullable}
+		}
+		metadata.Statements[index] = PlanStatementMetadata{
+			ID: declared.ID, Query: declared.Query.Symbol, SQL: statement.SQL,
+			SQLDigest: postgres.DigestSQL(statement.SQL), Cardinality: statement.Cardinality,
+			ResultColumns: resultColumns,
+		}
+	}
+	return metadata, nil
 }
 
 func digest(domain string, payload []byte) string {

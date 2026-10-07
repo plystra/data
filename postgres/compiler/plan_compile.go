@@ -19,6 +19,7 @@ var ErrPlanCompilation = errors.New("PostgreSQL plan compilation failed")
 // handles; the provider owns the transaction boundary.
 type PlanArtifact struct {
 	MemberID string
+	ID       string
 	Path     string
 	Plan     database.Plan
 	Digest   string
@@ -102,10 +103,10 @@ func compilePlan(member SchemaMember, plan declaration.Plan, byQuery map[string]
 		return PlanArtifact{}, err
 	}
 	return PlanArtifact{
-		MemberID: member.MemberID,
-		Path:     "plans/" + member.MemberID + "/" + plan.ID + ".json",
-		Plan:     runtimePlan,
-		Digest:   digest,
+		MemberID: member.MemberID, ID: plan.ID,
+		Path:   "plans/" + member.MemberID + "/" + plan.ID + ".json",
+		Plan:   runtimePlan,
+		Digest: digest,
 	}, nil
 }
 

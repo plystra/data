@@ -79,7 +79,7 @@ and typed projected results become ordered `database.Plan` statements. The
 database contract carries result width, scalar kind, and nullability into the
 PostgreSQL transaction, which validates those facts before commit. Joins,
 parameters, imported queries, mutation plans, generated access methods, and
-protocol plan artifacts remain separate integration boundaries.
+Core-side generated-tree installation remain separate integration boundaries.
 Mutation queries may additionally declare explicit `Returning` projections and
 typed `Results` mappings. The lowerer emits deterministic PostgreSQL
 `RETURNING` clauses and rejects result sources whose scalar type or nullability

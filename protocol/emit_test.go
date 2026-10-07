@@ -522,10 +522,14 @@ func TestEmitIncludesJoinedSelect(t *testing.T) {
 	}
 }
 
-func TestEmitRejectsAtomicPlansUntilExecutableArtifactsExist(t *testing.T) {
+func TestEmitIncludesExecutableAtomicPlanArtifact(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model
-	model.Queries = []declaration.Query{{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}}}
+	model.Queries = []declaration.Query{{
+		ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+		Projection: []declaration.Projection{{Column: "id"}},
+		Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+	}}
 	model.Plans = []declaration.Plan{{ID: "read-plan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read"}, Cardinality: declaration.CardinalityMany}}}}
 	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
 		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Plans: model.Plans, Migrations: model.Migrations,
@@ -534,8 +538,41 @@ func TestEmitRejectsAtomicPlansUntilExecutableArtifactsExist(t *testing.T) {
 	request.AnalyzeDigest = request.Analyze.Digest
 	refreshEmitDigest(t, &request)
 	response := protocol.HandleEmit(request)
-	if response.Status != protocol.StatusRejected || len(response.Output.Artifacts) != 0 || len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != analyzer.CodeEmitBackend {
+	if response.Status != protocol.StatusSucceeded || len(response.Output.Artifacts) != 5 {
 		t.Fatalf("response = %#v", response)
+	}
+	var plan protocol.StagedArtifact
+	for _, artifact := range response.Output.Artifacts {
+		if artifact.Plan != nil {
+			plan = artifact
+		}
+	}
+	if plan.Path != "generated/data/database.primary/plans/accounts.user/v1/read-plan.json" || plan.Plan == nil || plan.Plan.ID != "read-plan" || len(plan.Plan.Statements) != 1 || plan.Plan.Statements[0].Query != "read" || !bytes.Contains(plan.Bytes, []byte(`"cardinality":"many"`)) {
+		t.Fatalf("plan artifact = %#v", plan)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+	tampered := cloneEmitResponse(response)
+	for index := range tampered.Output.Artifacts {
+		artifact := &tampered.Output.Artifacts[index]
+		if artifact.Plan == nil {
+			continue
+		}
+		metadata := *artifact.Plan
+		metadata.Statements = append([]protocol.PlanStatementMetadata(nil), metadata.Statements...)
+		metadata.Statements[0].Cardinality = "exactly_one"
+		encoded, err := json.Marshal(metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		artifact.Plan = &metadata
+		artifact.Bytes = encoded
+		artifact.Digest = postgres.DigestSQL(string(encoded))
+	}
+	refreshEmitOutputDigest(t, &tampered)
+	if err := protocol.ValidateEmitResponse(request, tampered); err == nil {
+		t.Fatal("self-consistent plan metadata tamper was accepted")
 	}
 }
 

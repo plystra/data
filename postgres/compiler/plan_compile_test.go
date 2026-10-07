@@ -33,7 +33,7 @@ func TestCompilePlansBuildsDeterministicTypedSelectPlan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(first) != 1 || len(second) != 1 || first[0].Path != "plans/accounts.user/v1/read-plan.json" || first[0].Digest != second[0].Digest {
+	if len(first) != 1 || len(second) != 1 || first[0].ID != "read-plan" || first[0].Path != "plans/accounts.user/v1/read-plan.json" || first[0].Digest != second[0].Digest {
 		t.Fatalf("plan artifacts = %#v and %#v", first, second)
 	}
 	plan := first[0].Plan
