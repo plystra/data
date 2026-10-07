@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -209,21 +210,29 @@ func queryStatement(ctx context.Context, tx pgx.Tx, statement db.Statement) (db.
 	if err := rows.Err(); err != nil {
 		return db.StatementResult{}, err
 	}
-	valid := len(values) > 0
-	switch statement.Cardinality {
-	case db.CardinalityExactlyOne:
-		valid = len(values) == 1
-	case db.CardinalityZeroOrOne:
-		valid = len(values) <= 1
-	case db.CardinalityMany:
-		valid = true
-	default:
-		valid = false
-	}
-	if !valid {
-		return db.StatementResult{}, fmt.Errorf("%w: row cardinality", db.ErrBackend)
+	if err := validateRowCardinality(statement.Cardinality, len(values)); err != nil {
+		return db.StatementResult{}, err
 	}
 	return db.StatementResult{Rows: values}, nil
+}
+
+func validateRowCardinality(cardinality db.Cardinality, count int) error {
+	switch cardinality {
+	case db.CardinalityExactlyOne:
+		if count == 0 {
+			return db.ErrNotFound
+		}
+		if count == 1 {
+			return nil
+		}
+	case db.CardinalityZeroOrOne:
+		if count <= 1 {
+			return nil
+		}
+	case db.CardinalityMany:
+		return nil
+	}
+	return fmt.Errorf("%w: row cardinality", db.ErrBackend)
 }
 
 func driverArguments(arguments []db.Argument) []any {
@@ -287,18 +296,24 @@ func normalizeError(err error, commit bool) error {
 	}
 	if errors.Is(err, context.Canceled) {
 		if commit {
-			return db.ErrResultUnknown
+			return fmt.Errorf("%w: %w", db.ErrResultUnknown, context.Canceled)
 		}
 		return fmt.Errorf("%w: %w", db.ErrBackend, context.Canceled)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		if commit {
-			return db.ErrResultUnknown
+			return fmt.Errorf("%w: %w", db.ErrResultUnknown, context.DeadlineExceeded)
 		}
 		return fmt.Errorf("%w: %w", db.ErrTimeout, context.DeadlineExceeded)
 	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.ErrNotFound
+	}
 	var pgError *pgconn.PgError
 	if errors.As(err, &pgError) {
+		if commit && strings.HasPrefix(pgError.Code, "08") {
+			return db.ErrResultUnknown
+		}
 		switch pgError.Code {
 		case "23505", "23P01":
 			return db.ErrConflict
@@ -306,7 +321,21 @@ func normalizeError(err error, commit bool) error {
 			return db.ErrForeignKey
 		case "40001", "40P01":
 			return db.ErrConcurrent
-		case "53300", "57P03":
+		case "40003":
+			return db.ErrResultUnknown
+		case "55P03":
+			return db.ErrConcurrent
+		case "57014":
+			return db.ErrTimeout
+		case "57P01", "57P02", "57P03":
+			return db.ErrUnavailable
+		case "53300":
+			return db.ErrResourceExhausted
+		}
+		if strings.HasPrefix(pgError.Code, "53") {
+			return db.ErrResourceExhausted
+		}
+		if strings.HasPrefix(pgError.Code, "08") {
 			return db.ErrUnavailable
 		}
 	}

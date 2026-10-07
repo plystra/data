@@ -143,11 +143,11 @@ func (provider *Database) targetFingerprint(ctx context.Context) (string, error)
 	}
 	databaseName, databaseOID, err := targetDatabaseIdentity(pool.QueryRow(ctx, `SELECT current_database(), oid::text FROM pg_database WHERE datname = current_database()`))
 	if err != nil {
-		return "", err
+		return "", normalizeError(err, false)
 	}
 	systemIdentifier, err := targetSystemIdentifier(pool.QueryRow(ctx, `SELECT system_identifier::text FROM pg_control_system()`))
 	if err != nil {
-		return "", err
+		return "", normalizeError(err, false)
 	}
 	return targetFingerprintValue(databaseName, databaseOID, systemIdentifier), nil
 }
@@ -155,11 +155,11 @@ func (provider *Database) targetFingerprint(ctx context.Context) (string, error)
 func targetFingerprintTx(ctx context.Context, tx pgx.Tx) (string, error) {
 	databaseName, databaseOID, err := targetDatabaseIdentity(tx.QueryRow(ctx, `SELECT current_database(), oid::text FROM pg_database WHERE datname = current_database()`))
 	if err != nil {
-		return "", err
+		return "", normalizeError(err, false)
 	}
 	systemIdentifier, err := targetSystemIdentifier(tx.QueryRow(ctx, `SELECT system_identifier::text FROM pg_control_system()`))
 	if err != nil {
-		return "", err
+		return "", normalizeError(err, false)
 	}
 	return targetFingerprintValue(databaseName, databaseOID, systemIdentifier), nil
 }
@@ -215,19 +215,19 @@ func readMigrationHistoryRows(_ context.Context, rows rowsScanner, queryErr erro
 		if errors.As(queryErr, &pgError) && pgError.Code == "42P01" {
 			return nil, nil
 		}
-		return nil, queryErr
+		return nil, normalizeError(queryErr, false)
 	}
 	defer rows.Close()
 	var history []migration.HistoryEntry
 	for rows.Next() {
 		var entry migration.HistoryEntry
 		if err := rows.Scan(&entry.Identity.Member, &entry.Identity.Name, &entry.Version, &entry.LogicalDigest, &entry.ArtifactDigest, &entry.Compiler, &entry.Backend); err != nil {
-			return nil, err
+			return nil, normalizeError(err, false)
 		}
 		history = append(history, entry)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, normalizeError(err, false)
 	}
 	return history, nil
 }

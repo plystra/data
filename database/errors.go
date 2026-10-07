@@ -7,6 +7,8 @@ var (
 	ErrInvalidPlan = errors.New("invalid database plan")
 	// ErrUnavailable means that the selected database Resource is not ready.
 	ErrUnavailable = errors.New("database unavailable")
+	// ErrNotFound means that an asserted single-row lookup returned no row.
+	ErrNotFound = errors.New("database not found")
 	// ErrConflict is a normalized uniqueness or exclusion conflict.
 	ErrConflict = errors.New("database conflict")
 	// ErrForeignKey is a normalized foreign-key violation.
@@ -15,6 +17,9 @@ var (
 	ErrConcurrent = errors.New("database concurrent mutation")
 	// ErrTimeout means the database operation exceeded its context deadline.
 	ErrTimeout = errors.New("database timeout")
+	// ErrResourceExhausted means that a bounded backend resource or capacity
+	// limit has been reached.
+	ErrResourceExhausted = errors.New("database resource exhausted")
 	// ErrResultUnknown means commit acknowledgement was not determined.
 	ErrResultUnknown = errors.New("database result unknown")
 	// ErrBackend is a safe catch-all for backend failures.

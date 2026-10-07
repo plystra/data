@@ -102,6 +102,15 @@ runtime `postgres` provider. The public compiler command's build dependency
 closure excludes Kernel and CLI; the runtime `postgres.New` provider remains a
 separate consumer of Kernel's Secret contract.
 
+The `database` package exposes bounded backend errors for not-found,
+uniqueness or exclusion conflict, foreign-key violation, concurrent mutation,
+unavailability, timeout, resource exhaustion, indeterminate commit outcome,
+and internal backend failure. The PostgreSQL provider maps SQLSTATE and context
+failures to these categories without exposing SQL text, DSNs, driver messages,
+or backend payloads. A commit acknowledgement failure remains
+`ErrResultUnknown`; it is never silently converted into a confirmed rollback
+or retried by the provider.
+
 The `protocol` package and `cmd/plystra-data-compiler` provide the bounded
 `plystra.data-analyze/v1` phase. Requests carry an exact compiler identity,
 including the selected Go Module `h1:` checksum and raw distribution-manifest
