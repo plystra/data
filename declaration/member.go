@@ -761,7 +761,7 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 	if query.Operation != OperationSelect {
 		outputs = query.Returning
 	}
-	if len(query.Returning) != 0 && len(query.Results) == 0 || len(query.Results) != 0 && (len(outputs) == 0 || len(query.Results) != len(outputs)) {
+	if len(query.Results) != len(outputs) {
 		return fmt.Errorf("%w: query result mapping", ErrInvalidSchema)
 	}
 	aggregateOutputs := 0

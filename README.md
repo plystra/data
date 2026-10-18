@@ -39,7 +39,10 @@ nonempty explicit `Conflict.UpdateColumns` list; each named column must exist on
 the target table and have an explicit insert assignment. The compiler emits
 `ON CONFLICT ON CONSTRAINT ... DO UPDATE SET "column" = EXCLUDED."column"` only
 for those columns. Cross-Resource and index targets remain unsupported.
-Query predicates support comparisons, `IS NULL`, `IS NOT NULL`, `AND`, and `OR`;
+Every explicit `SELECT` projection requires one typed `Results` mapping per
+output. A `SELECT` without an explicit projection retains its existing `*`
+output and has no typed result mapping. Query predicates support comparisons,
+`IS NULL`, `IS NOT NULL`, `AND`, and `OR`;
 comparison operands use explicit `ColumnRef` values and accept either an
 introduced column or a declared typed parameter/literal. Assignments accept
 only declared typed parameters or closed literal values. Projections, ordering,

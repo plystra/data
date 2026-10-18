@@ -69,6 +69,7 @@ import "github.com/plystra/data/declaration"
 		Operation: "select",
 		Table: declaration.Ref{Symbol: "a-users"},
 		Projection: []declaration.Projection{{Column: "id", Alias: "user-id"}},
+		Results: []declaration.ResultField{{ID: "id", Source: "user-id", Type: "uuid"}},
 	}},
 	Plans: []declaration.Plan{{
 		ID: "list-plan",
@@ -250,6 +251,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 			},
 		}},
 		Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "team-id"}},
+		Results: []declaration.ResultField{{ID: "team-id", Source: "team-id", Type: "int64", Nullable: true}},
 		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "teams"}, Column: "id"}, Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "team-id"}},
 		Ordering: []declaration.Ordering{{Table: declaration.Ref{Symbol: "teams"}, Column: "id", Direction: "desc"}},
 	}},
@@ -453,7 +455,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts",
 	Imports: []string{"orders.audit/v1"},
 	Queries: []declaration.Query{
-		{ID: "audit-events", Operation: "select", Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"}, Projection: []declaration.Projection{{Column: "id"}}},
+		{ID: "audit-events", Operation: "select", Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"}, Projection: []declaration.Projection{{Column: "id"}}, Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "string"}}},
 		{ID: "insert-event", Operation: "insert", Table: declaration.Ref{Member: "orders.audit/v1", Symbol: "events"}, Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: "string", Set: true, String: "event"}}}, Conflict: declaration.Conflict{Constraint: "events-key", Action: "do-nothing"}},
 	},
 }

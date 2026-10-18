@@ -118,6 +118,7 @@ func TestNormalizeRequiresPlanAssertionsMatchingQueryOperation(t *testing.T) {
 	selectQuery := declaration.Query{
 		ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
 		Projection: []declaration.Projection{{Column: "id"}},
+		Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
 	}
 	insertQuery := declaration.Query{
 		ID: "insert", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"},
@@ -302,6 +303,8 @@ func TestNormalizeQueryReturningResults(t *testing.T) {
 		name string
 		edit func(*declaration.Query)
 	}{
+		{"missing select mapping", func(query *declaration.Query) { query.Results = nil }},
+		{"incomplete select mapping", func(query *declaration.Query) { query.Results = query.Results[:1] }},
 		{"select returning", func(query *declaration.Query) { query.Returning = []declaration.Projection{{Column: "id"}} }},
 		{"missing explicit output", func(query *declaration.Query) {
 			query.Projection = nil
@@ -562,6 +565,7 @@ func TestNormalizeJoinsPreservesOrderAndClones(t *testing.T) {
 			{Kind: declaration.JoinLeft, Table: departments, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: teams, Column: "department-id"}, Right: declaration.ColumnRef{Table: departments, Column: "id"}}},
 		},
 		Projection: []declaration.Projection{{Table: teams, Column: "id", Alias: "department-id"}},
+		Results:    []declaration.ResultField{{ID: "department-id", Source: "department-id", Type: declaration.TypeInt64}},
 	}}}
 	model, err := member.Normalize()
 	if err != nil {
@@ -610,6 +614,7 @@ func TestNormalizeRejectsInvalidJoins(t *testing.T) {
 		{"invalid left column", func(query *declaration.Query) { query.Joins[0].On.Left.Column = "Bad" }, declaration.ErrReference},
 		{"unintroduced projection table", func(query *declaration.Query) {
 			query.Projection = []declaration.Projection{{Table: declaration.Ref{Symbol: "missing"}, Column: "id"}}
+			query.Results = []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}}
 		}, declaration.ErrReference},
 		{"unintroduced predicate table", func(query *declaration.Query) {
 			query.Predicate = declaration.Predicate{Kind: declaration.PredicateIsNull, Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "missing"}, Column: "id"}}

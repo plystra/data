@@ -366,11 +366,11 @@ func validateQueryResults(owner, tableMember SchemaMember, table declaration.Tab
 	if query.Operation != declaration.OperationSelect {
 		projection = query.Returning
 	}
-	if len(query.Results) == 0 {
-		return nil
-	}
-	if len(projection) == 0 || len(query.Results) != len(projection) {
+	if len(query.Results) != len(projection) {
 		return fmt.Errorf("result mapping must cover each explicit output")
+	}
+	if len(projection) == 0 {
+		return nil
 	}
 	outputs := make(map[string]declaration.Column, len(projection))
 	for _, item := range projection {

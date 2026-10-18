@@ -73,6 +73,7 @@ func TestEmitIncludesOwnedQueryArtifactAndManifestEntry(t *testing.T) {
 	model.Queries = []declaration.Query{{
 		ID: "list-accounts", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
 		Projection: []declaration.Projection{{Column: "id"}},
+		Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
 	}}
 	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{
 		Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations,
@@ -93,7 +94,7 @@ func TestEmitIncludesOwnedQueryArtifactAndManifestEntry(t *testing.T) {
 	if query.Path == "" || query.Migration != nil || !bytes.Contains(query.Bytes, []byte(`SELECT "id" FROM "accounts"."accounts";`)) || !reflect.DeepEqual(query.OwningMembers, []string{"accounts.user/v1"}) {
 		t.Fatalf("query artifact = %#v", query)
 	}
-	if query.Query == nil || query.Query.ID != "list-accounts" || query.Query.Operation != declaration.OperationSelect || len(query.Query.Parameters) != 0 || len(query.Query.Results) != 0 {
+	if query.Query == nil || query.Query.ID != "list-accounts" || query.Query.Operation != declaration.OperationSelect || len(query.Query.Parameters) != 0 || !reflect.DeepEqual(query.Query.Results, model.Queries[0].Results) {
 		t.Fatalf("query metadata = %#v", query.Query)
 	}
 	if err := protocol.ValidateEmitResponse(request, response); err != nil {

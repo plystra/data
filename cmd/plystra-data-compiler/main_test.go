@@ -123,6 +123,140 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	}
 }
 
+func TestCompilerCommandRequiresCompleteSelectResults(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Symbol: "teams"}
+	regions := declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}
+	owner, err := (declaration.Member[struct{}]{
+		Namespace: "accounts", Imports: []string{"geo.region/v1"},
+		Tables: []declaration.Table{
+			{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "team-id", Type: declaration.TypeInt64}, {ID: "region-id", Type: declaration.TypeInt64}}},
+			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "label", Type: declaration.TypeString}}},
+		},
+		Queries: []declaration.Query{
+			{ID: "local-teams", Operation: declaration.OperationSelect, Table: users,
+				Joins:      []declaration.Join{{Kind: declaration.JoinLeft, Table: teams, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"}}}},
+				Projection: []declaration.Projection{{Table: users, Column: "id"}, {Table: teams, Column: "label", Alias: "team-label"}},
+				Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}, {ID: "label", Source: "team-label", Type: declaration.TypeString, Nullable: true}},
+			},
+			{ID: "imported-regions", Operation: declaration.OperationSelect, Table: users,
+				Joins:      []declaration.Join{{Kind: declaration.JoinLeft, Table: regions, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: users, Column: "region-id"}, Right: declaration.ColumnRef{Table: regions, Column: "id"}}}},
+				Projection: []declaration.Projection{{Table: users, Column: "id"}, {Table: regions, Column: "name", Alias: "region-name"}},
+				Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}, {ID: "name", Source: "region-name", Type: declaration.TypeString, Nullable: true}},
+			},
+		},
+	}).Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err := (declaration.Member[struct{}]{Namespace: "geo", Tables: []declaration.Table{{ID: "regions", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "name", Type: declaration.TypeString}}}}}).Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.EmitRequest{
+		Schema: protocol.EmitSchema, Phase: protocol.EmitPhase, RequestID: "select-results",
+		Compiler:          protocol.CompilerIdentity{ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestDigest: "sha256:" + strings.Repeat("2", 64), CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26"},
+		Build:             protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"},
+		Analyze:           protocol.AnalyzeOutput{Roots: []analyzer.Root{{MemberID: "accounts.user/v1", Model: owner, MigrationOnly: true}, {MemberID: "geo.region/v1", Model: remote, MigrationOnly: true}}, Valid: true},
+		FrozenModelDigest: "sha256:" + strings.Repeat("3", 64),
+		Assignments: []protocol.EmitAssignment{
+			{MemberID: "accounts.user/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "generated/data/database.primary"},
+			{MemberID: "geo.region/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "generated/data/database.primary"},
+		},
+	}
+	run := func(t *testing.T, request protocol.EmitRequest) protocol.EmitResponse {
+		t.Helper()
+		var err error
+		request.Analyze.Digest, err = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.AnalyzeDigest = request.Analyze.Digest
+		request.InputDigest, err = protocol.EmitInputDigest(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var input bytes.Buffer
+		if err := protocol.WriteFrame(&input, request); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, "go", "run", ".")
+		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Stdin = &input
+		var stdout, stderr bytes.Buffer
+		command.Stdout, command.Stderr = &stdout, &stderr
+		if err := command.Run(); err != nil || stderr.Len() != 0 {
+			t.Fatalf("compiler emit failed: %v; stderr=%q", err, stderr.String())
+		}
+		var response protocol.EmitResponse
+		if err := protocol.ReadFrame(&stdout, &response); err != nil || stdout.Len() != 0 {
+			t.Fatalf("emit response = %#v, %v; remaining=%d", response, err, stdout.Len())
+		}
+		if err := protocol.ValidateEmitResponse(request, response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	first := run(t, request)
+	second := run(t, request)
+	if first.Status != protocol.StatusSucceeded || first.OutputDigest == "" || first.OutputDigest != second.OutputDigest {
+		t.Fatalf("unstable SELECT emit response: first=%#v second=%#v", first, second)
+	}
+	wantSQL := map[string]string{
+		"queries/accounts.user/v1/local-teams.sql":      "SELECT \"t0\".\"id\", \"t1\".\"label\" AS \"team-label\" FROM \"accounts\".\"users\" AS \"t0\" LEFT JOIN \"accounts\".\"teams\" AS \"t1\" ON \"t0\".\"team-id\" = \"t1\".\"id\";",
+		"queries/accounts.user/v1/imported-regions.sql": "SELECT \"t0\".\"id\", \"t1\".\"name\" AS \"region-name\" FROM \"accounts\".\"users\" AS \"t0\" LEFT JOIN \"geo\".\"regions\" AS \"t1\" ON \"t0\".\"region-id\" = \"t1\".\"id\";",
+	}
+	for _, artifact := range first.Output.Artifacts {
+		path := strings.TrimPrefix(artifact.Path, "generated/data/database.primary/")
+		sql, exists := wantSQL[path]
+		if !exists {
+			continue
+		}
+		if !bytes.Contains(artifact.Bytes, []byte(sql)) || artifact.Query == nil || len(artifact.Query.Results) != 2 || artifact.Query.Results[1].Nullable != true || artifact.Query.Results[1].Type != declaration.TypeString || artifact.Digest == "" {
+			t.Fatalf("invalid typed SELECT artifact: %#v", artifact)
+		}
+		delete(wantSQL, path)
+	}
+	if len(wantSQL) != 0 {
+		t.Fatalf("missing typed SELECT artifacts: %v", wantSQL)
+	}
+	for _, test := range []struct {
+		name             string
+		query            string
+		keep             int
+		wrongNullability bool
+		code             analyzer.DiagnosticCode
+	}{
+		{name: "missing local mapping", query: "local-teams", code: analyzer.CodeEmitInput},
+		{name: "missing imported mapping", query: "imported-regions", code: analyzer.CodeEmitInput},
+		{name: "partial imported mapping", query: "imported-regions", keep: 1, code: analyzer.CodeEmitInput},
+		{name: "non-null imported left join mapping", query: "imported-regions", keep: 2, wrongNullability: true, code: analyzer.CodeEmitBackend},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := request
+			invalid.Analyze.Roots = append([]analyzer.Root(nil), request.Analyze.Roots...)
+			model := invalid.Analyze.Roots[0].Model
+			model.Queries = append([]declaration.Query(nil), model.Queries...)
+			for index := range model.Queries {
+				if model.Queries[index].ID == test.query {
+					model.Queries[index].Results = model.Queries[index].Results[:test.keep]
+					if test.wrongNullability {
+						model.Queries[index].Results = append([]declaration.ResultField(nil), model.Queries[index].Results...)
+						model.Queries[index].Results[1].Nullable = false
+					}
+				}
+			}
+			invalid.Analyze.Roots[0].Model = model
+			response := run(t, invalid)
+			if response.Status != protocol.StatusRejected || response.OutputDigest != "" || len(response.Output.Artifacts) != 0 || len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != test.code {
+				t.Fatalf("invalid SELECT mapping response = %#v", response)
+			}
+		})
+	}
+}
+
 func TestCompilerCommandAnalyzesOneBoundedFrame(t *testing.T) {
 	snapshot := analyzer.Snapshot{}
 	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}

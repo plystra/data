@@ -31,6 +31,7 @@ func TestCompileQueriesIsDeterministicAndLowersSelectIntent(t *testing.T) {
 					{Column: "id"},
 					{Column: "email", Alias: "address"},
 				},
+				Results: []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}, {ID: "email", Source: "address", Type: declaration.TypeString}},
 				Predicate: declaration.Predicate{Kind: declaration.PredicateAnd, Items: []declaration.Predicate{
 					{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "active"}, Value: declaration.Bool(true)},
 					{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(10)},
@@ -504,6 +505,7 @@ func TestCompileQueriesRejectsInvalidTypedResultMapping(t *testing.T) {
 		results []declaration.ResultField
 		want    string
 	}{
+		{"missing mapping", nil, "query result mapping"},
 		{"wrong type", []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeString}}, "does not match"},
 		{"wrong nullability", []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64, Nullable: true}}, "does not match"},
 		{"unknown source", []declaration.ResultField{{ID: "id", Source: "missing", Type: declaration.TypeInt64}}, "query result source"},
@@ -528,7 +530,7 @@ func TestCompileQueriesRejectsInvalidIntent(t *testing.T) {
 		query declaration.Query
 		want  string
 	}{
-		{name: "unknown projection", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Projection: []declaration.Projection{{Column: "missing"}}}, want: "projection column missing"},
+		{name: "unknown projection", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Projection: []declaration.Projection{{Column: "missing"}}, Results: []declaration.ResultField{{ID: "missing", Source: "missing", Type: declaration.TypeInt64}}}, want: "result column missing is not present"},
 		{name: "unknown predicate", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Predicate: declaration.Predicate{Kind: declaration.PredicateIsNull, Left: declaration.ColumnRef{Column: "missing"}}}, want: "predicate column missing"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -609,7 +611,7 @@ func TestCompileQueriesLowersQualifiedJoinsAndOwnerHeader(t *testing.T) {
 					{Table: regions, Column: "id", Direction: declaration.OrderingDescending},
 				},
 			},
-			{ID: "remote-regions", Operation: declaration.OperationSelect, Table: regions, Projection: []declaration.Projection{{Column: "id"}}},
+			{ID: "remote-regions", Operation: declaration.OperationSelect, Table: regions, Projection: []declaration.Projection{{Column: "id"}}, Results: []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}}},
 		},
 	}}
 	remote := postgres.SchemaMember{MemberID: "geo.region/v1", Resource: "database.primary", Model: declaration.Model{
