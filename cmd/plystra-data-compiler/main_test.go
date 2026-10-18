@@ -53,8 +53,8 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 				Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "accounts"}, Column: "team-id"}, Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "teams"}, Column: "id"},
 			}}},
 			GroupBy:    []declaration.ColumnRef{{Table: declaration.Ref{Symbol: "teams"}, Column: "region"}},
-			Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "total"}},
-			Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+			Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "total"}, {Aggregate: declaration.AggregateMax, Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "maximum"}},
+			Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}, {ID: "maximum", Source: "maximum", Type: declaration.TypeInt64, Nullable: true}},
 			Ordering:   []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}},
 			HasLimit:   true, Limit: 2, HasOffset: true, Offset: 1,
 		}},
@@ -127,7 +127,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 		}
 		if strings.HasSuffix(artifact.Path, "/count-by-team-region.sql") {
 			foundGroupedJoin = true
-			if artifact.Query == nil || len(artifact.Query.GroupBy) != 1 || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "t1"."region" ORDER BY "t1"."region" ASC LIMIT 2 OFFSET 1;`)) {
+			if artifact.Query == nil || len(artifact.Query.GroupBy) != 1 || len(artifact.Query.Results) != 3 || !bytes.Contains(artifact.Bytes, []byte(`MAX("t1"."id") AS "maximum"`)) || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "t1"."region" ORDER BY "t1"."region" ASC LIMIT 2 OFFSET 1;`)) {
 				t.Fatalf("query artifact does not contain grouped join: %#v", artifact)
 			}
 		}
@@ -424,11 +424,11 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	Queries: []declaration.Query{{ID: "count-by-region", Operation: "select", Table: declaration.Ref{Symbol: "users"},
 		Joins: []declaration.Join{{Kind: "left", Table: declaration.Ref{Symbol: "teams"}, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "team-id"}, Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "teams"}, Column: "id"}}}},
 		GroupBy: []declaration.ColumnRef{{Table: declaration.Ref{Symbol: "teams"}, Column: "region"}},
-		Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: "count", Column: "id", Alias: "total"}},
+		Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: "count", Column: "id", Alias: "total"}, {Aggregate: "min", Column: "id", Alias: "minimum"}},
 		Having: declaration.Predicate{Kind: "greater", Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
 		Ordering: []declaration.Ordering{{Column: "total", Direction: "desc"}, {Column: "zone", Direction: "asc"}},
 		HasLimit: true, Limit: 2, HasOffset: true, Offset: 1,
-		Results: []declaration.ResultField{{ID: "region", Source: "zone", Type: "string", Nullable: true}, {ID: "total", Source: "total", Type: "int64"}},
+		Results: []declaration.ResultField{{ID: "region", Source: "zone", Type: "string", Nullable: true}, {ID: "total", Source: "total", Type: "int64"}, {ID: "minimum", Source: "minimum", Type: "int64", Nullable: true}},
 	}},
 }`
 	run := func(t *testing.T, source string) protocol.AnalyzeResponse {
@@ -439,7 +439,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		}})
 	}
 	valid := run(t, modelSource)
-	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Ordering) != 2 || len(valid.Output.Roots[0].Model.Queries[0].Joins) != 1 || valid.Output.Roots[0].Model.Queries[0].Limit != 2 || valid.Output.Roots[0].Model.Queries[0].Offset != 1 {
+	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Projection) != 3 || len(valid.Output.Roots[0].Model.Queries[0].Ordering) != 2 || len(valid.Output.Roots[0].Model.Queries[0].Joins) != 1 || valid.Output.Roots[0].Model.Queries[0].Limit != 2 || valid.Output.Roots[0].Model.Queries[0].Offset != 1 {
 		t.Fatalf("valid grouped analysis = %#v", valid)
 	}
 	for _, test := range []struct{ name, source string }{
@@ -461,6 +461,10 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	missingGroupOrder := run(t, strings.Replace(modelSource, `{Column: "zone", Direction: "asc"}`, `{Column: "total", Direction: "asc"}`, 1))
 	if missingGroupOrder.Status != protocol.StatusRejected || missingGroupOrder.Output.Valid || len(missingGroupOrder.Output.Roots) != 0 || len(missingGroupOrder.Diagnostics) != 1 || missingGroupOrder.Diagnostics[0].Code != analyzer.CodeInvalidRootShape {
 		t.Fatalf("paged grouped query without key ordering = %#v", missingGroupOrder)
+	}
+	invalidMinimum := run(t, strings.Replace(modelSource, `Source: "minimum", Type: "int64", Nullable: true`, `Source: "minimum", Type: "int64"`, 1))
+	if invalidMinimum.Status != protocol.StatusRejected || invalidMinimum.Output.Valid || len(invalidMinimum.Output.Roots) != 0 || len(invalidMinimum.Diagnostics) != 1 || invalidMinimum.Diagnostics[0].Code != analyzer.CodeInvalidRootShape {
+		t.Fatalf("invalid minimum result = %#v", invalidMinimum)
 	}
 	for _, test := range []struct {
 		name, source string

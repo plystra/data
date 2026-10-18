@@ -62,18 +62,18 @@ ordering may explicitly name the base table or an already introduced join
 table; the SQL lowerer uses stable aliases and qualifies those columns
 deterministically. Predicates may compare columns from the base or an already
 introduced join table, or compare an introduced column with a typed value;
-the closed `COUNT` aggregate may project `*` or an introduced column with an
-explicit alias and one required non-null `int64` result mapping. The closed
-`MIN` and `MAX` aggregates may each project one introduced `int64` column with
-an explicit alias and one required nullable `int64` result mapping. These
+each closed `COUNT` output may project `*` or an introduced column with an
+explicit alias and one required non-null `int64` result mapping. Each closed
+`MIN` or `MAX` output projects one introduced `int64` column with an explicit
+alias and one required nullable `int64` result mapping. These
 inputs are checked during analysis even when the column belongs to an imported
 member; PostgreSQL lowering repeats the type check before emission. The
-ungrouped forms are single-output SELECTs with no ordinary projection,
-aggregate ordering, limit, or offset. A bounded grouped SELECT may project one
-or more columns from the base or introduced `INNER`/`LEFT` join tables, named
-by matching `GroupBy` columns, plus one `COUNT`, `MIN`, or `MAX` output. It
-emits deterministic ordered `GROUP BY` columns and matching typed result
-mappings. Explicitly imported join tables must use
+ungrouped forms may combine one or more aggregate outputs with no ordinary
+projection, aggregate ordering, limit, or offset. A bounded grouped SELECT
+may project one or more columns from the base or introduced `INNER`/`LEFT`
+join tables, named by matching `GroupBy` columns, plus one or more `COUNT`,
+`MIN`, or `MAX` outputs. It emits deterministic ordered `GROUP BY` columns
+and matching typed result mappings. Explicitly imported join tables must use
 the same selected database Resource. A grouping output from the nullable side
 of a `LEFT JOIN` remains nullable even when `HAVING IS NOT NULL` filters rows.
 Grouped ordering names only projected output names without table qualifiers;
@@ -83,8 +83,8 @@ queries may use literal `LIMIT` and `OFFSET` when ordering includes every
 projected grouping key; an aggregate output may precede those keys. Explicit
 zero bounds are allowed. Values without their presence flag or beyond
 PostgreSQL's signed 64-bit range are rejected before SQL emission. An ungrouped
-aggregate still cannot use ordering, limit, or offset. A grouped query may
-filter its projected grouping columns or aggregate alias through
+aggregate query still cannot use ordering, limit, or offset. A grouped query may
+filter its projected grouping columns or any aggregate output through
 `Having`, using the closed comparison, `IS NULL`,
 `IS NOT NULL`, `AND`, and `OR` predicate forms. HAVING references are
 unqualified output names; the lowerer substitutes the validated column or

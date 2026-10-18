@@ -634,8 +634,8 @@ func TestNormalizeGroupedJoinedAggregate(t *testing.T) {
 				Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"},
 			}}},
 			GroupBy:    []declaration.ColumnRef{{Table: teams, Column: "region"}},
-			Projection: []declaration.Projection{{Table: teams, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Column: "id", Table: teams, Alias: "total"}},
-			Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+			Projection: []declaration.Projection{{Table: teams, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Column: "id", Table: teams, Alias: "total"}, {Aggregate: declaration.AggregateMin, Column: "id", Table: teams, Alias: "minimum"}},
+			Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}, {ID: "minimum", Source: "minimum", Type: declaration.TypeInt64, Nullable: true}},
 			Having:     declaration.Predicate{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "zone"}},
 			Ordering:   []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}},
 		}},
@@ -650,6 +650,34 @@ func TestNormalizeGroupedJoinedAggregate(t *testing.T) {
 	member.Queries[0].GroupBy[0].Column = "changed"
 	if model.Queries[0].GroupBy[0].Column != "region" {
 		t.Fatal("normalized grouping changed with authored input")
+	}
+}
+
+func TestNormalizeUngroupedMultipleAggregates(t *testing.T) {
+	member := declaration.Member[access]{
+		Namespace: "authn",
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "region", Type: declaration.TypeString}}}},
+		Queries: []declaration.Query{{
+			ID: "summary", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+			Projection: []declaration.Projection{{Aggregate: declaration.AggregateCount, Alias: "total"}, {Aggregate: declaration.AggregateMin, Column: "id", Alias: "minimum"}, {Aggregate: declaration.AggregateMax, Column: "id", Alias: "maximum"}},
+			Results:    []declaration.ResultField{{ID: "total", Source: "total", Type: declaration.TypeInt64}, {ID: "minimum", Source: "minimum", Type: declaration.TypeInt64, Nullable: true}, {ID: "maximum", Source: "maximum", Type: declaration.TypeInt64, Nullable: true}},
+		}},
+	}
+	model, err := member.Normalize()
+	if err != nil || len(model.Queries[0].Projection) != 3 {
+		t.Fatalf("multiple aggregate outputs = %#v, %v", model, err)
+	}
+	wrongResult := member
+	wrongResult.Queries = append([]declaration.Query(nil), member.Queries...)
+	wrongResult.Queries[0].Results = append([]declaration.ResultField(nil), member.Queries[0].Results...)
+	wrongResult.Queries[0].Results[1].Nullable = false
+	if _, err := wrongResult.Normalize(); !errors.Is(err, declaration.ErrInvalidSchema) {
+		t.Fatalf("non-null MIN result error = %v", err)
+	}
+	member.Queries[0].Projection = append(member.Queries[0].Projection, declaration.Projection{Column: "region"})
+	member.Queries[0].Results = append(member.Queries[0].Results, declaration.ResultField{ID: "region", Source: "region", Type: declaration.TypeString})
+	if _, err := member.Normalize(); !errors.Is(err, declaration.ErrUnsupported) {
+		t.Fatalf("mixed ungrouped projection error = %v", err)
 	}
 }
 

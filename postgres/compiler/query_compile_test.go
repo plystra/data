@@ -336,6 +336,46 @@ func TestCompileQueriesLowersGroupedImportedLeftJoin(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersMultipleAggregateOutputs(t *testing.T) {
+	member := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts",
+		Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: declaration.TypeString}, {ID: "score", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{
+			ID: "summary", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+			GroupBy:    []declaration.ColumnRef{{Column: "region"}},
+			Projection: []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateCount, Alias: "total"}, {Aggregate: declaration.AggregateMin, Column: "score", Alias: "minimum"}, {Aggregate: declaration.AggregateMax, Column: "score", Alias: "maximum"}},
+			Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}, {ID: "minimum", Source: "minimum", Type: declaration.TypeInt64, Nullable: true}, {ID: "maximum", Source: "maximum", Type: declaration.TypeInt64, Nullable: true}},
+			Having:     declaration.Predicate{Kind: declaration.PredicateLessEqual, Left: declaration.ColumnRef{Column: "minimum"}, Right: declaration.ColumnRef{Column: "maximum"}},
+			Ordering:   []declaration.Ordering{{Column: "total", Direction: declaration.OrderingDescending}, {Column: "region", Direction: declaration.OrderingAscending}},
+			HasLimit:   true, Limit: 2, HasOffset: true, Offset: 1,
+		}},
+	}}
+	first, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("multiple aggregate SQL = %#v, %v", first, err)
+	}
+	want := `SELECT "region", COUNT(*) AS "total", MIN("score") AS "minimum", MAX("score") AS "maximum" FROM "accounts"."users" GROUP BY "region" HAVING MIN("score") <= MAX("score") ORDER BY COUNT(*) DESC, "users"."region" ASC LIMIT 2 OFFSET 1;`
+	if !strings.Contains(first[0].SQL, want) {
+		t.Fatalf("multiple aggregate SQL = %q, want %q", first[0].SQL, want)
+	}
+	second, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(second) != 1 || second[0].SQL != first[0].SQL || second[0].Digest != first[0].Digest {
+		t.Fatalf("unstable multiple aggregate SQL = %#v, %#v, %v", first, second, err)
+	}
+	query := &member.Model.Queries[0]
+	query.GroupBy = nil
+	query.Projection = query.Projection[1:]
+	query.Results = query.Results[1:]
+	query.Having = declaration.Predicate{}
+	query.Ordering = nil
+	query.HasLimit, query.Limit = false, 0
+	query.HasOffset, query.Offset = false, 0
+	ungrouped, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(ungrouped) != 1 || !strings.Contains(ungrouped[0].SQL, `SELECT COUNT(*) AS "total", MIN("score") AS "minimum", MAX("score") AS "maximum" FROM "accounts"."users";`) {
+		t.Fatalf("ungrouped multiple aggregate SQL = %#v, %v", ungrouped, err)
+	}
+}
+
 func TestCompileQueriesCountsNullableJoinedColumn(t *testing.T) {
 	users := declaration.Ref{Symbol: "users"}
 	teams := declaration.Ref{Symbol: "teams"}

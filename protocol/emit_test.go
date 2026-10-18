@@ -577,11 +577,11 @@ func TestEmitIncludesJoinedSelect(t *testing.T) {
 			Left: declaration.ColumnRef{Table: accounts, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"},
 		}}},
 		GroupBy:    []declaration.ColumnRef{{Table: teams, Column: "region"}},
-		Projection: []declaration.Projection{{Table: teams, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: teams, Column: "id", Alias: "total"}},
+		Projection: []declaration.Projection{{Table: teams, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: teams, Column: "id", Alias: "total"}, {Aggregate: declaration.AggregateMin, Table: teams, Column: "id", Alias: "minimum"}},
 		Having:     declaration.Predicate{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "zone"}},
 		Ordering:   []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}},
 		HasLimit:   true, Limit: 2, HasOffset: true, Offset: 1,
-		Results: []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+		Results: []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}, {ID: "minimum", Source: "minimum", Type: declaration.TypeInt64, Nullable: true}},
 	}}
 	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations})
 	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
@@ -603,9 +603,9 @@ func TestEmitIncludesJoinedSelect(t *testing.T) {
 	if query == nil || !bytes.Contains(query.Bytes, []byte(`INNER JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id"`)) || query.Query.ID != "list-accounts" || len(query.Query.Results) != 1 {
 		t.Fatalf("joined query artifact = %#v", query)
 	}
-	if grouped == nil || !bytes.Contains(grouped.Bytes, []byte(`GROUP BY "t1"."region" HAVING "t1"."region" IS NOT NULL ORDER BY "t1"."region" ASC LIMIT 2 OFFSET 1;`)) ||
+	if grouped == nil || !bytes.Contains(grouped.Bytes, []byte(`COUNT("t1"."id") AS "total", MIN("t1"."id") AS "minimum"`)) || !bytes.Contains(grouped.Bytes, []byte(`GROUP BY "t1"."region" HAVING "t1"."region" IS NOT NULL ORDER BY "t1"."region" ASC LIMIT 2 OFFSET 1;`)) ||
 		!reflect.DeepEqual(grouped.Query.GroupBy, []declaration.ColumnRef{{Table: teams, Column: "region"}}) || grouped.Query.Having == nil ||
-		!reflect.DeepEqual(grouped.Query.Results, []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}}) {
+		!reflect.DeepEqual(grouped.Query.Results, []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}, {ID: "minimum", Source: "minimum", Type: declaration.TypeInt64, Nullable: true}}) {
 		t.Fatalf("grouped joined query artifact = %#v", grouped)
 	}
 	if err := protocol.ValidateEmitResponse(request, response); err != nil {
