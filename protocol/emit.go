@@ -21,7 +21,7 @@ import (
 const postgresBackend = "postgres/v1"
 
 // EmitAssignment is one already frozen active member and its selected backend.
-// The CLI, not the compiler, owns Resource and provider selection.
+// Data orchestration supplies Resource and provider selection to the compiler.
 type EmitAssignment struct {
 	MemberID         string `json:"member_id"`
 	Resource         string `json:"resource"`
@@ -47,7 +47,7 @@ type EmitRequest struct {
 	Assignments       []EmitAssignment `json:"assignments"`
 }
 
-// StagedArtifact is an in-memory, CLI-installable file. The compiler never
+// StagedArtifact is an in-memory Data installation candidate. The compiler never
 // opens AllowedRoot or writes to the Project filesystem.
 type StagedArtifact struct {
 	Path              string                `json:"path"`
@@ -215,7 +215,6 @@ func HandleEmit(request EmitRequest) EmitResponse {
 }
 
 // ValidateEmitResponse is the pre-install integrity check for an emit result.
-// Core implements this wire contract independently rather than importing Data.
 func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 	if err := ValidateEmitRequest(request); err != nil {
 		return fmt.Errorf("invalid emit request: %w", err)
@@ -246,11 +245,18 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 	if err != nil {
 		return fmt.Errorf("accepted migration definitions are invalid: %w", err)
 	}
+	expectedSQL, err := expectedSQLDigests(request)
+	if err != nil {
+		return fmt.Errorf("accepted SQL artifacts are invalid: %w", err)
+	}
 	seen := map[string]struct{}{}
 	previous := ""
 	for _, artifact := range response.Output.Artifacts {
 		if len(artifact.Path) > MaxArtifactPathBytes || !safePath(artifact.Path) || len(artifact.Bytes) == 0 || len(artifact.Bytes) > MaxArtifactBytes || artifact.Mode != 0644 || artifact.Digest != postgres.DigestSQL(string(artifact.Bytes)) {
 			return fmt.Errorf("invalid staged artifact path, mode, bytes, or digest")
+		}
+		if expectedDigest, isSQL := expectedSQL[artifact.Path]; isSQL && artifact.Digest != expectedDigest {
+			return fmt.Errorf("staged SQL does not match accepted Data intent")
 		}
 		if previous != "" && artifact.Path <= previous {
 			return fmt.Errorf("staged artifacts are not in canonical path order")
@@ -280,7 +286,7 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 			return fmt.Errorf("staged artifact compiler or frozen model mismatch")
 		}
 		if expected, isMigration := migrationDefinitions[artifact.Path]; isMigration {
-			if artifact.Migration == nil || len(artifact.OwningMembers) != 1 || !jsonEqual(*artifact.Migration, expected) {
+			if artifact.Migration == nil || len(artifact.OwningMembers) != 1 || !jsonEqual(*artifact.Migration, expected) || artifact.Digest != expected.ArtifactDigest {
 				return fmt.Errorf("staged migration provenance mismatch")
 			}
 		} else if artifact.Migration != nil {
@@ -299,6 +305,36 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 		return fmt.Errorf("emit output frame exceeds limit")
 	}
 	return nil
+}
+
+func expectedSQLDigests(request EmitRequest) (map[string]string, error) {
+	membersByResource := make(map[string][]postgres.SchemaMember)
+	for _, assignment := range request.Assignments {
+		root, exists := findRoot(request.Analyze.Roots, assignment.MemberID)
+		if !exists {
+			return nil, fmt.Errorf("assignment %s has no accepted member model", assignment.MemberID)
+		}
+		membersByResource[assignment.Resource] = append(membersByResource[assignment.Resource], postgres.SchemaMember{
+			MemberID: assignment.MemberID, Resource: assignment.Resource, Model: root.Model,
+		})
+	}
+	expected := make(map[string]string)
+	for resource, members := range membersByResource {
+		schema, err := postgres.CompileSchema(members)
+		if err != nil {
+			return nil, fmt.Errorf("Resource %s schema: %w", resource, err)
+		}
+		root := "generated/data/" + resource + "/"
+		expected[root+schema.Path] = schema.Digest
+		queries, err := postgres.CompileQueries(members)
+		if err != nil {
+			return nil, fmt.Errorf("Resource %s queries: %w", resource, err)
+		}
+		for _, query := range queries {
+			expected[root+query.Path] = query.Digest
+		}
+	}
+	return expected, nil
 }
 
 func validateEmitDiagnostics(diagnostics []analyzer.Diagnostic, limits analyzer.Limits) error {

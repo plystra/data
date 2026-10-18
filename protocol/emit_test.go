@@ -761,6 +761,96 @@ func TestValidateEmitResponseRejectsSelfConsistentQueryMetadataTamper(t *testing
 	}
 }
 
+func TestValidateEmitResponseRejectsSelfConsistentSQLTamper(t *testing.T) {
+	request := validEmitRequest(t)
+	model := request.Analyze.Roots[0].Model
+	model.Queries = []declaration.Query{{
+		ID: "read-account", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+		Projection: []declaration.Projection{{Column: "id"}},
+		Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+		Ordering:   []declaration.Ordering{{Column: "id", Direction: declaration.OrderingAscending}},
+		HasLimit:   true, Limit: 2, HasOffset: true, Offset: 1,
+	}}
+	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	base := protocol.HandleEmit(request)
+	if base.Status != protocol.StatusSucceeded {
+		t.Fatalf("base response = %#v", base)
+	}
+	for _, test := range []struct{ name, suffix string }{
+		{"schema", "/schema/schema.sql"},
+		{"query", "/queries/accounts.user/v1/read-account.sql"},
+		{"migration", "/migrations/accounts.user/v1/create-accounts.sql"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := cloneEmitResponse(base)
+			var changed *protocol.StagedArtifact
+			for index := range response.Output.Artifacts {
+				artifact := &response.Output.Artifacts[index]
+				if strings.HasSuffix(artifact.Path, test.suffix) {
+					if test.name == "query" {
+						if !bytes.Contains(artifact.Bytes, []byte(" LIMIT 2 OFFSET 1;")) {
+							t.Fatal("query SQL has no accepted pagination")
+						}
+						artifact.Bytes = bytes.Replace(artifact.Bytes, []byte(" LIMIT 2 OFFSET 1;"), []byte(" LIMIT 200 OFFSET 0;"), 1)
+					} else {
+						artifact.Bytes = append(append([]byte(nil), artifact.Bytes...), []byte("-- altered SQL\n")...)
+					}
+					artifact.Digest = postgres.DigestSQL(string(artifact.Bytes))
+					changed = artifact
+					break
+				}
+			}
+			if changed == nil {
+				t.Fatalf("no artifact ending in %s", test.suffix)
+			}
+			for index := range response.Output.Artifacts {
+				manifest := &response.Output.Artifacts[index]
+				if !strings.HasSuffix(manifest.Path, "/manifest.json") {
+					continue
+				}
+				var document map[string]json.RawMessage
+				if err := json.Unmarshal(manifest.Bytes, &document); err != nil {
+					t.Fatal(err)
+				}
+				var entries []map[string]json.RawMessage
+				if err := json.Unmarshal(document["artifacts"], &entries); err != nil {
+					t.Fatal(err)
+				}
+				for _, entry := range entries {
+					var path string
+					if err := json.Unmarshal(entry["path"], &path); err != nil {
+						t.Fatal(err)
+					}
+					if path == changed.Path {
+						var err error
+						entry["digest"], err = json.Marshal(changed.Digest)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				var err error
+				document["artifacts"], err = json.Marshal(entries)
+				if err != nil {
+					t.Fatal(err)
+				}
+				manifest.Bytes, err = json.Marshal(document)
+				if err != nil {
+					t.Fatal(err)
+				}
+				manifest.Digest = postgres.DigestSQL(string(manifest.Bytes))
+			}
+			refreshEmitOutputDigest(t, &response)
+			if err := protocol.ValidateEmitResponse(request, response); err == nil {
+				t.Fatal("self-consistent SQL tamper was accepted")
+			}
+		})
+	}
+}
+
 func TestValidateEmitResponseRejectsSelfConsistentMigrationDefinitionTamper(t *testing.T) {
 	request := validEmitRequest(t)
 	base := protocol.HandleEmit(request)

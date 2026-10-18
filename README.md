@@ -179,9 +179,12 @@ predecessors, logical declaration digest, compiled artifact digest, compiler,
 and backend. The manifest binds logical member digests and the instance's
 artifact inventory, including each migration Definition. The response validator
 compares staged migration Definitions with the accepted analyzed member models
-and selected compiler, rejects migration metadata on other artifacts, and
-checks identity, output digest, paths, ownership, byte digests, and manifest
-consistency before any caller installs output. Frames are limited to
+and selected compiler, independently recompiles expected schema and query SQL
+digests from those models and active Resource assignments, requires migration
+SQL bytes to match their accepted compiled artifact digests, rejects migration
+metadata on other artifacts, and checks identity, output digest, paths,
+ownership, byte digests, and manifest consistency before any caller installs
+output. Frames are limited to
 16 MiB, with at most 4,096 artifacts, 4 MiB per artifact, and 512 bytes per
 artifact path. The compiler does not read source files or write generated files
 during emit.
