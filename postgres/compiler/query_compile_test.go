@@ -153,6 +153,7 @@ func TestCompileQueriesLowersGroupedAggregate(t *testing.T) {
 				ID: "count-by-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
 				GroupBy:    []declaration.ColumnRef{{Column: "region"}, {Column: "tier"}},
 				Projection: []declaration.Projection{{Column: "region"}, {Column: "tier"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
+				Having:     declaration.Predicate{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Int64(1)},
 				Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "tier", Source: "tier", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
 			}},
 		},
@@ -161,9 +162,54 @@ func TestCompileQueriesLowersGroupedAggregate(t *testing.T) {
 	if err != nil || len(artifacts) != 1 {
 		t.Fatalf("grouped artifacts = %#v, error = %v", artifacts, err)
 	}
-	want := `SELECT "region", "tier", COUNT("id") AS "total" FROM "accounts"."users" GROUP BY "region", "tier";`
+	want := `SELECT "region", "tier", COUNT("id") AS "total" FROM "accounts"."users" GROUP BY "region", "tier" HAVING COUNT("id") > 1;`
 	if !strings.Contains(artifacts[0].SQL, want) {
 		t.Fatalf("grouped artifact = %#v, want %q", artifacts[0], want)
+	}
+	member.Model.Queries[0].Having = declaration.Predicate{}
+	artifacts, err = postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("grouped artifact without HAVING = %#v, error = %v", artifacts, err)
+	}
+	want = `SELECT "region", "tier", COUNT("id") AS "total" FROM "accounts"."users" GROUP BY "region", "tier";`
+	if !strings.Contains(artifacts[0].SQL, want) {
+		t.Fatalf("grouped SQL without HAVING = %q, want %q", artifacts[0].SQL, want)
+	}
+}
+
+func TestCompileQueriesLowersTypedGroupedHaving(t *testing.T) {
+	member := postgres.SchemaMember{
+		MemberID: "accounts.user/v1", Resource: "database.primary",
+		Model: declaration.Model{
+			Namespace: "accounts",
+			Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{
+				{ID: "region", Type: declaration.TypeString}, {ID: "score", Type: declaration.TypeInt64},
+			}}},
+			Queries: []declaration.Query{{
+				ID: "minimum-by-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+				Parameters: []declaration.Parameter{{ID: "threshold", Type: declaration.TypeInt64}},
+				GroupBy:    []declaration.ColumnRef{{Column: "region"}},
+				Projection: []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateMin, Column: "score", Alias: "minimum"}},
+				Having: declaration.Predicate{Kind: declaration.PredicateAnd, Items: []declaration.Predicate{
+					{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "minimum"}},
+					{Kind: declaration.PredicateGreaterEqual, Left: declaration.ColumnRef{Column: "minimum"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "threshold"}},
+					{Kind: declaration.PredicateNotEqual, Left: declaration.ColumnRef{Column: "region"}, Value: declaration.String("inactive")},
+				}},
+				Results: []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "minimum", Source: "minimum", Type: declaration.TypeInt64, Nullable: true}},
+			}},
+		},
+	}
+	artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
+	}
+	want := `SELECT "region", MIN("score") AS "minimum" FROM "accounts"."users" GROUP BY "region" HAVING (MIN("score") IS NOT NULL) AND (MIN("score") >= $1) AND ("region" <> 'inactive');`
+	if !strings.Contains(artifacts[0].SQL, want) {
+		t.Fatalf("SQL = %q, want %q", artifacts[0].SQL, want)
+	}
+	member.Model.Queries[0].Parameters[0].Type = declaration.TypeString
+	if _, err := postgres.CompileQueries([]postgres.SchemaMember{member}); err == nil || !errors.Is(err, postgres.ErrQueryCompilation) {
+		t.Fatalf("mismatched HAVING parameter error = %v", err)
 	}
 }
 

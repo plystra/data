@@ -24,7 +24,7 @@ import (
 func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	model, err := (declaration.Member[struct{}]{
 		Namespace: "accounts",
-		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}},
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}, {ID: "region", Type: declaration.TypeString}}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}},
 		Queries: []declaration.Query{{
 			ID: "delete-account", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "accounts"},
 			Parameters: []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
@@ -37,6 +37,12 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 			Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}}, {Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "email"}}},
 			Conflict:    declaration.Conflict{Constraint: "accounts-pk", Action: declaration.ConflictDoUpdate, UpdateColumns: []string{"email"}},
 			Returning:   []declaration.Projection{{Column: "id"}}, Results: []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+		}, {
+			ID: "count-by-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+			GroupBy:    []declaration.ColumnRef{{Column: "region"}},
+			Projection: []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
+			Having:     declaration.Predicate{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Int64(1)},
+			Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
 		}},
 	}).Normalize()
 	if err != nil {
@@ -83,10 +89,11 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	if err := protocol.ReadFrame(&stdout, &response); err != nil {
 		t.Fatal(err)
 	}
-	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 4 {
+	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 5 {
 		t.Fatalf("invalid command response: %v, bytes=%d, artifacts=%d", err, stdout.Len(), len(response.Output.Artifacts))
 	}
 	foundUpsert := false
+	foundHaving := false
 	for _, artifact := range response.Output.Artifacts {
 		if strings.HasSuffix(artifact.Path, "/delete-account.sql") && !bytes.Contains(artifact.Bytes, []byte(`RETURNING "id" AS "account-id";`)) {
 			t.Fatalf("query artifact does not contain typed RETURNING: %q", artifact.Bytes)
@@ -97,9 +104,15 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 				t.Fatalf("query artifact does not contain conflict update: %#v", artifact)
 			}
 		}
+		if strings.HasSuffix(artifact.Path, "/count-by-region.sql") {
+			foundHaving = true
+			if artifact.Query == nil || artifact.Query.Having == nil || artifact.Query.Having.Left.Column != "total" || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "region" HAVING COUNT("id") > 1;`)) {
+				t.Fatalf("query artifact does not contain typed HAVING: %#v", artifact)
+			}
+		}
 	}
-	if !foundUpsert {
-		t.Fatal("compiler did not stage the conflict update query")
+	if !foundUpsert || !foundHaving {
+		t.Fatal("compiler did not stage the conflict update and grouped HAVING queries")
 	}
 	after, err := os.ReadDir(".")
 	if err != nil {

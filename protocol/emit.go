@@ -74,6 +74,7 @@ type QueryMetadata struct {
 	Parameters []declaration.Parameter   `json:"parameters"`
 	Projection []declaration.Projection  `json:"projection"`
 	GroupBy    []declaration.ColumnRef   `json:"group_by"`
+	Having     *declaration.Predicate    `json:"having,omitempty"`
 	Results    []declaration.ResultField `json:"results"`
 	Conflict   *declaration.Conflict     `json:"conflict,omitempty"`
 }
@@ -815,12 +816,27 @@ func metadataForQuery(query declaration.Query) QueryMetadata {
 		GroupBy:    append([]declaration.ColumnRef{}, query.GroupBy...),
 		Results:    append([]declaration.ResultField{}, query.Results...),
 	}
+	if query.Having.Kind != "" {
+		having := clonePredicate(query.Having)
+		metadata.Having = &having
+	}
 	if query.Conflict.Action != "" || query.Conflict.Constraint != "" || len(query.Conflict.UpdateColumns) != 0 {
 		conflict := query.Conflict
 		conflict.UpdateColumns = append([]string(nil), query.Conflict.UpdateColumns...)
 		metadata.Conflict = &conflict
 	}
 	return metadata
+}
+
+func clonePredicate(predicate declaration.Predicate) declaration.Predicate {
+	if predicate.Items != nil {
+		items := predicate.Items
+		predicate.Items = make([]declaration.Predicate, len(items))
+		for index, item := range items {
+			predicate.Items[index] = clonePredicate(item)
+		}
+	}
+	return predicate
 }
 
 func metadataForPlan(plan declaration.Plan, artifact postgres.PlanArtifact) (PlanMetadata, error) {

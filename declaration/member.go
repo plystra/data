@@ -188,6 +188,7 @@ type Query struct {
 	Conflict    Conflict      `json:"conflict,omitempty"`
 	Projection  []Projection  `json:"projection,omitempty"`
 	GroupBy     []ColumnRef   `json:"group_by,omitempty"`
+	Having      Predicate     `json:"having,omitempty"`
 	Returning   []Projection  `json:"returning,omitempty"`
 	Results     []ResultField `json:"results,omitempty"`
 	Predicate   Predicate     `json:"predicate,omitempty"`
@@ -196,6 +197,18 @@ type Query struct {
 	HasLimit    bool          `json:"has_limit,omitempty"`
 	Offset      uint64        `json:"offset,omitempty"`
 	HasOffset   bool          `json:"has_offset,omitempty"`
+}
+
+func (query Query) MarshalJSON() ([]byte, error) {
+	type plain Query
+	var having *Predicate
+	if hasHaving(query.Having) {
+		having = &query.Having
+	}
+	return json.Marshal(struct {
+		plain
+		Having *Predicate `json:"having,omitempty"`
+	}{plain(query), having})
 }
 
 // ColumnRef identifies one column on a table explicitly present in a query.
@@ -433,6 +446,7 @@ func cloneQueries(queries []Query) []Query {
 		result[i].Conflict.UpdateColumns = append([]string(nil), query.Conflict.UpdateColumns...)
 		result[i].Projection = append([]Projection(nil), query.Projection...)
 		result[i].GroupBy = append([]ColumnRef(nil), query.GroupBy...)
+		result[i].Having = clonePredicate(query.Having)
 		result[i].Returning = append([]Projection(nil), query.Returning...)
 		result[i].Results = append([]ResultField(nil), query.Results...)
 		result[i].Ordering = append([]Ordering(nil), query.Ordering...)
@@ -442,10 +456,12 @@ func cloneQueries(queries []Query) []Query {
 }
 
 func clonePredicate(predicate Predicate) Predicate {
-	items := predicate.Items
-	predicate.Items = make([]Predicate, len(items))
-	for i, item := range items {
-		predicate.Items[i] = clonePredicate(item)
+	if predicate.Items != nil {
+		items := predicate.Items
+		predicate.Items = make([]Predicate, len(items))
+		for i, item := range items {
+			predicate.Items[i] = clonePredicate(item)
+		}
 	}
 	return predicate
 }
@@ -762,6 +778,13 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 	if len(query.GroupBy) != 0 && (query.Operation != OperationSelect || len(query.Joins) != 0 || aggregateOutputs != 1 || len(outputs) != len(query.GroupBy)+1) {
 		return fmt.Errorf("%w: grouped query shape", ErrUnsupported)
 	}
+	havingPresent := hasHaving(query.Having)
+	if havingPresent && (query.Operation != OperationSelect || len(query.GroupBy) == 0) {
+		return fmt.Errorf("%w: having query shape", ErrUnsupported)
+	}
+	if havingPresent && query.Having.Kind == "" {
+		return fmt.Errorf("%w: having predicate kind", ErrInvalidSchema)
+	}
 	if aggregateOutputs == 0 && len(query.GroupBy) != 0 {
 		return fmt.Errorf("%w: grouped query aggregate", ErrUnsupported)
 	}
@@ -858,6 +881,19 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			if !matched {
 				return fmt.Errorf("%w: group by projection", ErrReference)
 			}
+		}
+	}
+	if havingPresent {
+		outputsByName := make(map[string]struct{}, len(outputs))
+		for _, projection := range outputs {
+			name := projection.Column
+			if projection.Alias != "" {
+				name = projection.Alias
+			}
+			outputsByName[name] = struct{}{}
+		}
+		if err := validateHavingPredicate(query.Having, parameters, outputsByName, 0); err != nil {
+			return err
 		}
 	}
 	if len(query.Results) != 0 {
@@ -1000,6 +1036,70 @@ func validatePredicate(predicate Predicate, imports map[string]struct{}, paramet
 	return nil
 }
 
+func validateHavingPredicate(predicate Predicate, parameters map[string]ScalarType, outputs map[string]struct{}, depth int) error {
+	if depth > MaximumNesting {
+		return ErrLimit
+	}
+	validateOutput := func(ref ColumnRef) error {
+		if ref.Table.Member != "" || ref.Table.Symbol != "" {
+			return fmt.Errorf("%w: having columns cannot name a table", ErrUnsupported)
+		}
+		if !validSymbol(ref.Column) {
+			return fmt.Errorf("%w: having column %q", ErrReference, ref.Column)
+		}
+		if _, exists := outputs[ref.Column]; !exists {
+			return fmt.Errorf("%w: having output %q", ErrReference, ref.Column)
+		}
+		return nil
+	}
+	switch predicate.Kind {
+	case PredicateEqual, PredicateNotEqual, PredicateLess, PredicateLessEqual, PredicateGreater, PredicateGreaterEqual:
+		if predicate.Items != nil {
+			return fmt.Errorf("%w: having comparison has nested items", ErrInvalidSchema)
+		}
+		if err := validateOutput(predicate.Left); err != nil {
+			return err
+		}
+		rightSet := predicateColumnSet(predicate.Right)
+		if rightSet == predicate.Value.Set {
+			return fmt.Errorf("%w: having requires exactly one right operand", ErrInvalidSchema)
+		}
+		if rightSet {
+			return validateOutput(predicate.Right)
+		}
+		return validateQueryValue(predicate.Value, parameters)
+	case PredicateIsNull, PredicateIsNotNull:
+		if predicate.Items != nil {
+			return fmt.Errorf("%w: having null predicate has nested items", ErrInvalidSchema)
+		}
+		if err := validateOutput(predicate.Left); err != nil {
+			return err
+		}
+		if predicateColumnSet(predicate.Right) || predicate.Value.Set {
+			return fmt.Errorf("%w: having null predicate has an operand", ErrInvalidSchema)
+		}
+	case PredicateAnd, PredicateOr:
+		if predicate.Left != (ColumnRef{}) || predicate.Right != (ColumnRef{}) || predicate.Value != (Value{}) {
+			return fmt.Errorf("%w: having boolean predicate has operands", ErrInvalidSchema)
+		}
+		if len(predicate.Items) < 2 {
+			return fmt.Errorf("%w: having predicate requires two items", ErrInvalidSchema)
+		}
+		for _, item := range predicate.Items {
+			if err := validateHavingPredicate(item, parameters, outputs, depth+1); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("%w: having predicate %q", ErrUnsupported, predicate.Kind)
+	}
+	return nil
+}
+
+func hasHaving(predicate Predicate) bool {
+	return predicate.Kind != "" || predicate.Left != (ColumnRef{}) || predicate.Right != (ColumnRef{}) || predicate.Value != (Value{}) || predicate.Items != nil
+}
+
 func validatePredicateColumn(ref ColumnRef, imports map[string]struct{}, introduced map[string]struct{}, base Ref) error {
 	if ref.Table.Member == "" && ref.Table.Symbol == "" {
 		ref.Table = base
@@ -1103,7 +1203,7 @@ func nodeCount(model Model) int {
 		if query.Conflict.Constraint != "" || query.Conflict.Action != "" || len(query.Conflict.UpdateColumns) != 0 {
 			conflictNodes = 1
 		}
-		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + conflictNodes + len(query.Conflict.UpdateColumns) + len(query.Projection) + len(query.GroupBy) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate)
+		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + conflictNodes + len(query.Conflict.UpdateColumns) + len(query.Projection) + len(query.GroupBy) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate) + predicateCount(query.Having)
 	}
 	for _, plan := range model.Plans {
 		count += len(plan.Statements)

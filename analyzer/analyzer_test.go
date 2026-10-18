@@ -361,6 +361,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		ID: "count-by-region", Operation: "select", Table: declaration.Ref{Symbol: "users"},
 		GroupBy: []declaration.ColumnRef{{Column: "region"}, {Column: "tier"}},
 		Projection: []declaration.Projection{{Column: "region"}, {Column: "tier"}, {Aggregate: "count", Column: "id", Alias: "total"}},
+		Having: declaration.Predicate{Kind: "greater", Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
 		Results: []declaration.ResultField{{ID: "region", Source: "region", Type: "string"}, {ID: "tier", Source: "tier", Type: "string"}, {ID: "total", Source: "total", Type: "int64"}},
 	}},
 }`))
@@ -371,7 +372,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		t.Fatalf("result = %#v", result)
 	}
 	query := result.Roots[0].Model.Queries[0]
-	if len(query.GroupBy) != 2 || query.GroupBy[0].Column != "region" || query.GroupBy[1].Column != "tier" || len(query.Projection) != 3 || query.Projection[2].Aggregate != declaration.AggregateCount {
+	if len(query.GroupBy) != 2 || query.GroupBy[0].Column != "region" || query.GroupBy[1].Column != "tier" || len(query.Projection) != 3 || query.Projection[2].Aggregate != declaration.AggregateCount || query.Having.Left.Column != "total" {
 		t.Fatalf("decoded grouped query = %#v", query)
 	}
 }
@@ -812,7 +813,7 @@ type JoinCondition struct { Left ColumnRef; Right ColumnRef }
 type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
 type ConflictAction string
 type Conflict struct { Constraint string; Action ConflictAction; UpdateColumns []string }
-type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; GroupBy []ColumnRef; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
+type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; GroupBy []ColumnRef; Having Predicate; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 type Projection struct { Table Ref; Column string; Alias string; Aggregate string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string

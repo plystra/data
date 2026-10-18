@@ -174,6 +174,14 @@ func compileSelect(owner, tableMember SchemaMember, table declaration.Table, que
 		sql.WriteString(" GROUP BY ")
 		sql.WriteString(strings.Join(grouping, ", "))
 	}
+	if query.Having.Kind != "" {
+		having, err := havingSQL(query.Having, query, aliases, parameters)
+		if err != nil {
+			return "", err
+		}
+		sql.WriteString(" HAVING ")
+		sql.WriteString(having)
+	}
 	if len(query.Ordering) != 0 {
 		ordering := make([]string, len(query.Ordering))
 		for index, item := range query.Ordering {
@@ -475,51 +483,147 @@ func selectColumnsQualified(table declaration.Table, projection []declaration.Pr
 	return strings.Join(columns, ", "), nil
 }
 
+type havingExpression struct {
+	sql    string
+	column declaration.Column
+}
+
 func selectQueryColumns(query declaration.Query, aliases map[declaration.Ref]joinedTable, projection []declaration.Projection, baseQualifier string) (string, error) {
 	if len(projection) == 0 {
 		return baseQualifier + "*", nil
 	}
 	columns := make([]string, len(projection))
 	for index, item := range projection {
-		tableRef := query.Table
-		if item.Table.Member != "" || item.Table.Symbol != "" {
-			tableRef = item.Table
+		expression, err := queryProjectionExpression(query, aliases, item)
+		if err != nil {
+			return "", err
 		}
-		introduced, exists := aliases[tableRef]
-		if !exists {
-			return "", fmt.Errorf("projection table %s is not introduced", tableRef.Symbol)
-		}
-		if item.Aggregate != declaration.AggregateCount && !hasColumn(introduced.table, item.Column) {
-			return "", fmt.Errorf("projection column %s is not present", item.Column)
-		}
-		if item.Aggregate == declaration.AggregateCount && item.Column != "" && !hasColumn(introduced.table, item.Column) {
-			return "", fmt.Errorf("projection column %s is not present", item.Column)
-		}
-		if item.Aggregate != "" && item.Aggregate != declaration.AggregateCount && item.Aggregate != declaration.AggregateMin && item.Aggregate != declaration.AggregateMax {
-			return "", fmt.Errorf("unsupported aggregate %q", item.Aggregate)
-		}
-		qualifier := baseQualifier
-		if len(query.Joins) != 0 {
-			qualifier = quoteIdentifier(introduced.alias) + "."
-		}
-		if item.Aggregate == declaration.AggregateCount {
-			argument := "*"
-			if item.Column != "" {
-				argument = qualifier + quoteIdentifier(item.Column)
-			}
-			columns[index] = "COUNT(" + argument + ")"
-		} else if item.Aggregate == declaration.AggregateMin {
-			columns[index] = "MIN(" + qualifier + quoteIdentifier(item.Column) + ")"
-		} else if item.Aggregate == declaration.AggregateMax {
-			columns[index] = "MAX(" + qualifier + quoteIdentifier(item.Column) + ")"
-		} else {
-			columns[index] = qualifier + quoteIdentifier(item.Column)
-		}
+		columns[index] = expression.sql
 		if item.Alias != "" {
 			columns[index] += " AS " + quoteIdentifier(item.Alias)
 		}
 	}
 	return strings.Join(columns, ", "), nil
+}
+
+func queryProjectionExpression(query declaration.Query, aliases map[declaration.Ref]joinedTable, item declaration.Projection) (havingExpression, error) {
+	tableRef := query.Table
+	if item.Table.Member != "" || item.Table.Symbol != "" {
+		tableRef = item.Table
+	}
+	introduced, exists := aliases[tableRef]
+	if !exists {
+		return havingExpression{}, fmt.Errorf("projection table %s is not introduced", tableRef.Symbol)
+	}
+	if item.Aggregate != declaration.AggregateCount && !hasColumn(introduced.table, item.Column) {
+		return havingExpression{}, fmt.Errorf("projection column %s is not present", item.Column)
+	}
+	if item.Aggregate == declaration.AggregateCount && item.Column != "" && !hasColumn(introduced.table, item.Column) {
+		return havingExpression{}, fmt.Errorf("projection column %s is not present", item.Column)
+	}
+	if item.Aggregate != "" && item.Aggregate != declaration.AggregateCount && item.Aggregate != declaration.AggregateMin && item.Aggregate != declaration.AggregateMax {
+		return havingExpression{}, fmt.Errorf("unsupported aggregate %q", item.Aggregate)
+	}
+	if item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax {
+		column, ok := columnByID(introduced.table, item.Column)
+		if !ok || column.Type != declaration.TypeInt64 {
+			return havingExpression{}, fmt.Errorf("%s aggregate column %s is not int64", item.Aggregate, item.Column)
+		}
+	}
+	if item.Aggregate == declaration.AggregateCount {
+		argument := "*"
+		if item.Column != "" {
+			argument = columnSQL(introduced.alias, item.Column)
+		}
+		return havingExpression{sql: "COUNT(" + argument + ")", column: declaration.Column{ID: item.Column, Type: declaration.TypeInt64}}, nil
+	}
+	if item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax {
+		function := "MIN"
+		if item.Aggregate == declaration.AggregateMax {
+			function = "MAX"
+		}
+		return havingExpression{sql: function + "(" + columnSQL(introduced.alias, item.Column) + ")", column: declaration.Column{ID: item.Column, Type: declaration.TypeInt64, Nullable: true}}, nil
+	}
+	column, _ := columnByID(introduced.table, item.Column)
+	return havingExpression{sql: columnSQL(introduced.alias, item.Column), column: column}, nil
+}
+
+func havingSQL(predicate declaration.Predicate, query declaration.Query, aliases map[declaration.Ref]joinedTable, parameters map[string]queryParameter) (string, error) {
+	outputs := make(map[string]havingExpression, len(query.Projection))
+	for _, item := range query.Projection {
+		expression, err := queryProjectionExpression(query, aliases, item)
+		if err != nil {
+			return "", err
+		}
+		name := item.Column
+		if item.Alias != "" {
+			name = item.Alias
+		}
+		outputs[name] = expression
+	}
+	return havingPredicateSQL(predicate, outputs, parameters)
+}
+
+func havingPredicateSQL(predicate declaration.Predicate, outputs map[string]havingExpression, parameters map[string]queryParameter) (string, error) {
+	switch predicate.Kind {
+	case declaration.PredicateEqual, declaration.PredicateNotEqual, declaration.PredicateLess, declaration.PredicateLessEqual, declaration.PredicateGreater, declaration.PredicateGreaterEqual:
+		left, exists := outputs[predicate.Left.Column]
+		if !exists {
+			return "", fmt.Errorf("having output %s is not present", predicate.Left.Column)
+		}
+		var right string
+		if predicateColumnSet(predicate.Right) {
+			rightOutput, rightExists := outputs[predicate.Right.Column]
+			if !rightExists {
+				return "", fmt.Errorf("having output %s is not present", predicate.Right.Column)
+			}
+			if left.column.Type != rightOutput.column.Type {
+				return "", fmt.Errorf("having output types do not match: %s and %s", predicate.Left.Column, predicate.Right.Column)
+			}
+			right = rightOutput.sql
+		} else {
+			var err error
+			right, err = queryValueTypeSQL(left.column.Type, predicate.Left.Column, predicate.Value, parameters)
+			if err != nil {
+				return "", err
+			}
+		}
+		operator := map[declaration.PredicateKind]string{
+			declaration.PredicateEqual:        "=",
+			declaration.PredicateNotEqual:     "<>",
+			declaration.PredicateLess:         "<",
+			declaration.PredicateLessEqual:    "<=",
+			declaration.PredicateGreater:      ">",
+			declaration.PredicateGreaterEqual: ">=",
+		}[predicate.Kind]
+		return left.sql + " " + operator + " " + right, nil
+	case declaration.PredicateIsNull, declaration.PredicateIsNotNull:
+		left, exists := outputs[predicate.Left.Column]
+		if !exists {
+			return "", fmt.Errorf("having output %s is not present", predicate.Left.Column)
+		}
+		suffix := " IS NULL"
+		if predicate.Kind == declaration.PredicateIsNotNull {
+			suffix = " IS NOT NULL"
+		}
+		return left.sql + suffix, nil
+	case declaration.PredicateAnd, declaration.PredicateOr:
+		parts := make([]string, len(predicate.Items))
+		joiner := " AND "
+		if predicate.Kind == declaration.PredicateOr {
+			joiner = " OR "
+		}
+		for index, item := range predicate.Items {
+			part, err := havingPredicateSQL(item, outputs, parameters)
+			if err != nil {
+				return "", err
+			}
+			parts[index] = "(" + part + ")"
+		}
+		return strings.Join(parts, joiner), nil
+	default:
+		return "", fmt.Errorf("unsupported having predicate %q", predicate.Kind)
+	}
 }
 
 func columnSQL(alias, column string) string {
@@ -637,17 +741,18 @@ func queryValueSQL(table declaration.Table, column string, value declaration.Val
 	if !exists {
 		return "", fmt.Errorf("column %s is not present", column)
 	}
+	return queryValueTypeSQL(definition.Type, column, value, parameters)
+}
+
+func queryValueTypeSQL(columnType declaration.ScalarType, column string, value declaration.Value, parameters map[string]queryParameter) (string, error) {
 	if value.Parameter != "" {
 		parameter, exists := parameters[value.Parameter]
-		if !exists || parameter.typ != value.Kind || parameter.typ != definition.Type {
+		if !exists || parameter.typ != value.Kind || parameter.typ != columnType {
 			return "", fmt.Errorf("parameter %s does not match column %s", value.Parameter, column)
 		}
 		return "$" + strconv.Itoa(parameter.index), nil
 	}
-	if value.Kind != definition.Type {
-		return "", fmt.Errorf("value kind %q does not match column type %q", value.Kind, definition.Type)
-	}
-	return defaultSQL(definition.Type, value)
+	return defaultSQL(columnType, value)
 }
 
 func columnByID(table declaration.Table, id string) (declaration.Column, bool) {

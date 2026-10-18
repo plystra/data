@@ -1,6 +1,8 @@
 package declaration_test
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -8,6 +10,25 @@ import (
 )
 
 type access struct{}
+
+func TestQueryWithoutHavingPreservesLogicalDigest(t *testing.T) {
+	query := declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}}
+	encoded, err := json.Marshal(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encoded, []byte(`"having"`)) {
+		t.Fatalf("query without HAVING gained JSON field: %s", encoded)
+	}
+	digest, err := declaration.DigestModel(declaration.Model{Namespace: "accounts", Queries: []declaration.Query{query}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "sha256:b312f19da8c2ff3c48547ca809bae3ed1eba122864311e78ae89597066fb57f9"
+	if digest != want {
+		t.Fatalf("logical digest = %s, want %s", digest, want)
+	}
+}
 
 func TestNormalizeSortsAndDigestsTheLogicalModel(t *testing.T) {
 	member := declaration.Member[access]{
@@ -445,6 +466,7 @@ func TestNormalizeGroupedAggregate(t *testing.T) {
 			Projection: []declaration.Projection{
 				{Column: "region"}, {Column: "tier"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"},
 			},
+			Having: declaration.Predicate{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Int64(1)},
 			Results: []declaration.ResultField{
 				{ID: "region", Source: "region", Type: declaration.TypeString},
 				{ID: "tier", Source: "tier", Type: declaration.TypeString},
@@ -458,6 +480,9 @@ func TestNormalizeGroupedAggregate(t *testing.T) {
 	}
 	if len(model.Queries[0].GroupBy) != 2 || model.Queries[0].GroupBy[0].Column != "region" || model.Queries[0].GroupBy[1].Column != "tier" {
 		t.Fatalf("normalized grouping = %#v", model.Queries[0].GroupBy)
+	}
+	if model.Queries[0].Having.Left.Column != "total" {
+		t.Fatalf("normalized having = %#v", model.Queries[0].Having)
 	}
 	for _, test := range []struct {
 		name string
@@ -477,6 +502,24 @@ func TestNormalizeGroupedAggregate(t *testing.T) {
 			query.Projection = []declaration.Projection{{Column: "region"}, {Column: "id"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}}
 			query.Results = []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "id", Source: "id", Type: declaration.TypeInt64}, {ID: "total", Source: "total", Type: declaration.TypeInt64}}
 		}, declaration.ErrReference},
+		{"having output not projected", func(query *declaration.Query) {
+			query.Having.Left.Column = "missing"
+		}, declaration.ErrReference},
+		{"having cannot name table", func(query *declaration.Query) {
+			query.Having.Left.Table = declaration.Ref{Symbol: "accounts"}
+		}, declaration.ErrUnsupported},
+		{"having requires a kind", func(query *declaration.Query) {
+			query.Having.Kind = ""
+		}, declaration.ErrInvalidSchema},
+		{"having requires grouping", func(query *declaration.Query) {
+			query.GroupBy = nil
+		}, declaration.ErrUnsupported},
+		{"having nested item requires a kind", func(query *declaration.Query) {
+			query.Having = declaration.Predicate{Kind: declaration.PredicateAnd, Items: []declaration.Predicate{{Left: declaration.ColumnRef{Column: "total"}}, {Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "total"}}}}
+		}, declaration.ErrUnsupported},
+		{"having boolean node cannot carry operands", func(query *declaration.Query) {
+			query.Having = declaration.Predicate{Kind: declaration.PredicateAnd, Left: declaration.ColumnRef{Column: "total"}, Items: []declaration.Predicate{{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "total"}}, {Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "total"}}}}
+		}, declaration.ErrInvalidSchema},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			changed := member

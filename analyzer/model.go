@@ -555,6 +555,12 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 				return nil, fmt.Errorf("group by: %w", err)
 			}
 		}
+		if field, ok := fields["Having"]; ok {
+			query.Having, err = d.predicate(field)
+			if err != nil {
+				return nil, fmt.Errorf("having: %w", err)
+			}
+		}
 		if field, ok := fields["Returning"]; ok {
 			query.Returning, err = d.projections(field)
 			if err != nil {

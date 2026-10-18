@@ -62,12 +62,18 @@ ungrouped forms are single-output SELECTs with no ordinary projection,
 aggregate ordering, limit, or offset. A bounded grouped SELECT may project one
 or more local table columns named by matching `GroupBy` columns plus one
 `COUNT`, `MIN`, or `MAX` output; it emits deterministic ordered `GROUP BY`
-columns and matching typed result mappings, with no joins, `HAVING`, aggregate
-ordering, limit, or offset.
+columns and matching typed result mappings, with no joins, aggregate ordering,
+limit, or offset. A grouped query may filter its projected grouping columns or
+aggregate alias through `Having`, using the closed comparison, `IS NULL`,
+`IS NOT NULL`, `AND`, and `OR` predicate forms. HAVING references are
+unqualified output names; the lowerer substitutes the validated column or
+aggregate expression rather than relying on PostgreSQL SELECT aliases in the
+HAVING clause. Literal and named parameter operands must match the referenced
+output's scalar type. HAVING on an ungrouped query or mutation is rejected.
 `COUNT(column)` ignores NULL values, including unmatched LEFT JOIN rows;
 `COUNT(*)` counts joined rows. `MIN` and `MAX` are nullable because an empty
-input (or no non-null values) produces SQL NULL. `HAVING` and other aggregate
-functions remain unsupported. `COUNT(*)` cannot name a table; count an
+input (or no non-null values) produces SQL NULL. Other aggregate functions
+remain unsupported. `COUNT(*)` cannot name a table; count an
 introduced column to exclude unmatched LEFT JOIN rows. Queries without joins
 retain their existing SQL bytes.
 `postgres/compiler.CompileMigrations` lowers immutable migration operations into
@@ -87,8 +93,8 @@ does not match the selected table column. Result mappings are compiler
 metadata; typed access provider and codec generation remains a later
 integration boundary.
 Staged query artifacts and their manifest entries include the declaring query
-operation, group-by and projection aggregate descriptors, parameters in
-PostgreSQL positional order, and typed result metadata.
+operation, group-by, optional HAVING, and projection aggregate descriptors,
+parameters in PostgreSQL positional order, and typed result metadata.
 The `analyzer` package statically discovers directive-bound declaration roots
 from a caller-supplied, module-relative source snapshot. Every package has a
 required closed `root_eligibility` value: `eligible` packages may contribute
@@ -155,9 +161,9 @@ artifact path. The compiler does not read source files or write generated files
 during emit.
 
 This emit phase does not yet generate typed access providers or codecs, or
-install staged files in Core CLI. CLI compiler acquisition, member
-activation, graph projection, transactional installation, and drift checks
-remain separate unfinished integration work.
+install staged files in an application. Data-specific activation, generated
+access, transactional installation, and drift checks belong outside the
+generic Core CLI and remain separate unfinished integration work.
 
 ## Module
 
