@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -9,6 +11,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/plystra/data/compilerselection"
 	"github.com/plystra/data/project"
@@ -26,7 +29,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return 0
 	}
-	if len(args) < 2 || args[0] != "inspect" || (args[1] != "assignments" && args[1] != "compiler") {
+	if len(args) < 2 || args[0] != "inspect" || (args[1] != "assignments" && args[1] != "compiler" && args[1] != "sources") {
 		usage(stderr)
 		return 2
 	}
@@ -36,8 +39,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	projectDir := flags.String("project", ".", "Project directory")
 	format := flags.String("format", "text", "text or json")
 	var offline *bool
-	if kind == "compiler" {
+	var tags *string
+	if kind == "compiler" || kind == "sources" {
 		offline = flags.Bool("offline", false, "use only verified cached modules")
+	}
+	if kind == "sources" {
+		tags = flags.String("tags", "", "comma-separated Go build tags")
 	}
 	if err := flags.Parse(args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -64,6 +71,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if kind == "compiler" {
 		return inspectCompiler(root, *format, *offline, stdout, stderr)
+	}
+	if kind == "sources" {
+		var selectedTags []string
+		if *tags != "" {
+			selectedTags = strings.Split(*tags, ",")
+		}
+		return inspectSources(root, *format, *offline, selectedTags, stdout, stderr)
 	}
 	return inspectAssignments(root, *format, stdout, stderr)
 }
@@ -169,7 +183,70 @@ func inspectCompiler(root, format string, offline bool, stdout, stderr io.Writer
 	return 0
 }
 
+func inspectSources(root, format string, offline bool, tags []string, stdout, stderr io.Writer) int {
+	inventory, err := project.DiscoverDataRoots(context.Background(), root, project.SourceOptions{Offline: offline, BuildTags: tags})
+	if err != nil {
+		fmt.Fprintln(stderr, "plystra-data: cannot discover Data source packages in the selected Project module graph")
+		return 2
+	}
+	type sourceFile struct {
+		Path   string `json:"path"`
+		Digest string `json:"digest"`
+		Bytes  int    `json:"bytes"`
+	}
+	type sourcePackage struct {
+		ImportPath string               `json:"import_path"`
+		Module     project.ModuleSource `json:"module"`
+		Files      []sourceFile         `json:"files"`
+	}
+	packages := make([]sourcePackage, 0, len(inventory.Packages))
+	for _, pkg := range inventory.Packages {
+		entry := sourcePackage{ImportPath: pkg.ImportPath, Module: pkg.Module, Files: make([]sourceFile, 0, len(pkg.Files))}
+		for _, file := range pkg.Files {
+			sum := sha256.Sum256(file.Content)
+			entry.Files = append(entry.Files, sourceFile{Path: file.Path, Digest: "sha256:" + hex.EncodeToString(sum[:]), Bytes: len(file.Content)})
+		}
+		packages = append(packages, entry)
+	}
+	if format == "json" {
+		if err := json.NewEncoder(stdout).Encode(struct {
+			Schema   string                `json:"schema"`
+			Build    protocol.BuildContext `json:"build"`
+			Packages []sourcePackage       `json:"packages"`
+		}{Schema: "plystra.data-source-inventory/v1", Build: inventory.Build, Packages: packages}); err != nil {
+			fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
+			return 1
+		}
+		return 0
+	}
+	if len(packages) == 0 {
+		if _, err := fmt.Fprintln(stdout, "No Data declaration packages."); err != nil {
+			fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
+			return 1
+		}
+		return 0
+	}
+	for _, pkg := range packages {
+		identity := pkg.Module.Path
+		if pkg.Module.Version != "" {
+			identity += "@" + pkg.Module.Version
+		}
+		if _, err := fmt.Fprintf(stdout, "%s (%s, %s)\n", pkg.ImportPath, identity, pkg.Module.Origin); err != nil {
+			fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
+			return 1
+		}
+		for _, file := range pkg.Files {
+			if _, err := fmt.Fprintf(stdout, "  %s  %d  %s\n", file.Path, file.Bytes, file.Digest); err != nil {
+				fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
+				return 1
+			}
+		}
+	}
+	return 0
+}
+
 func usage(output io.Writer) {
 	fmt.Fprintln(output, "usage: plystra-data inspect assignments [--project DIR] [--format text|json]")
 	fmt.Fprintln(output, "       plystra-data inspect compiler [--project DIR] [--format text|json] [--offline]")
+	fmt.Fprintln(output, "       plystra-data inspect sources [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline]")
 }

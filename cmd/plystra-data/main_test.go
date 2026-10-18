@@ -92,6 +92,53 @@ func TestPublicInspectAssignmentsCommand(t *testing.T) {
 	}
 }
 
+func TestPublicInspectSourcesCommand(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"go.mod":          "module example.com/app\ngo 1.26\n",
+		"plystra.yaml":    "project: app\n",
+		"model/member.go": "package model\n//plystra:data accounts.user/v1\nvar Member = 1\n",
+		"model/helper.go": "package model\nvar Helper = 2\n",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "run", ".", "inspect", "sources", "--project", root, "--format", "json", "--offline")
+	command.Env = append(os.Environ(), "GOWORK=off")
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil || stderr.Len() != 0 {
+		t.Fatalf("public source inspection = %v, stderr = %q", err, stderr.String())
+	}
+	var result struct {
+		Schema   string `json:"schema"`
+		Packages []struct {
+			ImportPath string `json:"import_path"`
+			Module     struct {
+				Path   string `json:"path"`
+				Origin string `json:"origin"`
+			} `json:"module"`
+			Files []struct {
+				Path   string `json:"path"`
+				Digest string `json:"digest"`
+			} `json:"files"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Schema != "plystra.data-source-inventory/v1" || len(result.Packages) != 1 || result.Packages[0].ImportPath != "example.com/app/model" || result.Packages[0].Module.Path != "example.com/app" || result.Packages[0].Module.Origin != "current" || len(result.Packages[0].Files) != 2 {
+		t.Fatalf("source inspection = %#v, %v", result, err)
+	}
+	if strings.Contains(stdout.String(), "var Member") || !strings.HasPrefix(result.Packages[0].Files[0].Digest, "sha256:") {
+		t.Fatalf("source inspection exposed content or omitted digest: %q", stdout.String())
+	}
+}
+
 func TestInspectAssignmentsReportsOutputFailure(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, configName), []byte("data:\n  members: {}\n"), 0o600); err != nil {

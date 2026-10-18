@@ -228,6 +228,25 @@ does not analyze declarations, select a compiler, activate members, generate
 providers, or install artifacts; those Data-owned Project workflows remain
 incomplete.
 
+`plystra-data inspect sources --project DIR` reads the selected Go module graph
+and reports Go-selected authored files in packages with active `//plystra:data`
+directives across the current and dependency Plystra Projects. It excludes
+generated output, `dataaccess/`, vendor, test, fixtures, hidden, and
+nested-module trees;
+the selected package files follow ordinary build constraints without requiring
+a successful build or a prior generated provider. Applicable `go.work`
+selection and `GOFLAGS` build tags are honored; `--tags` overrides the latter.
+The command checks every versioned Project module source against a complete
+`h1:` entry in Project `go.sum` or applicable `go.work.sum` before inspecting
+it. Local replacements and workspace modules retain their source origin.
+Text and `plystra.data-source-inventory/v1` JSON output contain module version,
+replacement and checksum provenance, selected paths, sizes, digests, and Go
+build context, never source bytes. `--offline` requires the relevant module
+sources to be cached. The scan also rejects authored packages that import
+`dataaccess/` even when they contain no Data directive. Discovery does not yet assemble the
+type-only support closure, validate authored access Resource contracts, invoke
+the selected compiler, or install Data output.
+
 ## Module
 
 The module path is `github.com/plystra/data`.
