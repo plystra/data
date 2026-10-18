@@ -586,6 +586,40 @@ func TestNormalizeGroupedAggregateOrdering(t *testing.T) {
 	}
 }
 
+func TestNormalizeGroupedJoinedAggregate(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Symbol: "teams"}
+	member := declaration.Member[access]{
+		Namespace: "authn",
+		Tables: []declaration.Table{
+			{ID: "users", Columns: []declaration.Column{{ID: "team-id", Type: declaration.TypeInt64}}},
+			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "region", Type: declaration.TypeString}}},
+		},
+		Queries: []declaration.Query{{
+			ID: "count-by-team-region", Operation: declaration.OperationSelect, Table: users,
+			Joins: []declaration.Join{{Kind: declaration.JoinLeft, Table: teams, On: declaration.JoinCondition{
+				Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"},
+			}}},
+			GroupBy:    []declaration.ColumnRef{{Table: teams, Column: "region"}},
+			Projection: []declaration.Projection{{Table: teams, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Column: "id", Table: teams, Alias: "total"}},
+			Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+			Having:     declaration.Predicate{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "zone"}},
+			Ordering:   []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}},
+		}},
+	}
+	model, err := member.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.Queries[0].Joins) != 1 || model.Queries[0].GroupBy[0].Table != teams {
+		t.Fatalf("grouped join = %#v", model.Queries[0])
+	}
+	member.Queries[0].GroupBy[0].Column = "changed"
+	if model.Queries[0].GroupBy[0].Column != "region" {
+		t.Fatal("normalized grouping changed with authored input")
+	}
+}
+
 func TestNormalizeClonesQueryResultSlices(t *testing.T) {
 	member := declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts"}}, Queries: []declaration.Query{{
 		ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},

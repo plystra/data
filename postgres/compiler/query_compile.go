@@ -203,7 +203,7 @@ func compileSelect(owner, tableMember SchemaMember, table declaration.Table, que
 						return "", err
 					}
 					ordering[index] = expression.sql
-					if projection.Aggregate == "" {
+					if projection.Aggregate == "" && len(query.Joins) == 0 {
 						ordering[index] = columnSQL(table.ID, projection.Column)
 					}
 					found = true

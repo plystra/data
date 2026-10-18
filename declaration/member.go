@@ -775,7 +775,7 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			return fmt.Errorf("%w: aggregate query projection", ErrUnsupported)
 		}
 	}
-	if len(query.GroupBy) != 0 && (query.Operation != OperationSelect || len(query.Joins) != 0 || aggregateOutputs != 1 || len(outputs) != len(query.GroupBy)+1) {
+	if len(query.GroupBy) != 0 && (query.Operation != OperationSelect || aggregateOutputs != 1 || len(outputs) != len(query.GroupBy)+1) {
 		return fmt.Errorf("%w: grouped query shape", ErrUnsupported)
 	}
 	havingPresent := hasHaving(query.Having)

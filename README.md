@@ -70,11 +70,15 @@ inputs are checked during analysis even when the column belongs to an imported
 member; PostgreSQL lowering repeats the type check before emission. The
 ungrouped forms are single-output SELECTs with no ordinary projection,
 aggregate ordering, limit, or offset. A bounded grouped SELECT may project one
-or more local table columns named by matching `GroupBy` columns plus one
-`COUNT`, `MIN`, or `MAX` output; it emits deterministic ordered `GROUP BY`
-columns and matching typed result mappings, with no joins, limit, or offset.
+or more columns from the base or introduced `INNER`/`LEFT` join tables, named
+by matching `GroupBy` columns, plus one `COUNT`, `MIN`, or `MAX` output. It
+emits deterministic ordered `GROUP BY` columns and matching typed result
+mappings, with no limit or offset. Explicitly imported join tables must use
+the same selected database Resource. A grouping output from the nullable side
+of a `LEFT JOIN` remains nullable even when `HAVING IS NOT NULL` filters rows.
 Grouped ordering names only projected output names without table qualifiers;
-PostgreSQL emits a qualified grouping column or aggregate expression. A grouped
+PostgreSQL emits an alias-qualified grouping column for joined queries, a
+base-table-qualified column without joins, or an aggregate expression. A grouped
 query may filter its projected grouping columns or aggregate alias through
 `Having`, using the closed comparison, `IS NULL`,
 `IS NOT NULL`, `AND`, and `OR` predicate forms. HAVING references are

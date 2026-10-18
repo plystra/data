@@ -553,6 +553,52 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeGroupedImportedLeftJoin(t *testing.T) {
+	source := `package model
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts", Imports: []string{"geo.region/v1"},
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region-id", Type: "int64"}}}},
+	Queries: []declaration.Query{{ID: "count-by-region", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		Joins: []declaration.Join{{Kind: "left", Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, On: declaration.JoinCondition{
+			Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "region-id"},
+			Right: declaration.ColumnRef{Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, Column: "id"},
+		}}},
+		GroupBy: []declaration.ColumnRef{{Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, Column: "name"}},
+		Projection: []declaration.Projection{{Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, Column: "name", Alias: "region-name"}, {Aggregate: "max", Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, Column: "score", Alias: "maximum"}},
+		Having: declaration.Predicate{Kind: "is-not-null", Left: declaration.ColumnRef{Column: "region-name"}},
+		Ordering: []declaration.Ordering{{Column: "region-name", Direction: "asc"}},
+		Results: []declaration.ResultField{{ID: "name", Source: "region-name", Type: "string", Nullable: true}, {ID: "maximum", Source: "maximum", Type: "int64", Nullable: true}},
+	}},
+}
+
+//plystra:data geo.region/v1
+var Regions = declaration.Member[declaration.NoAccess]{
+	Namespace: "geo", Tables: []declaration.Table{{ID: "regions", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "name", Type: "string"}, {ID: "score", Type: "int64"}}}},
+}`
+	valid, err := analyzer.Analyze(sourceSnapshot(source))
+	if err != nil || !valid.Valid || len(valid.Roots) != 2 || len(valid.Roots[0].Model.Queries) != 1 {
+		t.Fatalf("grouped imported join = %#v, %v", valid, err)
+	}
+	for _, test := range []struct {
+		name, source string
+		code         analyzer.DiagnosticCode
+	}{
+		{"non-null left result", strings.Replace(source, `Source: "region-name", Type: "string", Nullable: true`, `Source: "region-name", Type: "string"`, 1), analyzer.CodeTypeCheck},
+		{"missing grouping column", strings.Replace(source, `Column: "name"}},`, `Column: "missing"}},`, 1), analyzer.CodeUnresolvedReference},
+		{"non-int64 max input", strings.Replace(source, `Column: "score", Alias: "maximum"`, `Column: "name", Alias: "maximum"`, 1), analyzer.CodeTypeCheck},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid, err := analyzer.Analyze(sourceSnapshot(test.source))
+			if err != nil || invalid.Valid || !hasCode(invalid, test.code) {
+				t.Fatalf("invalid grouped imported join = %#v, %v", invalid, err)
+			}
+		})
+	}
+}
+
 func TestAnalyzeRejectsInvalidJoinReferences(t *testing.T) {
 	source := `package model
 

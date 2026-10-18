@@ -24,7 +24,10 @@ import (
 func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	model, err := (declaration.Member[struct{}]{
 		Namespace: "accounts",
-		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}, {ID: "region", Type: declaration.TypeString}}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}},
+		Tables: []declaration.Table{
+			{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}, {ID: "region", Type: declaration.TypeString}, {ID: "team-id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}},
+			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "region", Type: declaration.TypeString}}},
+		},
 		Queries: []declaration.Query{{
 			ID: "delete-account", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "accounts"},
 			Parameters: []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
@@ -44,6 +47,15 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 			Having:     declaration.Predicate{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Int64(1)},
 			Ordering:   []declaration.Ordering{{Column: "total", Direction: declaration.OrderingDescending}, {Column: "region", Direction: declaration.OrderingAscending}},
 			Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+		}, {
+			ID: "count-by-team-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+			Joins: []declaration.Join{{Kind: declaration.JoinLeft, Table: declaration.Ref{Symbol: "teams"}, On: declaration.JoinCondition{
+				Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "accounts"}, Column: "team-id"}, Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "teams"}, Column: "id"},
+			}}},
+			GroupBy:    []declaration.ColumnRef{{Table: declaration.Ref{Symbol: "teams"}, Column: "region"}},
+			Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "total"}},
+			Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+			Ordering:   []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}},
 		}},
 	}).Normalize()
 	if err != nil {
@@ -90,11 +102,12 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	if err := protocol.ReadFrame(&stdout, &response); err != nil {
 		t.Fatal(err)
 	}
-	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 5 {
+	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 6 {
 		t.Fatalf("invalid command response: %v, bytes=%d, artifacts=%d", err, stdout.Len(), len(response.Output.Artifacts))
 	}
 	foundUpsert := false
 	foundHaving := false
+	foundGroupedJoin := false
 	for _, artifact := range response.Output.Artifacts {
 		if strings.HasSuffix(artifact.Path, "/delete-account.sql") && !bytes.Contains(artifact.Bytes, []byte(`RETURNING "id" AS "account-id";`)) {
 			t.Fatalf("query artifact does not contain typed RETURNING: %q", artifact.Bytes)
@@ -111,9 +124,15 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 				t.Fatalf("query artifact does not contain grouped ordering: %#v", artifact)
 			}
 		}
+		if strings.HasSuffix(artifact.Path, "/count-by-team-region.sql") {
+			foundGroupedJoin = true
+			if artifact.Query == nil || len(artifact.Query.GroupBy) != 1 || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "t1"."region" ORDER BY "t1"."region" ASC;`)) {
+				t.Fatalf("query artifact does not contain grouped join: %#v", artifact)
+			}
+		}
 	}
-	if !foundUpsert || !foundHaving {
-		t.Fatal("compiler did not stage the conflict update and grouped HAVING queries")
+	if !foundUpsert || !foundHaving || !foundGroupedJoin {
+		t.Fatal("compiler did not stage the conflict update and grouped queries")
 	}
 	after, err := os.ReadDir(".")
 	if err != nil {
@@ -383,6 +402,9 @@ type Member[Access any] struct { Namespace string; Tables []Table; Queries []Que
 type Table struct { ID string; Columns []Column }
 type Column struct { ID string; Type ScalarType }
 type ColumnRef struct { Table Ref; Column string }
+type JoinKind string
+type JoinCondition struct { Left ColumnRef; Right ColumnRef }
+type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
 type Projection struct { Table Ref; Column string; Alias string; Aggregate AggregateKind }
 type Value struct { Kind ScalarType; Set bool; Parameter string; Int64 int64; String string }
 type Parameter struct { ID string; Type ScalarType }
@@ -390,20 +412,21 @@ type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Val
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type OrderingDirection string
 type Ordering struct { Table Ref; Column string; Direction OrderingDirection }
-type Query struct { ID string; Operation OperationKind; Table Ref; Parameters []Parameter; GroupBy []ColumnRef; Projection []Projection; Having Predicate; Ordering []Ordering; Results []ResultField }
+type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; GroupBy []ColumnRef; Projection []Projection; Having Predicate; Ordering []Ordering; Results []ResultField }
 `
 	modelSource := `package model
 import "github.com/plystra/data/declaration"
 //plystra:data accounts.user/v1
 var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts",
-	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: "string"}, {ID: "id", Type: "int64"}}}},
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: "string"}, {ID: "id", Type: "int64"}, {ID: "team-id", Type: "int64"}}}, {ID: "teams", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "region", Type: "string"}}}},
 	Queries: []declaration.Query{{ID: "count-by-region", Operation: "select", Table: declaration.Ref{Symbol: "users"},
-		GroupBy: []declaration.ColumnRef{{Column: "region"}},
-		Projection: []declaration.Projection{{Column: "region"}, {Aggregate: "count", Column: "id", Alias: "total"}},
+		Joins: []declaration.Join{{Kind: "left", Table: declaration.Ref{Symbol: "teams"}, On: declaration.JoinCondition{Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "team-id"}, Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "teams"}, Column: "id"}}}},
+		GroupBy: []declaration.ColumnRef{{Table: declaration.Ref{Symbol: "teams"}, Column: "region"}},
+		Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: "count", Column: "id", Alias: "total"}},
 		Having: declaration.Predicate{Kind: "greater", Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
 		Ordering: []declaration.Ordering{{Column: "total", Direction: "desc"}},
-		Results: []declaration.ResultField{{ID: "region", Source: "region", Type: "string"}, {ID: "total", Source: "total", Type: "int64"}},
+		Results: []declaration.ResultField{{ID: "region", Source: "zone", Type: "string", Nullable: true}, {ID: "total", Source: "total", Type: "int64"}},
 	}},
 }`
 	run := func(t *testing.T, source string) protocol.AnalyzeResponse {
@@ -414,12 +437,12 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		}})
 	}
 	valid := run(t, modelSource)
-	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Ordering) != 1 {
+	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Ordering) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Joins) != 1 {
 		t.Fatalf("valid grouped analysis = %#v", valid)
 	}
 	for _, test := range []struct{ name, source string }{
 		{"wrong value type", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Value: declaration.Value{Kind: "string", Set: true, String: "1"}`, 1)},
-		{"wrong output type", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Right: declaration.ColumnRef{Column: "region"}`, 1)},
+		{"wrong output type", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Right: declaration.ColumnRef{Column: "zone"}`, 1)},
 		{"wrong parameter type", strings.Replace(strings.Replace(modelSource, `GroupBy: []declaration.ColumnRef`, `Parameters: []declaration.Parameter{{ID: "threshold", Type: "string"}}, GroupBy: []declaration.ColumnRef`, 1), `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Value: declaration.Value{Kind: "string", Set: true, Parameter: "threshold"}`, 1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -428,6 +451,10 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 				t.Fatalf("invalid HAVING analysis = %#v", invalid)
 			}
 		})
+	}
+	invalidNullability := run(t, strings.Replace(modelSource, `Source: "zone", Type: "string", Nullable: true`, `Source: "zone", Type: "string"`, 1))
+	if invalidNullability.Status != protocol.StatusRejected || invalidNullability.Output.Valid || len(invalidNullability.Diagnostics) != 1 || invalidNullability.Diagnostics[0].Code != analyzer.CodeTypeCheck {
+		t.Fatalf("invalid joined grouping result = %#v", invalidNullability)
 	}
 	for _, test := range []struct {
 		name, source string

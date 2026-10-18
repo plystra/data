@@ -248,6 +248,75 @@ func TestCompileQueriesLowersTypedGroupedHaving(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersGroupedImportedLeftJoin(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Member: "teams.member/v1", Symbol: "teams"}
+	owner := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts", Imports: []string{"teams.member/v1"},
+		Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: declaration.TypeString}, {ID: "team-id", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{
+			ID: "grouped-users", Operation: declaration.OperationSelect, Table: users,
+			Joins: []declaration.Join{{Kind: declaration.JoinLeft, Table: teams, On: declaration.JoinCondition{
+				Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"},
+			}}},
+			GroupBy:    []declaration.ColumnRef{{Column: "region"}, {Table: teams, Column: "region"}},
+			Projection: []declaration.Projection{{Column: "region", Alias: "user-region"}, {Table: teams, Column: "region", Alias: "team-region"}, {Aggregate: declaration.AggregateCount, Table: teams, Column: "id", Alias: "total"}},
+			Results:    []declaration.ResultField{{ID: "user-region", Source: "user-region", Type: declaration.TypeString}, {ID: "team-region", Source: "team-region", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+			Having: declaration.Predicate{Kind: declaration.PredicateAnd, Items: []declaration.Predicate{
+				{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "team-region"}},
+				{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Int64(1)},
+			}},
+			Ordering: []declaration.Ordering{{Column: "team-region", Direction: declaration.OrderingAscending}, {Column: "user-region", Direction: declaration.OrderingDescending}, {Column: "total", Direction: declaration.OrderingDescending}},
+		}},
+	}}
+	remote := postgres.SchemaMember{MemberID: "teams.member/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "teams", Tables: []declaration.Table{{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "region", Type: declaration.TypeString}, {ID: "score", Type: declaration.TypeInt64}}}},
+	}}
+	compile := func() postgres.QueryArtifact {
+		t.Helper()
+		first, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote})
+		if err != nil || len(first) != 1 {
+			t.Fatalf("grouped joined queries = %#v, error = %v", first, err)
+		}
+		second, err := postgres.CompileQueries([]postgres.SchemaMember{remote, owner})
+		if err != nil || len(second) != 1 || first[0].SQL != second[0].SQL || first[0].Digest != second[0].Digest {
+			t.Fatalf("unstable grouped join: first=%#v second=%#v, error=%v", first, second, err)
+		}
+		return first[0]
+	}
+	artifact := compile()
+	want := `SELECT "t0"."region" AS "user-region", "t1"."region" AS "team-region", COUNT("t1"."id") AS "total" FROM "accounts"."users" AS "t0" LEFT JOIN "teams"."teams" AS "t1" ON "t0"."team-id" = "t1"."id" GROUP BY "t0"."region", "t1"."region" HAVING ("t1"."region" IS NOT NULL) AND (COUNT("t1"."id") > 1) ORDER BY "t1"."region" ASC, "t0"."region" DESC, COUNT("t1"."id") DESC;`
+	if !strings.Contains(artifact.SQL, want) {
+		t.Fatalf("grouped join SQL = %q, want %q", artifact.SQL, want)
+	}
+	baselineDigest := artifact.Digest
+	query := &owner.Model.Queries[0]
+	query.Projection[2] = declaration.Projection{Aggregate: declaration.AggregateCount, Alias: "total"}
+	query.Having = declaration.Predicate{}
+	query.Ordering = nil
+	artifact = compile()
+	if !strings.Contains(artifact.SQL, `COUNT(*) AS "total"`) || artifact.Digest == baselineDigest {
+		t.Fatalf("COUNT(*) SQL or digest = %#v", artifact)
+	}
+	for _, aggregate := range []declaration.AggregateKind{declaration.AggregateMin, declaration.AggregateMax} {
+		query.Projection[2] = declaration.Projection{Aggregate: aggregate, Table: teams, Column: "score", Alias: "total"}
+		query.Results[2].Nullable = true
+		artifact = compile()
+		if !strings.Contains(artifact.SQL, strings.ToUpper(string(aggregate))+`("t1"."score") AS "total"`) {
+			t.Fatalf("%s SQL = %q", aggregate, artifact.SQL)
+		}
+	}
+	query.Results[1].Nullable = false
+	if _, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote}); !errors.Is(err, postgres.ErrQueryCompilation) {
+		t.Fatalf("non-null LEFT JOIN grouping result error = %v", err)
+	}
+	query.Results[1].Nullable = true
+	remote.Resource = "database.secondary"
+	if _, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote}); !errors.Is(err, postgres.ErrCrossResourceReference) {
+		t.Fatalf("cross-Resource grouped join error = %v", err)
+	}
+}
+
 func TestCompileQueriesCountsNullableJoinedColumn(t *testing.T) {
 	users := declaration.Ref{Symbol: "users"}
 	teams := declaration.Ref{Symbol: "teams"}

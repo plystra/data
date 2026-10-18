@@ -560,7 +560,7 @@ func TestEmitIncludesJoinedSelect(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model
 	model.Tables[0].Columns = append(model.Tables[0].Columns, declaration.Column{ID: "team-id", Type: declaration.TypeInt64})
-	model.Tables = append(model.Tables, declaration.Table{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}})
+	model.Tables = append(model.Tables, declaration.Table{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "region", Type: declaration.TypeString}}})
 	accounts := declaration.Ref{Symbol: "accounts"}
 	teams := declaration.Ref{Symbol: "teams"}
 	model.Queries = []declaration.Query{{
@@ -571,6 +571,16 @@ func TestEmitIncludesJoinedSelect(t *testing.T) {
 		}}},
 		Projection: []declaration.Projection{{Column: "id"}},
 		Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+	}, {
+		ID: "count-by-team-region", Operation: declaration.OperationSelect, Table: accounts,
+		Joins: []declaration.Join{{Kind: declaration.JoinLeft, Table: teams, On: declaration.JoinCondition{
+			Left: declaration.ColumnRef{Table: accounts, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"},
+		}}},
+		GroupBy:    []declaration.ColumnRef{{Table: teams, Column: "region"}},
+		Projection: []declaration.Projection{{Table: teams, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: teams, Column: "id", Alias: "total"}},
+		Having:     declaration.Predicate{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "zone"}},
+		Ordering:   []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}},
+		Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
 	}}
 	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations})
 	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
@@ -580,15 +590,22 @@ func TestEmitIncludesJoinedSelect(t *testing.T) {
 	if response.Status != protocol.StatusSucceeded {
 		t.Fatalf("response = %#v", response)
 	}
-	var query *protocol.StagedArtifact
+	var query, grouped *protocol.StagedArtifact
 	for index := range response.Output.Artifacts {
 		artifact := &response.Output.Artifacts[index]
-		if artifact.Query != nil {
+		if artifact.Query != nil && artifact.Query.ID == "list-accounts" {
 			query = artifact
+		} else if artifact.Query != nil && artifact.Query.ID == "count-by-team-region" {
+			grouped = artifact
 		}
 	}
 	if query == nil || !bytes.Contains(query.Bytes, []byte(`INNER JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id"`)) || query.Query.ID != "list-accounts" || len(query.Query.Results) != 1 {
 		t.Fatalf("joined query artifact = %#v", query)
+	}
+	if grouped == nil || !bytes.Contains(grouped.Bytes, []byte(`GROUP BY "t1"."region" HAVING "t1"."region" IS NOT NULL ORDER BY "t1"."region" ASC;`)) ||
+		!reflect.DeepEqual(grouped.Query.GroupBy, []declaration.ColumnRef{{Table: teams, Column: "region"}}) || grouped.Query.Having == nil ||
+		!reflect.DeepEqual(grouped.Query.Results, []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}}) {
+		t.Fatalf("grouped joined query artifact = %#v", grouped)
 	}
 	if err := protocol.ValidateEmitResponse(request, response); err != nil {
 		t.Fatal(err)
