@@ -370,6 +370,63 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestCompilerCommandValidatesHavingTypesAtAnalyze(t *testing.T) {
+	declarationSource := `package declaration
+type NoAccess struct{}
+type Ref struct { Member string; Symbol string }
+type ScalarType string
+type OperationKind string
+type AggregateKind string
+type PredicateKind string
+type Member[Access any] struct { Namespace string; Tables []Table; Queries []Query; Access Access }
+type Table struct { ID string; Columns []Column }
+type Column struct { ID string; Type ScalarType }
+type ColumnRef struct { Table Ref; Column string }
+type Projection struct { Table Ref; Column string; Alias string; Aggregate AggregateKind }
+type Value struct { Kind ScalarType; Set bool; Parameter string; Int64 int64; String string }
+type Parameter struct { ID string; Type ScalarType }
+type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }
+type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
+type Query struct { ID string; Operation OperationKind; Table Ref; Parameters []Parameter; GroupBy []ColumnRef; Projection []Projection; Having Predicate; Results []ResultField }
+`
+	modelSource := `package model
+import "github.com/plystra/data/declaration"
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: "string"}, {ID: "id", Type: "int64"}}}},
+	Queries: []declaration.Query{{ID: "count-by-region", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		GroupBy: []declaration.ColumnRef{{Column: "region"}},
+		Projection: []declaration.Projection{{Column: "region"}, {Aggregate: "count", Column: "id", Alias: "total"}},
+		Having: declaration.Predicate{Kind: "greater", Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+		Results: []declaration.ResultField{{ID: "region", Source: "region", Type: "string"}, {ID: "total", Source: "total", Type: "int64"}},
+	}},
+}`
+	run := func(t *testing.T, source string) protocol.AnalyzeResponse {
+		t.Helper()
+		return runAnalyzeSnapshot(t, analyzer.Snapshot{Packages: []analyzer.Package{
+			{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(declarationSource)}}},
+			{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "models.go", Content: []byte(source)}}},
+		}})
+	}
+	valid := run(t, modelSource)
+	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid {
+		t.Fatalf("valid HAVING analysis = %#v", valid)
+	}
+	for _, test := range []struct{ name, source string }{
+		{"wrong value type", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Value: declaration.Value{Kind: "string", Set: true, String: "1"}`, 1)},
+		{"wrong output type", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Right: declaration.ColumnRef{Column: "region"}`, 1)},
+		{"wrong parameter type", strings.Replace(strings.Replace(modelSource, `GroupBy: []declaration.ColumnRef`, `Parameters: []declaration.Parameter{{ID: "threshold", Type: "string"}}, GroupBy: []declaration.ColumnRef`, 1), `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Value: declaration.Value{Kind: "string", Set: true, Parameter: "threshold"}`, 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := run(t, test.source)
+			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != analyzer.CodeTypeCheck {
+				t.Fatalf("invalid HAVING analysis = %#v", invalid)
+			}
+		})
+	}
+}
+
 func runAnalyzeSnapshot(t *testing.T, snapshot analyzer.Snapshot) protocol.AnalyzeResponse {
 	t.Helper()
 	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}

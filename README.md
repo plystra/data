@@ -77,7 +77,9 @@ aggregate alias through `Having`, using the closed comparison, `IS NULL`,
 unqualified output names; the lowerer substitutes the validated column or
 aggregate expression rather than relying on PostgreSQL SELECT aliases in the
 HAVING clause. Literal and named parameter operands must match the referenced
-output's scalar type. HAVING on an ungrouped query or mutation is rejected.
+output's scalar type; analysis checks grouped output comparisons before backend
+selection, and PostgreSQL lowering repeats the check. HAVING on an ungrouped
+query or mutation is rejected.
 `COUNT(column)` ignores NULL values, including unmatched LEFT JOIN rows;
 `COUNT(*)` counts joined rows. `MIN` and `MAX` are nullable because an empty
 input (or no non-null values) produces SQL NULL. Other aggregate functions

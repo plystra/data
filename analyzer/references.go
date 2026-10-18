@@ -182,6 +182,13 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 			a.validateColumn(root, orderingTarget, ordering.Column)
 		}
 		a.validatePredicate(root, query.Table, query.Predicate, introduced)
+		if query.Having.Kind != "" {
+			outputTypes := make(map[string]declaration.ScalarType, len(query.Results))
+			for _, result := range query.Results {
+				outputTypes[result.Source] = result.Type
+			}
+			a.validateHaving(root, query.Having, outputTypes)
+		}
 	}
 	for _, plan := range root.Model.Plans {
 		for _, statement := range plan.Statements {
@@ -350,6 +357,19 @@ func (a *analysis) validatePredicate(root Root, base declaration.Ref, predicate 
 	}
 	for _, item := range predicate.Items {
 		a.validatePredicate(root, base, item, introduced)
+	}
+}
+
+func (a *analysis) validateHaving(root Root, predicate declaration.Predicate, outputs map[string]declaration.ScalarType) {
+	leftType, leftOK := outputs[predicate.Left.Column]
+	if leftOK {
+		rightType, rightOK := outputs[predicate.Right.Column]
+		if rightOK && leftType != rightType || predicate.Value.Set && leftType != predicate.Value.Kind {
+			a.referenceDiagnostic(root, CodeTypeCheck, "Data HAVING operands have different scalar types", "Compare grouped outputs, literals, and parameters with the same scalar type.", predicate.Left.Column)
+		}
+	}
+	for _, item := range predicate.Items {
+		a.validateHaving(root, item, outputs)
 	}
 }
 

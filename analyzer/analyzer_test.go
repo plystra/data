@@ -501,6 +501,42 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeRejectsHavingTypeMismatch(t *testing.T) {
+	source := `package model
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: "string"}, {ID: "id", Type: "int64"}}}},
+	Queries: []declaration.Query{{ID: "count-by-region", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		GroupBy: []declaration.ColumnRef{{Column: "region"}},
+		Projection: []declaration.Projection{{Column: "region"}, {Aggregate: "count", Column: "id", Alias: "total"}},
+		Having: declaration.Predicate{Kind: "and", Items: []declaration.Predicate{
+			{Kind: "greater", Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+			{Kind: "not-equal", Left: declaration.ColumnRef{Column: "region"}, Value: declaration.Value{Kind: "string", Set: true, String: "west"}},
+		}},
+		Results: []declaration.ResultField{{ID: "region", Source: "region", Type: "string"}, {ID: "total", Source: "total", Type: "int64"}},
+	}},
+}`
+	valid, err := analyzer.Analyze(sourceSnapshot(source))
+	if err != nil || !valid.Valid {
+		t.Fatalf("valid HAVING = %#v, %v", valid, err)
+	}
+	for _, test := range []struct{ name, source string }{
+		{"wrong value type", strings.Replace(source, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Value: declaration.Value{Kind: "string", Set: true, String: "1"}`, 1)},
+		{"wrong output type", strings.Replace(source, `Value: declaration.Value{Kind: "string", Set: true, String: "west"}`, `Right: declaration.ColumnRef{Column: "total"}`, 1)},
+		{"wrong parameter type", strings.Replace(strings.Replace(source, `GroupBy: []declaration.ColumnRef`, `Parameters: []declaration.Parameter{{ID: "threshold", Type: "string"}}, GroupBy: []declaration.ColumnRef`, 1), `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Value: declaration.Value{Kind: "string", Set: true, Parameter: "threshold"}`, 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid, err := analyzer.Analyze(sourceSnapshot(test.source))
+			if err != nil || invalid.Valid || !hasCode(invalid, analyzer.CodeTypeCheck) {
+				t.Fatalf("invalid HAVING = %#v, %v", invalid, err)
+			}
+		})
+	}
+}
+
 func TestAnalyzeRejectsInvalidJoinReferences(t *testing.T) {
 	source := `package model
 
