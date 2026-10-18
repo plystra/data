@@ -395,6 +395,39 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeRejectsImportedMinMaxNonInt64Input(t *testing.T) {
+	source := `package model
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts", Imports: []string{"metrics.sample/v1"},
+	Queries: []declaration.Query{{ID: "minimum", Operation: "select", Table: declaration.Ref{Member: "metrics.sample/v1", Symbol: "samples"},
+		Projection: []declaration.Projection{{Aggregate: "min", Column: "value", Alias: "minimum"}},
+		Results: []declaration.ResultField{{ID: "minimum", Source: "minimum", Type: "int64", Nullable: true}},
+	}},
+}
+
+//plystra:data metrics.sample/v1
+var Samples = declaration.Member[declaration.NoAccess]{
+	Namespace: "metrics", Tables: []declaration.Table{{ID: "samples", Columns: []declaration.Column{{ID: "value", Type: "int64"}}}},
+}`
+	for _, aggregate := range []string{"min", "max"} {
+		t.Run(aggregate, func(t *testing.T) {
+			querySource := strings.Replace(source, `Aggregate: "min"`, `Aggregate: "`+aggregate+`"`, 1)
+			valid, err := analyzer.Analyze(sourceSnapshot(querySource))
+			if err != nil || !valid.Valid {
+				t.Fatalf("valid imported aggregate = %#v, %v", valid, err)
+			}
+			invalidSource := strings.Replace(querySource, `ID: "value", Type: "int64"`, `ID: "value", Type: "string"`, 1)
+			invalid, err := analyzer.Analyze(sourceSnapshot(invalidSource))
+			if err != nil || invalid.Valid || !hasCode(invalid, analyzer.CodeTypeCheck) {
+				t.Fatalf("invalid imported aggregate = %#v, %v", invalid, err)
+			}
+		})
+	}
+}
+
 func TestAnalyzeDecodesGroupedAggregate(t *testing.T) {
 	result, err := analyzer.Analyze(sourceSnapshot(`package model
 

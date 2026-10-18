@@ -61,6 +61,8 @@ the closed `COUNT` aggregate may project `*` or an introduced column with an
 explicit alias and one required non-null `int64` result mapping. The closed
 `MIN` and `MAX` aggregates may each project one introduced `int64` column with
 an explicit alias and one required nullable `int64` result mapping. These
+inputs are checked during analysis even when the column belongs to an imported
+member; PostgreSQL lowering repeats the type check before emission. The
 ungrouped forms are single-output SELECTs with no ordinary projection,
 aggregate ordering, limit, or offset. A bounded grouped SELECT may project one
 or more local table columns named by matching `GroupBy` columns plus one

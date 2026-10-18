@@ -125,11 +125,17 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 				continue
 			}
 			a.validateColumn(root, projectionTarget, projection.Column)
-			if projection.Aggregate != "" {
-				continue
-			}
 			column, exists := columnByID(projectionTarget, projection.Column)
 			if !exists {
+				continue
+			}
+			if projection.Aggregate == declaration.AggregateMin || projection.Aggregate == declaration.AggregateMax {
+				if column.Type != declaration.TypeInt64 {
+					a.referenceDiagnostic(root, CodeTypeCheck, "Data aggregate input is not int64", "Use an int64 column for MIN or MAX.", projection.Column)
+				}
+				continue
+			}
+			if projection.Aggregate != "" {
 				continue
 			}
 			for _, join := range query.Joins {

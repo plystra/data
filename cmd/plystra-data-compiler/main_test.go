@@ -342,35 +342,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 			{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(declarationSource)}}},
 			{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "models.go", Content: []byte(modelSource(results))}}},
 		}}
-		build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
-		digest, err := protocol.AnalyzeInputDigest(snapshot, build)
-		if err != nil {
-			t.Fatal(err)
-		}
-		request := protocol.AnalyzeRequest{
-			Schema: protocol.AnalyzeSchema, Phase: protocol.AnalyzePhase, RequestID: "select-analysis",
-			Compiler: protocol.CompilerIdentity{ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestDigest: "sha256:" + strings.Repeat("2", 64), CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26"},
-			Build:    build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
-		}
-		var input bytes.Buffer
-		if err := protocol.WriteFrame(&input, request); err != nil {
-			t.Fatal(err)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		command := exec.CommandContext(ctx, "go", "run", ".")
-		command.Env = append(os.Environ(), "GOWORK=off")
-		command.Stdin = &input
-		var stdout, stderr bytes.Buffer
-		command.Stdout, command.Stderr = &stdout, &stderr
-		if err := command.Run(); err != nil || stderr.Len() != 0 {
-			t.Fatalf("compiler analyze failed: %v; stderr=%q", err, stderr.String())
-		}
-		var response protocol.AnalyzeResponse
-		if err := protocol.ReadFrame(&stdout, &response); err != nil || stdout.Len() != 0 {
-			t.Fatalf("analyze response = %#v, %v; remaining=%d", response, err, stdout.Len())
-		}
-		return response
+		return runAnalyzeSnapshot(t, snapshot)
 	}
 	valid := run(t, `Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "name", Source: "region-name", Type: "string", Nullable: true}},`)
 	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Results) != 2 {
@@ -393,6 +365,85 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 			}
 			if test.code == analyzer.CodeInvalidRootShape && len(response.Output.Roots) != 0 {
 				t.Fatalf("invalid root shape was accepted: %#v", response.Output.Roots)
+			}
+		})
+	}
+}
+
+func runAnalyzeSnapshot(t *testing.T, snapshot analyzer.Snapshot) protocol.AnalyzeResponse {
+	t.Helper()
+	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
+	digest, err := protocol.AnalyzeInputDigest(snapshot, build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.AnalyzeRequest{
+		Schema: protocol.AnalyzeSchema, Phase: protocol.AnalyzePhase, RequestID: "public-analyze-snapshot",
+		Compiler: protocol.CompilerIdentity{ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestDigest: "sha256:" + strings.Repeat("2", 64), CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26"},
+		Build:    build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
+	}
+	var input bytes.Buffer
+	if err := protocol.WriteFrame(&input, request); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "run", ".")
+	command.Env = append(os.Environ(), "GOWORK=off")
+	command.Stdin = &input
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil || stderr.Len() != 0 {
+		t.Fatalf("compiler analyze failed: %v; stderr=%q", err, stderr.String())
+	}
+	var response protocol.AnalyzeResponse
+	if err := protocol.ReadFrame(&stdout, &response); err != nil || stdout.Len() != 0 {
+		t.Fatalf("analyze response = %#v, %v; remaining=%d", response, err, stdout.Len())
+	}
+	return response
+}
+
+func TestCompilerCommandRejectsImportedMinMaxNonInt64Input(t *testing.T) {
+	declarationSource := `package declaration
+type NoAccess struct{}
+type Ref struct { Member string; Symbol string }
+type ScalarType string
+type Member[Access any] struct { Namespace string; Imports []string; Tables []Table; Queries []Query; Access Access }
+type Table struct { ID string; Columns []Column }
+type Column struct { ID string; Type ScalarType }
+type OperationKind string
+type Query struct { ID string; Operation OperationKind; Table Ref; Projection []Projection; Results []ResultField }
+type Projection struct { Aggregate string; Column string; Alias string }
+type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
+`
+	modelSource := `package model
+import "github.com/plystra/data/declaration"
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts", Imports: []string{"metrics.sample/v1"},
+	Queries: []declaration.Query{{ID: "minimum", Operation: "select", Table: declaration.Ref{Member: "metrics.sample/v1", Symbol: "samples"},
+		Projection: []declaration.Projection{{Aggregate: "min", Column: "value", Alias: "minimum"}},
+		Results: []declaration.ResultField{{ID: "minimum", Source: "minimum", Type: "int64", Nullable: true}},
+	}},
+}
+//plystra:data metrics.sample/v1
+var Samples = declaration.Member[declaration.NoAccess]{Namespace: "metrics", Tables: []declaration.Table{{ID: "samples", Columns: []declaration.Column{{ID: "value", Type: "int64"}}}}}
+`
+	for _, aggregate := range []string{"min", "max"} {
+		t.Run(aggregate, func(t *testing.T) {
+			validSource := strings.Replace(modelSource, `Aggregate: "min"`, `Aggregate: "`+aggregate+`"`, 1)
+			snapshot := analyzer.Snapshot{Packages: []analyzer.Package{
+				{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(declarationSource)}}},
+				{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "models.go", Content: []byte(validSource)}}},
+			}}
+			valid := runAnalyzeSnapshot(t, snapshot)
+			if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 2 {
+				t.Fatalf("valid imported aggregate analysis = %#v", valid)
+			}
+			snapshot.Packages[1].Files[0].Content = []byte(strings.Replace(validSource, `ID: "value", Type: "int64"`, `ID: "value", Type: "string"`, 1))
+			invalid := runAnalyzeSnapshot(t, snapshot)
+			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != analyzer.CodeTypeCheck {
+				t.Fatalf("invalid imported aggregate analysis = %#v", invalid)
 			}
 		})
 	}
