@@ -299,6 +299,88 @@ func TestCompilerCommandAnalyzesOneBoundedFrame(t *testing.T) {
 	}
 }
 
+func TestCompilerCommandRejectsUnmappedSelectAtAnalyze(t *testing.T) {
+	declarationSource := `package declaration
+type NoAccess struct{}
+type Ref struct { Member string; Symbol string }
+type ScalarType string
+type Member[Access any] struct { Namespace string; Tables []Table; Queries []Query; Access Access }
+type Table struct { ID string; Columns []Column }
+type Column struct { ID string; Type ScalarType }
+type OperationKind string
+type Query struct { ID string; Operation OperationKind; Table Ref; Projection []Projection; Results []ResultField }
+type Projection struct { Column string; Alias string }
+type ResultField struct { ID string; Source string; Type ScalarType }
+`
+	modelSource := func(results string) string {
+		return `package model
+import "github.com/plystra/data/declaration"
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "email", Type: "string"}}}},
+	Queries: []declaration.Query{{ID: "read", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		Projection: []declaration.Projection{{Column: "id"}, {Column: "email"}},
+		` + results + `
+	}},
+}`
+	}
+	run := func(t *testing.T, results string) protocol.AnalyzeResponse {
+		t.Helper()
+		snapshot := analyzer.Snapshot{Packages: []analyzer.Package{
+			{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(declarationSource)}}},
+			{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "models.go", Content: []byte(modelSource(results))}}},
+		}}
+		build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
+		digest, err := protocol.AnalyzeInputDigest(snapshot, build)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := protocol.AnalyzeRequest{
+			Schema: protocol.AnalyzeSchema, Phase: protocol.AnalyzePhase, RequestID: "select-analysis",
+			Compiler: protocol.CompilerIdentity{ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestDigest: "sha256:" + strings.Repeat("2", 64), CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26"},
+			Build:    build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
+		}
+		var input bytes.Buffer
+		if err := protocol.WriteFrame(&input, request); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, "go", "run", ".")
+		command.Env = append(os.Environ(), "GOWORK=off")
+		command.Stdin = &input
+		var stdout, stderr bytes.Buffer
+		command.Stdout, command.Stderr = &stdout, &stderr
+		if err := command.Run(); err != nil || stderr.Len() != 0 {
+			t.Fatalf("compiler analyze failed: %v; stderr=%q", err, stderr.String())
+		}
+		var response protocol.AnalyzeResponse
+		if err := protocol.ReadFrame(&stdout, &response); err != nil || stdout.Len() != 0 {
+			t.Fatalf("analyze response = %#v, %v; remaining=%d", response, err, stdout.Len())
+		}
+		return response
+	}
+	valid := run(t, `Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "email", Source: "email", Type: "string"}},`)
+	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Results) != 2 {
+		t.Fatalf("mapped SELECT analysis = %#v", valid)
+	}
+	for _, test := range []struct {
+		name    string
+		results string
+	}{
+		{name: "missing results"},
+		{name: "partial results", results: `Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}},`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := run(t, test.results)
+			if response.Status != protocol.StatusRejected || response.Output.Valid || len(response.Output.Roots) != 0 || len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != analyzer.CodeInvalidRootShape {
+				t.Fatalf("unmapped SELECT analysis = %#v", response)
+			}
+		})
+	}
+}
+
 func TestCompilerCommandDoesNotDependOnCorePackages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
