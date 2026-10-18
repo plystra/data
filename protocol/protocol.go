@@ -27,6 +27,10 @@ const (
 	ModulePath           = "github.com/plystra/data"
 	CommandImportPath    = "github.com/plystra/data/cmd/plystra-data-compiler"
 	MaxFrameBytes        = 16 * 1024 * 1024
+	MaxSnapshotFiles     = 4096
+	MaxSnapshotBytes     = 64 * 1024 * 1024
+	MaxSourceFileBytes   = 4 * 1024 * 1024
+	MaxSourcePathBytes   = 512
 	MaxArtifacts         = 4096
 	MaxArtifactBytes     = 4 * 1024 * 1024
 	MaxArtifactPathBytes = 512
@@ -66,17 +70,17 @@ type BuildContext struct {
 	BuildTags []string `json:"build_tags,omitempty"`
 }
 
-// AnalyzeRequest is the complete pre-Freeze analyze input. The source
-// snapshot is self-contained so the compiler never reads a host checkout.
+// AnalyzeRequest is the complete pre-Freeze analyze input. The compiler reads
+// only the verified private source snapshot named by the manifest.
 type AnalyzeRequest struct {
-	Schema      string            `json:"schema"`
-	Phase       string            `json:"phase"`
-	RequestID   string            `json:"request_id"`
-	Compiler    CompilerIdentity  `json:"compiler"`
-	Build       BuildContext      `json:"build"`
-	Limits      analyzer.Limits   `json:"limits"`
-	InputDigest string            `json:"input_digest"`
-	Snapshot    analyzer.Snapshot `json:"snapshot"`
+	Schema      string           `json:"schema"`
+	Phase       string           `json:"phase"`
+	RequestID   string           `json:"request_id"`
+	Compiler    CompilerIdentity `json:"compiler"`
+	Build       BuildContext     `json:"build"`
+	Limits      analyzer.Limits  `json:"limits"`
+	InputDigest string           `json:"input_digest"`
+	Snapshot    SnapshotManifest `json:"snapshot"`
 }
 
 // AnalyzeOutput contains no generated file or application-graph mutation.
@@ -167,8 +171,8 @@ func ReadFrame(r io.Reader, value any) error {
 
 // AnalyzeInputDigest binds the immutable source snapshot to the exact selected
 // Go build context. Build tags are treated as a set for deterministic identity.
-func AnalyzeInputDigest(snapshot analyzer.Snapshot, build BuildContext) (string, error) {
-	snapshotDigest, err := analyzer.SnapshotDigest(snapshot)
+func AnalyzeInputDigest(snapshot SnapshotManifest, build BuildContext) (string, error) {
+	snapshotDigest, err := SnapshotManifestDigest(snapshot)
 	if err != nil {
 		return "", err
 	}
@@ -225,7 +229,13 @@ func HandleAnalyze(request AnalyzeRequest) AnalyzeResponse {
 		response.Diagnostics = []analyzer.Diagnostic{{Code: analyzer.CodeInvalidSnapshot, Message: "analyze request rejected", Action: "Correct the compiler identity, build context, limits, and source snapshot before retrying."}}
 		return response
 	}
-	result, err := analyzer.Analyze(request.Snapshot)
+	snapshot, err := LoadSnapshot(request.Snapshot)
+	if err != nil {
+		response.Status = StatusRejected
+		response.Diagnostics = []analyzer.Diagnostic{{Code: analyzer.CodeInvalidSnapshot, Message: "analyze snapshot rejected", Action: "Recreate the private source snapshot before retrying."}}
+		return response
+	}
+	result, err := analyzer.Analyze(snapshot)
 	if err != nil {
 		response.Status = StatusRejected
 		response.Diagnostics = []analyzer.Diagnostic{{Code: analyzer.CodeInvalidSnapshot, Message: "analyze snapshot rejected", Action: "Correct the bounded source snapshot before retrying."}}

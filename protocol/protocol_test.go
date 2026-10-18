@@ -81,7 +81,8 @@ func TestAnalyzeInputDigestBindsBuildContext(t *testing.T) {
 
 func TestAnalyzeProtocolEnforcesPackageRootEligibility(t *testing.T) {
 	request := validRequest(t)
-	request.Snapshot.Packages = append(request.Snapshot.Packages, analyzer.Package{
+	snapshot := validSourceSnapshot()
+	snapshot.Packages = append(snapshot.Packages, analyzer.Package{
 		ImportPath: "example.com/support", RootEligibility: analyzer.RootSupport,
 		Files: []analyzer.SourceFile{{Path: "support.go", Content: []byte(`package support
 import "github.com/plystra/data/declaration"
@@ -89,19 +90,20 @@ import "github.com/plystra/data/declaration"
 var Injected = declaration.Member[declaration.NoAccess]{Namespace: "injected"}
 `)}},
 	})
-	var err error
-	request.InputDigest, err = protocol.AnalyzeInputDigest(request.Snapshot, request.Build)
-	if err != nil {
-		t.Fatal(err)
-	}
+	replaceRequestSnapshot(t, &request, snapshot)
 	response := protocol.HandleAnalyze(request)
 	if response.Status != protocol.StatusSucceeded || len(response.Output.Roots) != 1 || response.Output.Roots[0].PackagePath != "example.com/model" {
 		t.Fatalf("support package injected a root: %#v", response)
 	}
-	request.Snapshot.Packages[2].RootEligibility = analyzer.RootEligible
+	for index := range request.Snapshot.Packages {
+		if request.Snapshot.Packages[index].ImportPath == "example.com/support" {
+			request.Snapshot.Packages[index].RootEligibility = analyzer.RootEligible
+		}
+	}
 	if response = protocol.HandleAnalyze(request); response.Status != protocol.StatusRejected || !hasDiagnosticCode(response.Diagnostics, analyzer.CodeInvalidSnapshot) {
 		t.Fatalf("changed eligibility retained input digest: %#v", response)
 	}
+	var err error
 	request.InputDigest, err = protocol.AnalyzeInputDigest(request.Snapshot, request.Build)
 	if err != nil {
 		t.Fatal(err)
@@ -125,16 +127,13 @@ func TestAnalyzeProtocolRejectsInvalidRootEligibility(t *testing.T) {
 
 func TestAnalyzeFramePreservesMemberReferenceDiagnostics(t *testing.T) {
 	request := validRequest(t)
-	request.Snapshot.Packages[1].Files[0].Content = []byte(`package model
+	snapshot := validSourceSnapshot()
+	snapshot.Packages[1].Files[0].Content = []byte(`package model
 import "github.com/plystra/data/declaration"
 //plystra:data accounts.user/v1
 var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts", Imports: []string{"orders.audit/v1"}}
 `)
-	digest, err := protocol.AnalyzeInputDigest(request.Snapshot, request.Build)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.InputDigest = digest
+	replaceRequestSnapshot(t, &request, snapshot)
 	response := protocol.HandleAnalyze(request)
 	if response.Status != protocol.StatusRejected || response.Output.Valid || !hasDiagnosticCode(response.Diagnostics, analyzer.CodeUnresolvedReference) {
 		t.Fatalf("response = %#v", response)
@@ -172,7 +171,9 @@ func TestDistributionManifestMatchesProtocolIdentity(t *testing.T) {
 		MaxRoots: protocol.MaxRoots, MaxNodes: protocol.MaxNodes, MaxImports: protocol.MaxImports,
 		MaxNesting: protocol.MaxNesting, MaxSymbolBytes: protocol.MaxSymbolBytes,
 		MaxDiagnostics: protocol.MaxDiagnostics, MaxDiagnosticBytes: protocol.MaxDiagnosticBytes,
-		MaxFrameBytes: protocol.MaxFrameBytes, MaxArtifacts: protocol.MaxArtifacts,
+		MaxFrameBytes: protocol.MaxFrameBytes, MaxSnapshotFiles: protocol.MaxSnapshotFiles,
+		MaxSnapshotBytes: protocol.MaxSnapshotBytes, MaxSourceFileBytes: protocol.MaxSourceFileBytes,
+		MaxSourcePathBytes: protocol.MaxSourcePathBytes, MaxArtifacts: protocol.MaxArtifacts,
 		MaxArtifactBytes: protocol.MaxArtifactBytes, MaxArtifactPathBytes: protocol.MaxArtifactPathBytes,
 	}) {
 		t.Fatalf("manifest = %#v", manifest)
@@ -202,7 +203,7 @@ func TestDistributionManifestMatchesProtocolIdentity(t *testing.T) {
 }
 
 func TestParseDistributionManifestRejectsInvalidContract(t *testing.T) {
-	valid := `{"schema":"plystra.data-compiler-distribution/v1","module_path":"github.com/plystra/data","command_import_path":"github.com/plystra/data/cmd/plystra-data-compiler","analyze_protocol":"plystra.data-analyze/v1","emit_protocol":"plystra.data-emit/v1","declaration_language":"plystra.data-declaration/v1","limits":{"max_roots":1024,"max_nodes":65536,"max_imports":1024,"max_nesting":64,"max_symbol_bytes":128,"max_diagnostics":256,"max_diagnostic_bytes":262144,"max_frame_bytes":16777216,"max_artifacts":4096,"max_artifact_bytes":4194304,"max_artifact_path_bytes":512}}`
+	valid := `{"schema":"plystra.data-compiler-distribution/v1","module_path":"github.com/plystra/data","command_import_path":"github.com/plystra/data/cmd/plystra-data-compiler","analyze_protocol":"plystra.data-analyze/v1","emit_protocol":"plystra.data-emit/v1","declaration_language":"plystra.data-declaration/v1","limits":{"max_roots":1024,"max_nodes":65536,"max_imports":1024,"max_nesting":64,"max_symbol_bytes":128,"max_diagnostics":256,"max_diagnostic_bytes":262144,"max_frame_bytes":16777216,"max_snapshot_files":4096,"max_snapshot_bytes":67108864,"max_source_file_bytes":4194304,"max_source_path_bytes":512,"max_artifacts":4096,"max_artifact_bytes":4194304,"max_artifact_path_bytes":512}}`
 	tests := []struct {
 		name string
 		data string
@@ -228,7 +229,28 @@ func TestParseDistributionManifestRejectsInvalidContract(t *testing.T) {
 }
 
 func validRequest(t *testing.T) protocol.AnalyzeRequest {
-	snapshot := analyzer.Snapshot{
+	snapshot := validSourceSnapshot()
+	manifest, err := protocol.WriteSnapshot(filepath.Join(t.TempDir(), "source"), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
+	digest, err := protocol.AnalyzeInputDigest(manifest, build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return protocol.AnalyzeRequest{
+		Schema: protocol.AnalyzeSchema, Phase: protocol.AnalyzePhase, RequestID: "request-1",
+		Compiler: protocol.CompilerIdentity{
+			ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: testModuleChecksum(), ManifestDigest: "sha256:" + strings.Repeat("2", 64),
+			CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26",
+		},
+		Build: build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: manifest,
+	}
+}
+
+func validSourceSnapshot() analyzer.Snapshot {
+	return analyzer.Snapshot{
 		Packages: []analyzer.Package{
 			{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(`package declaration
 type NoAccess struct{}
@@ -241,18 +263,18 @@ var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
 `)}}},
 		},
 	}
-	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
-	digest, err := protocol.AnalyzeInputDigest(snapshot, build)
+}
+
+func replaceRequestSnapshot(t *testing.T, request *protocol.AnalyzeRequest, source analyzer.Snapshot) {
+	t.Helper()
+	manifest, err := protocol.WriteSnapshot(filepath.Join(t.TempDir(), "source"), source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return protocol.AnalyzeRequest{
-		Schema: protocol.AnalyzeSchema, Phase: protocol.AnalyzePhase, RequestID: "request-1",
-		Compiler: protocol.CompilerIdentity{
-			ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: testModuleChecksum(), ManifestDigest: "sha256:" + strings.Repeat("2", 64),
-			CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26",
-		},
-		Build: build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
+	request.Snapshot = manifest
+	request.InputDigest, err = protocol.AnalyzeInputDigest(manifest, request.Build)
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

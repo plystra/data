@@ -292,8 +292,12 @@ func TestCompilerCommandRequiresCompleteSelectResults(t *testing.T) {
 
 func TestCompilerCommandAnalyzesOneBoundedFrame(t *testing.T) {
 	snapshot := analyzer.Snapshot{}
+	manifest, err := protocol.WriteSnapshot(filepath.Join(t.TempDir(), "source"), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
-	digest, err := protocol.AnalyzeInputDigest(snapshot, build)
+	digest, err := protocol.AnalyzeInputDigest(manifest, build)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +311,7 @@ func TestCompilerCommandAnalyzesOneBoundedFrame(t *testing.T) {
 			EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage,
 			GoToolchain: "go1.26",
 		},
-		Build: build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
+		Build: build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: manifest,
 	}
 	var input bytes.Buffer
 	if err := protocol.WriteFrame(&input, request); err != nil {
@@ -496,15 +500,19 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 
 func runAnalyzeSnapshot(t *testing.T, snapshot analyzer.Snapshot) protocol.AnalyzeResponse {
 	t.Helper()
+	manifest, err := protocol.WriteSnapshot(filepath.Join(t.TempDir(), "source"), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
 	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
-	digest, err := protocol.AnalyzeInputDigest(snapshot, build)
+	digest, err := protocol.AnalyzeInputDigest(manifest, build)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := protocol.AnalyzeRequest{
 		Schema: protocol.AnalyzeSchema, Phase: protocol.AnalyzePhase, RequestID: "public-analyze-snapshot",
 		Compiler: protocol.CompilerIdentity{ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestDigest: "sha256:" + strings.Repeat("2", 64), CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26"},
-		Build:    build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: snapshot,
+		Build:    build, Limits: snapshot.Limits, InputDigest: digest, Snapshot: manifest,
 	}
 	var input bytes.Buffer
 	if err := protocol.WriteFrame(&input, request); err != nil {

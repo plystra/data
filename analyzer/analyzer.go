@@ -57,7 +57,7 @@ const (
 	RootSupport  RootEligibility = "support"
 )
 
-// Package is one finite source package supplied by the Core CLI. Support
+// Package is one finite source package supplied by the Data command. Support
 // packages provide types and imports but cannot contribute Data roots. The
 // analyzer does not discover additional files or packages from disk.
 type Package struct {
@@ -324,7 +324,7 @@ func newAnalysis(snapshot Snapshot) (*analysis, error) {
 }
 
 func validatePath(value string) error {
-	if value == "" || strings.Contains(value, "\\") || path.IsAbs(value) || path.Clean(value) != value || value == "." || strings.HasPrefix(value, "../") {
+	if value == "" || strings.ContainsAny(value, "\\:") || path.IsAbs(value) || path.Clean(value) != value || value == "." || strings.HasPrefix(value, "../") {
 		return fmt.Errorf("invalid module-relative path %q", value)
 	}
 	parts := strings.Split(value, "/")
@@ -332,6 +332,13 @@ func validatePath(value string) error {
 		return fmt.Errorf("invalid module-relative path %q", value)
 	}
 	for _, part := range parts {
+		name := strings.ToUpper(strings.TrimRight(strings.SplitN(part, ".", 2)[0], " "))
+		if strings.TrimRight(part, ". ") != part || strings.ContainsAny(part, `<>"|?*`) ||
+			name == "CON" || name == "PRN" || name == "AUX" || name == "NUL" ||
+			name == "CONIN$" || name == "CONOUT$" ||
+			(len(name) == 4 && (strings.HasPrefix(name, "COM") || strings.HasPrefix(name, "LPT")) && name[3] >= '1' && name[3] <= '9') {
+			return fmt.Errorf("unsafe source path %q", value)
+		}
 		if part == ".git" || part == "vendor" || part == "testdata" || part == "dist" || part == "generated" {
 			return fmt.Errorf("reserved source path %q", value)
 		}

@@ -14,6 +14,10 @@
     "max_diagnostics": 256,
     "max_diagnostic_bytes": 262144,
     "max_frame_bytes": 16777216,
+    "max_snapshot_files": 4096,
+    "max_snapshot_bytes": 67108864,
+    "max_source_file_bytes": 4194304,
+    "max_source_path_bytes": 512,
     "max_artifacts": 4096,
     "max_artifact_bytes": 4194304,
     "max_artifact_path_bytes": 512
