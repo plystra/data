@@ -269,6 +269,51 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeRejectsSelectResultTypeAndJoinNullability(t *testing.T) {
+	source := `package model
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts", Imports: []string{"geo.region/v1"},
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "region-id", Type: "int64"}}}},
+	Queries: []declaration.Query{{ID: "read", Operation: "select", Table: declaration.Ref{Symbol: "users"},
+		Joins: []declaration.Join{{Kind: "left", Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, On: declaration.JoinCondition{
+			Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "region-id"},
+			Right: declaration.ColumnRef{Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, Column: "id"},
+		}}},
+		Projection: []declaration.Projection{{Column: "id"}, {Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, Column: "name", Alias: "region-name"}},
+		Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "name", Source: "region-name", Type: "string", Nullable: true}},
+	}},
+}
+
+//plystra:data geo.region/v1
+var Regions = declaration.Member[declaration.NoAccess]{
+	Namespace: "geo", Tables: []declaration.Table{{ID: "regions", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "name", Type: "string"}}}},
+}`
+	valid, err := analyzer.Analyze(sourceSnapshot(source))
+	if err != nil || !valid.Valid {
+		t.Fatalf("valid result mapping = %#v, %v", valid, err)
+	}
+	for _, test := range []struct {
+		name, source string
+	}{
+		{"wrong base type", strings.Replace(source, `Source: "id", Type: "int64"`, `Source: "id", Type: "string"`, 1)},
+		{"wrong imported type", strings.Replace(source, `Source: "region-name", Type: "string"`, `Source: "region-name", Type: "int64"`, 1)},
+		{"non-null left join", strings.Replace(source, `Source: "region-name", Type: "string", Nullable: true`, `Source: "region-name", Type: "string", Nullable: false`, 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := analyzer.Analyze(sourceSnapshot(test.source))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Valid || !hasCode(result, analyzer.CodeTypeCheck) {
+				t.Fatalf("invalid result mapping = %#v", result)
+			}
+		})
+	}
+}
+
 func TestAnalyzeDecodesCountProjection(t *testing.T) {
 	result, err := analyzer.Analyze(sourceSnapshot(`package model
 

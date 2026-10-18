@@ -108,7 +108,9 @@ type-checks the snapshot without executing package initialization, accepts
 only the closed literal grammar, records deterministic source provenance,
 validates discovered Resource or `NoAccess` types, decodes and normalizes the
 complete member model, validates imported member targets, reference kinds, and
-acyclic member imports, and returns bounded structured diagnostics. It does not
+acyclic member imports, and checks explicit `SELECT` result scalar types and
+nullability against local and imported projections, including `LEFT JOIN`
+outputs. It returns bounded structured diagnostics. It does not
 read the host filesystem, import the Core CLI, or write generated
 artifacts. The packages are Data-owned and have no dependency on Core CLI
 implementation packages.

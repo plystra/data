@@ -299,7 +299,7 @@ func TestCompilerCommandAnalyzesOneBoundedFrame(t *testing.T) {
 	}
 }
 
-func TestCompilerCommandRejectsUnmappedSelectAtAnalyze(t *testing.T) {
+func TestCompilerCommandValidatesSelectResultsAtAnalyze(t *testing.T) {
 	declarationSource := `package declaration
 type NoAccess struct{}
 type Ref struct { Member string; Symbol string }
@@ -308,9 +308,13 @@ type Member[Access any] struct { Namespace string; Tables []Table; Queries []Que
 type Table struct { ID string; Columns []Column }
 type Column struct { ID string; Type ScalarType }
 type OperationKind string
-type Query struct { ID string; Operation OperationKind; Table Ref; Projection []Projection; Results []ResultField }
-type Projection struct { Column string; Alias string }
-type ResultField struct { ID string; Source string; Type ScalarType }
+type JoinKind string
+type ColumnRef struct { Table Ref; Column string }
+type JoinCondition struct { Left ColumnRef; Right ColumnRef }
+type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
+type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Projection []Projection; Results []ResultField }
+type Projection struct { Table Ref; Column string; Alias string }
+type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 `
 	modelSource := func(results string) string {
 		return `package model
@@ -318,9 +322,16 @@ import "github.com/plystra/data/declaration"
 //plystra:data accounts.user/v1
 var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts",
-	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "email", Type: "string"}}}},
+	Tables: []declaration.Table{
+		{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "region-id", Type: "int64"}}},
+		{ID: "regions", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "name", Type: "string"}}},
+	},
 	Queries: []declaration.Query{{ID: "read", Operation: "select", Table: declaration.Ref{Symbol: "users"},
-		Projection: []declaration.Projection{{Column: "id"}, {Column: "email"}},
+		Joins: []declaration.Join{{Kind: "left", Table: declaration.Ref{Symbol: "regions"}, On: declaration.JoinCondition{
+			Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "region-id"},
+			Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "regions"}, Column: "id"},
+		}}},
+		Projection: []declaration.Projection{{Column: "id"}, {Table: declaration.Ref{Symbol: "regions"}, Column: "name", Alias: "region-name"}},
 		` + results + `
 	}},
 }`
@@ -361,21 +372,27 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		}
 		return response
 	}
-	valid := run(t, `Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "email", Source: "email", Type: "string"}},`)
+	valid := run(t, `Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "name", Source: "region-name", Type: "string", Nullable: true}},`)
 	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Results) != 2 {
 		t.Fatalf("mapped SELECT analysis = %#v", valid)
 	}
 	for _, test := range []struct {
 		name    string
 		results string
+		code    analyzer.DiagnosticCode
 	}{
-		{name: "missing results"},
-		{name: "partial results", results: `Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}},`},
+		{name: "missing results", code: analyzer.CodeInvalidRootShape},
+		{name: "partial results", results: `Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}},`, code: analyzer.CodeInvalidRootShape},
+		{name: "wrong scalar type", results: `Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "string"}, {ID: "name", Source: "region-name", Type: "string", Nullable: true}},`, code: analyzer.CodeTypeCheck},
+		{name: "non-null left join", results: `Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "name", Source: "region-name", Type: "string"}},`, code: analyzer.CodeTypeCheck},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			response := run(t, test.results)
-			if response.Status != protocol.StatusRejected || response.Output.Valid || len(response.Output.Roots) != 0 || len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != analyzer.CodeInvalidRootShape {
-				t.Fatalf("unmapped SELECT analysis = %#v", response)
+			if response.Status != protocol.StatusRejected || response.Output.Valid || len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != test.code {
+				t.Fatalf("invalid SELECT result analysis = %#v", response)
+			}
+			if test.code == analyzer.CodeInvalidRootShape && len(response.Output.Roots) != 0 {
+				t.Fatalf("invalid root shape was accepted: %#v", response.Output.Roots)
 			}
 		})
 	}

@@ -110,6 +110,7 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 			}
 			a.validateColumn(root, groupingTarget, grouping.Column)
 		}
+		outputs := make(map[string]declaration.Column, len(query.Projection))
 		for _, projection := range query.Projection {
 			projectionTable := projection.Table
 			if projectionTable.Member == "" && projectionTable.Symbol == "" {
@@ -124,6 +125,31 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 				continue
 			}
 			a.validateColumn(root, projectionTarget, projection.Column)
+			if projection.Aggregate != "" {
+				continue
+			}
+			column, exists := columnByID(projectionTarget, projection.Column)
+			if !exists {
+				continue
+			}
+			for _, join := range query.Joins {
+				if join.Kind == declaration.JoinLeft && join.Table == projectionTable {
+					column.Nullable = true
+				}
+			}
+			name := projection.Column
+			if projection.Alias != "" {
+				name = projection.Alias
+			}
+			outputs[name] = column
+		}
+		if query.Operation == declaration.OperationSelect {
+			for _, result := range query.Results {
+				column, exists := outputs[result.Source]
+				if exists && (result.Type != column.Type || result.Nullable != column.Nullable) {
+					a.referenceDiagnostic(root, CodeTypeCheck, "Data SELECT result does not match its projected column", "Match the result scalar type and nullability to the projected column, including LEFT JOIN outputs.", result.Source)
+				}
+			}
 		}
 		for _, ordering := range query.Ordering {
 			orderingTable := ordering.Table
