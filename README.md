@@ -70,11 +70,15 @@ explicit alias and one required non-null `int64` result mapping. Each closed
 alias and one required nullable `int64` result mapping. These
 inputs are checked during analysis even when the column belongs to an imported
 member; PostgreSQL lowering repeats the type check before emission. The
-ungrouped forms may combine one or more aggregate outputs with no ordinary
+closed `SUM` output accepts one introduced `float64` column with an explicit
+alias and required nullable `float64` result mapping; integer `SUM` is not
+supported because PostgreSQL widens `bigint` sums to `numeric`. Its input is
+checked during analysis and again during PostgreSQL lowering. The ungrouped
+forms may combine one or more aggregate outputs with no ordinary
 projection, aggregate ordering, limit, or offset. A bounded grouped SELECT
 may project one or more columns from the base or introduced `INNER`/`LEFT`
 join tables, named by matching `GroupBy` columns, plus one or more `COUNT`,
-`MIN`, or `MAX` outputs. It emits deterministic ordered `GROUP BY` columns
+`MIN`, `MAX`, or `SUM` outputs. It emits deterministic ordered `GROUP BY` columns
 and matching typed result mappings. Explicitly imported join tables must use
 the same selected database Resource. A grouping output from the nullable side
 of a `LEFT JOIN` remains nullable even when `HAVING IS NOT NULL` filters rows.
@@ -96,8 +100,8 @@ output's scalar type; analysis checks grouped output comparisons before backend
 selection, and PostgreSQL lowering repeats the check. HAVING on an ungrouped
 query or mutation is rejected.
 `COUNT(column)` ignores NULL values, including unmatched LEFT JOIN rows;
-`COUNT(*)` counts joined rows. `MIN` and `MAX` are nullable because an empty
-input (or no non-null values) produces SQL NULL. Other aggregate functions
+`COUNT(*)` counts joined rows. `MIN`, `MAX`, and `SUM` are nullable because an
+empty input (or no non-null values) produces SQL NULL. Other aggregate functions
 remain unsupported. `COUNT(*)` cannot name a table; count an
 introduced column to exclude unmatched LEFT JOIN rows. Queries without joins
 retain their existing SQL bytes.

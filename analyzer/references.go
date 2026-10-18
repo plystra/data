@@ -149,9 +149,13 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 			if !exists {
 				continue
 			}
-			if projection.Aggregate == declaration.AggregateMin || projection.Aggregate == declaration.AggregateMax {
-				if column.Type != declaration.TypeInt64 {
-					a.referenceDiagnostic(root, CodeTypeCheck, "Data aggregate input is not int64", "Use an int64 column for MIN or MAX.", projection.Column)
+			if projection.Aggregate == declaration.AggregateMin || projection.Aggregate == declaration.AggregateMax || projection.Aggregate == declaration.AggregateSum {
+				wantType := declaration.TypeInt64
+				if projection.Aggregate == declaration.AggregateSum {
+					wantType = declaration.TypeFloat64
+				}
+				if column.Type != wantType {
+					a.referenceDiagnostic(root, CodeTypeCheck, "Data aggregate input has the wrong scalar type", "Use an int64 column for MIN or MAX, or a float64 column for SUM.", projection.Column)
 				}
 				continue
 			}

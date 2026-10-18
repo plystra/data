@@ -393,7 +393,7 @@ func TestNormalizeCountProjection(t *testing.T) {
 		{"wrong result type", func(query *declaration.Query) { query.Results[0].Type = declaration.TypeString }, declaration.ErrInvalidSchema},
 		{"nullable result", func(query *declaration.Query) { query.Results[0].Nullable = true }, declaration.ErrInvalidSchema},
 		{"count star table", func(query *declaration.Query) { query.Projection[0].Table = declaration.Ref{Symbol: "accounts"} }, declaration.ErrInvalidSchema},
-		{"unsupported aggregate", func(query *declaration.Query) { query.Projection[0].Aggregate = "sum" }, declaration.ErrUnsupported},
+		{"unsupported aggregate", func(query *declaration.Query) { query.Projection[0].Aggregate = "avg" }, declaration.ErrUnsupported},
 		{"mixed projection", func(query *declaration.Query) {
 			query.Projection = append(query.Projection, declaration.Projection{Column: "id"})
 			query.Results = append(query.Results, declaration.ResultField{ID: "id", Source: "id", Type: declaration.TypeInt64})
@@ -453,6 +453,43 @@ func TestNormalizeMinProjection(t *testing.T) {
 			test.edit(&changed.Queries[0])
 			if _, err := changed.Normalize(); !errors.Is(err, test.want) {
 				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeSumProjection(t *testing.T) {
+	member := declaration.Member[access]{
+		Namespace: "authn",
+		Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{
+			{ID: "amount", Type: declaration.TypeFloat64}, {ID: "count", Type: declaration.TypeInt64},
+		}}},
+		Queries: []declaration.Query{{
+			ID: "sum-amount", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+			Projection: []declaration.Projection{{Aggregate: declaration.AggregateSum, Column: "amount", Alias: "total"}},
+			Results:    []declaration.ResultField{{ID: "total", Source: "total", Type: declaration.TypeFloat64, Nullable: true}},
+		}},
+	}
+	if _, err := member.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Query)
+	}{
+		{"missing column", func(query *declaration.Query) { query.Projection[0].Column = "" }},
+		{"integer input", func(query *declaration.Query) { query.Projection[0].Column = "count" }},
+		{"integer result", func(query *declaration.Query) { query.Results[0].Type = declaration.TypeInt64 }},
+		{"non-null result", func(query *declaration.Query) { query.Results[0].Nullable = false }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := member
+			changed.Queries = append([]declaration.Query(nil), member.Queries...)
+			changed.Queries[0].Projection = append([]declaration.Projection(nil), member.Queries[0].Projection...)
+			changed.Queries[0].Results = append([]declaration.ResultField(nil), member.Queries[0].Results...)
+			test.edit(&changed.Queries[0])
+			if _, err := changed.Normalize(); !errors.Is(err, declaration.ErrInvalidSchema) {
+				t.Fatalf("SUM rejection = %v", err)
 			}
 		})
 	}

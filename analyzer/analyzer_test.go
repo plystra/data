@@ -562,6 +562,34 @@ var Samples = declaration.Member[declaration.NoAccess]{
 	}
 }
 
+func TestAnalyzeRejectsImportedSumNonFloat64Input(t *testing.T) {
+	source := `package model
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts", Imports: []string{"metrics.sample/v1"},
+	Queries: []declaration.Query{{ID: "total", Operation: "select", Table: declaration.Ref{Member: "metrics.sample/v1", Symbol: "samples"},
+		Projection: []declaration.Projection{{Aggregate: "sum", Column: "value", Alias: "total"}},
+		Results: []declaration.ResultField{{ID: "total", Source: "total", Type: "float64", Nullable: true}},
+	}},
+}
+
+//plystra:data metrics.sample/v1
+var Samples = declaration.Member[declaration.NoAccess]{
+	Namespace: "metrics", Tables: []declaration.Table{{ID: "samples", Columns: []declaration.Column{{ID: "value", Type: "float64"}}}},
+}`
+	valid, err := analyzer.Analyze(sourceSnapshot(source))
+	if err != nil || !valid.Valid {
+		t.Fatalf("valid imported SUM = %#v, %v", valid, err)
+	}
+	invalidSource := strings.Replace(source, `ID: "value", Type: "float64"`, `ID: "value", Type: "int64"`, 1)
+	invalid, err := analyzer.Analyze(sourceSnapshot(invalidSource))
+	if err != nil || invalid.Valid || !hasCode(invalid, analyzer.CodeTypeCheck) {
+		t.Fatalf("invalid imported SUM = %#v, %v", invalid, err)
+	}
+}
+
 func TestAnalyzeDecodesGroupedAggregate(t *testing.T) {
 	source := `package model
 

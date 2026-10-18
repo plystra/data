@@ -428,18 +428,19 @@ func validateQueryResults(owner, tableMember SchemaMember, table declaration.Tab
 			if !exists {
 				return fmt.Errorf("result column %s is not present", item.Column)
 			}
-		} else if item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax {
+		} else if item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax || item.Aggregate == declaration.AggregateSum {
 			input, exists := columnByID(outputTable, item.Column)
 			if !exists {
 				return fmt.Errorf("%s aggregate column %s is not present", item.Aggregate, item.Column)
 			}
-			if input.Type != declaration.TypeInt64 {
-				return fmt.Errorf("%s aggregate column %s is not int64", item.Aggregate, item.Column)
+			wantType := itemResultType(item)
+			if input.Type != wantType {
+				return fmt.Errorf("%s aggregate column %s is not %s", item.Aggregate, item.Column, wantType)
 			}
 		} else if item.Aggregate != declaration.AggregateCount {
 			return fmt.Errorf("unsupported aggregate %q", item.Aggregate)
 		}
-		if (item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax) || item.Aggregate == "" && projectionCanBeNull(query, item.Table) {
+		if (item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax || item.Aggregate == declaration.AggregateSum) || item.Aggregate == "" && projectionCanBeNull(query, item.Table) {
 			column.Nullable = true
 		}
 		name := item.Column
@@ -466,6 +467,9 @@ func validateQueryResults(owner, tableMember SchemaMember, table declaration.Tab
 }
 
 func itemResultType(item declaration.Projection) declaration.ScalarType {
+	if item.Aggregate == declaration.AggregateSum {
+		return declaration.TypeFloat64
+	}
 	if item.Aggregate == declaration.AggregateCount || item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax {
 		return declaration.TypeInt64
 	}
@@ -564,13 +568,14 @@ func queryProjectionExpression(query declaration.Query, aliases map[declaration.
 	if item.Aggregate == declaration.AggregateCount && item.Column != "" && !hasColumn(introduced.table, item.Column) {
 		return havingExpression{}, fmt.Errorf("projection column %s is not present", item.Column)
 	}
-	if item.Aggregate != "" && item.Aggregate != declaration.AggregateCount && item.Aggregate != declaration.AggregateMin && item.Aggregate != declaration.AggregateMax {
+	if item.Aggregate != "" && item.Aggregate != declaration.AggregateCount && item.Aggregate != declaration.AggregateMin && item.Aggregate != declaration.AggregateMax && item.Aggregate != declaration.AggregateSum {
 		return havingExpression{}, fmt.Errorf("unsupported aggregate %q", item.Aggregate)
 	}
-	if item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax {
+	if item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax || item.Aggregate == declaration.AggregateSum {
 		column, ok := columnByID(introduced.table, item.Column)
-		if !ok || column.Type != declaration.TypeInt64 {
-			return havingExpression{}, fmt.Errorf("%s aggregate column %s is not int64", item.Aggregate, item.Column)
+		wantType := itemResultType(item)
+		if !ok || column.Type != wantType {
+			return havingExpression{}, fmt.Errorf("%s aggregate column %s is not %s", item.Aggregate, item.Column, wantType)
 		}
 	}
 	if item.Aggregate == declaration.AggregateCount {
@@ -580,12 +585,14 @@ func queryProjectionExpression(query declaration.Query, aliases map[declaration.
 		}
 		return havingExpression{sql: "COUNT(" + argument + ")", column: declaration.Column{ID: item.Column, Type: declaration.TypeInt64}}, nil
 	}
-	if item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax {
+	if item.Aggregate == declaration.AggregateMin || item.Aggregate == declaration.AggregateMax || item.Aggregate == declaration.AggregateSum {
 		function := "MIN"
 		if item.Aggregate == declaration.AggregateMax {
 			function = "MAX"
+		} else if item.Aggregate == declaration.AggregateSum {
+			function = "SUM"
 		}
-		return havingExpression{sql: function + "(" + columnSQL(introduced.alias, item.Column) + ")", column: declaration.Column{ID: item.Column, Type: declaration.TypeInt64, Nullable: true}}, nil
+		return havingExpression{sql: function + "(" + columnSQL(introduced.alias, item.Column) + ")", column: declaration.Column{ID: item.Column, Type: itemResultType(item), Nullable: true}}, nil
 	}
 	column, _ := columnByID(introduced.table, item.Column)
 	return havingExpression{sql: columnSQL(introduced.alias, item.Column), column: column}, nil

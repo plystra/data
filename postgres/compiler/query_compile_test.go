@@ -376,6 +376,79 @@ func TestCompileQueriesLowersMultipleAggregateOutputs(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersImportedFloatingSum(t *testing.T) {
+	users := declaration.Ref{Symbol: "users"}
+	teams := declaration.Ref{Member: "teams.member/v1", Symbol: "teams"}
+	owner := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts", Imports: []string{"teams.member/v1"},
+		Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "region", Type: declaration.TypeString}, {ID: "team-id", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{
+			ID: "sum-by-region", Operation: declaration.OperationSelect, Table: users,
+			Joins: []declaration.Join{{Kind: declaration.JoinLeft, Table: teams, On: declaration.JoinCondition{
+				Left: declaration.ColumnRef{Table: users, Column: "team-id"}, Right: declaration.ColumnRef{Table: teams, Column: "id"},
+			}}},
+			Parameters: []declaration.Parameter{{ID: "threshold", Type: declaration.TypeFloat64}},
+			GroupBy:    []declaration.ColumnRef{{Column: "region"}},
+			Projection: []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateSum, Table: teams, Column: "amount", Alias: "total"}},
+			Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeFloat64, Nullable: true}},
+			Having:     declaration.Predicate{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Value{Kind: declaration.TypeFloat64, Set: true, Parameter: "threshold"}},
+			Ordering:   []declaration.Ordering{{Column: "total", Direction: declaration.OrderingDescending}, {Column: "region", Direction: declaration.OrderingAscending}},
+			HasLimit:   true, Limit: 2,
+		}},
+	}}
+	remote := postgres.SchemaMember{MemberID: "teams.member/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "teams", Tables: []declaration.Table{{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "amount", Type: declaration.TypeFloat64}}}},
+	}}
+	compile := func() postgres.QueryArtifact {
+		t.Helper()
+		artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote})
+		if err != nil || len(artifacts) != 1 {
+			t.Fatalf("SUM artifacts = %#v, %v", artifacts, err)
+		}
+		return artifacts[0]
+	}
+	first := compile()
+	want := `SELECT "t0"."region", SUM("t1"."amount") AS "total" FROM "accounts"."users" AS "t0" LEFT JOIN "teams"."teams" AS "t1" ON "t0"."team-id" = "t1"."id" GROUP BY "t0"."region" HAVING SUM("t1"."amount") > $1 ORDER BY SUM("t1"."amount") DESC, "t0"."region" ASC LIMIT 2;`
+	if !strings.Contains(first.SQL, want) || len(first.Results) != 2 || first.Results[1].Type != declaration.TypeFloat64 || !first.Results[1].Nullable {
+		t.Fatalf("SUM artifact = %#v, want %q", first, want)
+	}
+	second := compile()
+	if second.Digest != first.Digest || second.SQL != first.SQL {
+		t.Fatalf("unstable SUM SQL = %#v, %#v", first, second)
+	}
+	remote.Model.Tables[0].Columns[1].Type = declaration.TypeInt64
+	if _, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote}); !errors.Is(err, postgres.ErrQueryCompilation) {
+		t.Fatalf("integer SUM input error = %v", err)
+	}
+	remote.Model.Tables[0].Columns[1].Type = declaration.TypeFloat64
+	owner.Model.Queries[0].Results[1].Nullable = false
+	if _, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote}); !errors.Is(err, postgres.ErrQueryCompilation) {
+		t.Fatalf("non-null SUM result error = %v", err)
+	}
+	owner.Model.Queries[0].Results[1].Nullable = true
+	owner.Model.Queries[0].Parameters[0].Type = declaration.TypeInt64
+	if _, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote}); !errors.Is(err, postgres.ErrQueryCompilation) {
+		t.Fatalf("wrong HAVING parameter error = %v", err)
+	}
+	owner.Model.Queries[0].Parameters[0].Type = declaration.TypeFloat64
+	remote.Resource = "database.other"
+	if _, err := postgres.CompileQueries([]postgres.SchemaMember{owner, remote}); !errors.Is(err, postgres.ErrQueryCompilation) {
+		t.Fatalf("cross-Resource SUM error = %v", err)
+	}
+	remote.Resource = "database.primary"
+	query := &owner.Model.Queries[0]
+	query.GroupBy = nil
+	query.Projection = query.Projection[1:]
+	query.Results = query.Results[1:]
+	query.Having = declaration.Predicate{}
+	query.Ordering = nil
+	query.HasLimit, query.Limit = false, 0
+	ungrouped := compile()
+	if !strings.Contains(ungrouped.SQL, `SELECT SUM("t1"."amount") AS "total" FROM "accounts"."users" AS "t0" LEFT JOIN "teams"."teams" AS "t1" ON "t0"."team-id" = "t1"."id";`) {
+		t.Fatalf("ungrouped SUM = %#v", ungrouped)
+	}
+}
+
 func TestCompileQueriesCountsNullableJoinedColumn(t *testing.T) {
 	users := declaration.Ref{Symbol: "users"}
 	teams := declaration.Ref{Symbol: "teams"}

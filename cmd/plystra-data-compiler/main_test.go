@@ -26,7 +26,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 		Namespace: "accounts",
 		Tables: []declaration.Table{
 			{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}, {ID: "region", Type: declaration.TypeString}, {ID: "team-id", Type: declaration.TypeInt64}, {ID: "revision", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}},
-			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "region", Type: declaration.TypeString}}},
+			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "region", Type: declaration.TypeString}, {ID: "amount", Type: declaration.TypeFloat64}}},
 		},
 		Queries: []declaration.Query{{
 			ID: "delete-account", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "accounts"},
@@ -58,8 +58,8 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 				Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "accounts"}, Column: "team-id"}, Right: declaration.ColumnRef{Table: declaration.Ref{Symbol: "teams"}, Column: "id"},
 			}}},
 			GroupBy:    []declaration.ColumnRef{{Table: declaration.Ref{Symbol: "teams"}, Column: "region"}},
-			Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "total"}, {Aggregate: declaration.AggregateMax, Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "maximum"}},
-			Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}, {ID: "maximum", Source: "maximum", Type: declaration.TypeInt64, Nullable: true}},
+			Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "total"}, {Aggregate: declaration.AggregateMax, Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "maximum"}, {Aggregate: declaration.AggregateSum, Table: declaration.Ref{Symbol: "teams"}, Column: "amount", Alias: "sum"}},
+			Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}, {ID: "maximum", Source: "maximum", Type: declaration.TypeInt64, Nullable: true}, {ID: "sum", Source: "sum", Type: declaration.TypeFloat64, Nullable: true}},
 			Ordering:   []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}},
 			HasLimit:   true, Limit: 2, HasOffset: true, Offset: 1,
 		}},
@@ -139,7 +139,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 		}
 		if strings.HasSuffix(artifact.Path, "/count-by-team-region.sql") {
 			foundGroupedJoin = true
-			if artifact.Query == nil || len(artifact.Query.GroupBy) != 1 || len(artifact.Query.Results) != 3 || !bytes.Contains(artifact.Bytes, []byte(`MAX("t1"."id") AS "maximum"`)) || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "t1"."region" ORDER BY "t1"."region" ASC LIMIT 2 OFFSET 1;`)) {
+			if artifact.Query == nil || len(artifact.Query.GroupBy) != 1 || len(artifact.Query.Results) != 4 || artifact.Query.Results[3] != (declaration.ResultField{ID: "sum", Source: "sum", Type: declaration.TypeFloat64, Nullable: true}) || !bytes.Contains(artifact.Bytes, []byte(`MAX("t1"."id") AS "maximum", SUM("t1"."amount") AS "sum"`)) || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "t1"."region" ORDER BY "t1"."region" ASC LIMIT 2 OFFSET 1;`)) {
 				t.Fatalf("query artifact does not contain grouped join: %#v", artifact)
 			}
 		}
@@ -595,7 +595,7 @@ func runAnalyzeSnapshotWithBuild(t *testing.T, snapshot analyzer.Snapshot, build
 	return response
 }
 
-func TestCompilerCommandRejectsImportedMinMaxNonInt64Input(t *testing.T) {
+func TestCompilerCommandRejectsImportedAggregateWrongInput(t *testing.T) {
 	declarationSource := `package declaration
 type NoAccess struct{}
 type Ref struct { Member string; Symbol string }
@@ -622,9 +622,15 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 //plystra:data metrics.sample/v1
 var Samples = declaration.Member[declaration.NoAccess]{Namespace: "metrics", Tables: []declaration.Table{{ID: "samples", Columns: []declaration.Column{{ID: "value", Type: "int64"}}}}}
 `
-	for _, aggregate := range []string{"min", "max"} {
-		t.Run(aggregate, func(t *testing.T) {
-			validSource := strings.Replace(modelSource, `Aggregate: "min"`, `Aggregate: "`+aggregate+`"`, 1)
+	for _, test := range []struct{ aggregate, validType, invalidType string }{
+		{"min", "int64", "string"},
+		{"max", "int64", "string"},
+		{"sum", "float64", "int64"},
+	} {
+		t.Run(test.aggregate, func(t *testing.T) {
+			validSource := strings.Replace(modelSource, `Aggregate: "min"`, `Aggregate: "`+test.aggregate+`"`, 1)
+			validSource = strings.Replace(validSource, `Type: "int64", Nullable: true`, `Type: "`+test.validType+`", Nullable: true`, 1)
+			validSource = strings.Replace(validSource, `ID: "value", Type: "int64"`, `ID: "value", Type: "`+test.validType+`"`, 1)
 			snapshot := analyzer.Snapshot{Packages: []analyzer.Package{
 				{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(declarationSource)}}},
 				{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "models.go", Content: []byte(validSource)}}},
@@ -633,7 +639,7 @@ var Samples = declaration.Member[declaration.NoAccess]{Namespace: "metrics", Tab
 			if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 2 {
 				t.Fatalf("valid imported aggregate analysis = %#v", valid)
 			}
-			snapshot.Packages[1].Files[0].Content = []byte(strings.Replace(validSource, `ID: "value", Type: "int64"`, `ID: "value", Type: "string"`, 1))
+			snapshot.Packages[1].Files[0].Content = []byte(strings.Replace(validSource, `ID: "value", Type: "`+test.validType+`"`, `ID: "value", Type: "`+test.invalidType+`"`, 1))
 			invalid := runAnalyzeSnapshot(t, snapshot)
 			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != analyzer.CodeTypeCheck {
 				t.Fatalf("invalid imported aggregate analysis = %#v", invalid)

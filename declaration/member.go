@@ -243,6 +243,7 @@ const (
 	AggregateCount AggregateKind = "count"
 	AggregateMin   AggregateKind = "min"
 	AggregateMax   AggregateKind = "max"
+	AggregateSum   AggregateKind = "sum"
 )
 
 type Projection struct {
@@ -821,8 +822,12 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 					break
 				}
 			}
-			wantNullable := projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax
-			if !found || result.Type != TypeInt64 || result.Nullable != wantNullable {
+			wantNullable := projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax || projection.Aggregate == AggregateSum
+			wantType := TypeInt64
+			if projection.Aggregate == AggregateSum {
+				wantType = TypeFloat64
+			}
+			if !found || result.Type != wantType || result.Nullable != wantNullable {
 				return fmt.Errorf("%w: aggregate query result type", ErrInvalidSchema)
 			}
 		}
@@ -836,23 +841,27 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 				return fmt.Errorf("%w: query projection %q", ErrInvalidSchema, projection.Column)
 			}
 		} else {
-			if query.Operation != OperationSelect || (projection.Aggregate != AggregateCount && projection.Aggregate != AggregateMin && projection.Aggregate != AggregateMax) {
+			if query.Operation != OperationSelect || (projection.Aggregate != AggregateCount && projection.Aggregate != AggregateMin && projection.Aggregate != AggregateMax && projection.Aggregate != AggregateSum) {
 				return fmt.Errorf("%w: query aggregate %q", ErrUnsupported, projection.Aggregate)
 			}
 			if projection.Column != "" && !validSymbol(projection.Column) {
 				return fmt.Errorf("%w: query aggregate column %q", ErrInvalidSchema, projection.Column)
 			}
-			if (projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax) && projection.Column == "" {
+			if (projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax || projection.Aggregate == AggregateSum) && projection.Column == "" {
 				return fmt.Errorf("%w: %s aggregate column", ErrInvalidSchema, projection.Aggregate)
 			}
-			if (projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax) && projection.Table.Member == "" {
+			if (projection.Aggregate == AggregateMin || projection.Aggregate == AggregateMax || projection.Aggregate == AggregateSum) && projection.Table.Member == "" {
 				target := query.Table.Symbol
 				if projection.Table.Symbol != "" {
 					target = projection.Table.Symbol
 				}
 				if table, exists := tables[target]; exists {
 					for _, column := range table.Columns {
-						if column.ID == projection.Column && column.Type != TypeInt64 {
+						wantType := TypeInt64
+						if projection.Aggregate == AggregateSum {
+							wantType = TypeFloat64
+						}
+						if column.ID == projection.Column && column.Type != wantType {
 							return fmt.Errorf("%w: %s aggregate column type", ErrInvalidSchema, projection.Aggregate)
 						}
 					}
