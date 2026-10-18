@@ -27,13 +27,20 @@ type SnapshotPackage struct {
 	Files           []SnapshotFile           `json:"files"`
 }
 
+type SnapshotStandardExport struct {
+	ImportPath string `json:"import_path"`
+	Digest     string `json:"digest"`
+	Bytes      int    `json:"bytes"`
+}
+
 // SnapshotManifest names only a private source root and bounded file identities.
 // Source bytes never travel in the analyze protocol frame.
 type SnapshotManifest struct {
-	Root      string                      `json:"root"`
-	Packages  []SnapshotPackage           `json:"packages"`
-	Resources []analyzer.ResourceContract `json:"resources"`
-	Limits    analyzer.Limits             `json:"limits"`
+	Root            string                      `json:"root"`
+	Packages        []SnapshotPackage           `json:"packages"`
+	StandardExports []SnapshotStandardExport    `json:"standard_exports,omitempty"`
+	Resources       []analyzer.ResourceContract `json:"resources"`
+	Limits          analyzer.Limits             `json:"limits"`
 }
 
 // WriteSnapshot materializes a validated source inventory in a new private root.
@@ -53,6 +60,16 @@ func WriteSnapshot(root string, source analyzer.Snapshot) (SnapshotManifest, err
 			total += len(file.Content)
 		}
 	}
+	standardTotal := 0
+	if len(source.StandardExports) > MaxStandardExports {
+		return SnapshotManifest{}, ErrInvalidSnapshotManifest
+	}
+	for _, item := range source.StandardExports {
+		if len(item.Content) == 0 || len(item.Content) > MaxStandardFileBytes || len(item.Content) > MaxStandardBytes-standardTotal {
+			return SnapshotManifest{}, ErrInvalidSnapshotManifest
+		}
+		standardTotal += len(item.Content)
+	}
 	if _, err := analyzer.SnapshotDigest(source); err != nil {
 		return SnapshotManifest{}, fmt.Errorf("%w: %v", ErrInvalidSnapshotManifest, err)
 	}
@@ -67,6 +84,13 @@ func WriteSnapshot(root string, source analyzer.Snapshot) (SnapshotManifest, err
 			entry.Files = append(entry.Files, SnapshotFile{Path: file.Path, Digest: digestBytes(file.Content), Bytes: len(file.Content)})
 		}
 		manifest.Packages = append(manifest.Packages, entry)
+	}
+	standard := append([]analyzer.StandardExport(nil), source.StandardExports...)
+	sort.Slice(standard, func(i, j int) bool { return standard[i].ImportPath < standard[j].ImportPath })
+	for _, item := range standard {
+		manifest.StandardExports = append(manifest.StandardExports, SnapshotStandardExport{
+			ImportPath: item.ImportPath, Digest: digestBytes(item.Content), Bytes: len(item.Content),
+		})
 	}
 	if err := validateSnapshotManifest(manifest); err != nil {
 		return SnapshotManifest{}, err
@@ -91,6 +115,16 @@ func WriteSnapshot(root string, source analyzer.Snapshot) (SnapshotManifest, err
 			}
 		}
 	}
+	if len(standard) != 0 {
+		if err := os.Mkdir(filepath.Join(root, "standard"), 0o700); err != nil {
+			return SnapshotManifest{}, fmt.Errorf("%w: cannot create private standard directory", ErrInvalidSnapshotManifest)
+		}
+	}
+	for index, item := range standard {
+		if err := os.WriteFile(snapshotStandardPath(root, index), item.Content, 0o400); err != nil {
+			return SnapshotManifest{}, fmt.Errorf("%w: cannot write private standard export", ErrInvalidSnapshotManifest)
+		}
+	}
 	complete = true
 	return manifest, nil
 }
@@ -111,6 +145,10 @@ func SnapshotManifestDigest(manifest SnapshotManifest) (string, error) {
 		})
 	}
 	sort.Slice(identity.Packages, func(i, j int) bool { return identity.Packages[i].ImportPath < identity.Packages[j].ImportPath })
+	identity.StandardExports = append([]SnapshotStandardExport(nil), manifest.StandardExports...)
+	sort.Slice(identity.StandardExports, func(i, j int) bool {
+		return identity.StandardExports[i].ImportPath < identity.StandardExports[j].ImportPath
+	})
 	identity.Resources = append([]analyzer.ResourceContract(nil), manifest.Resources...)
 	sort.Slice(identity.Resources, func(i, j int) bool {
 		if identity.Resources[i].ID != identity.Resources[j].ID {
@@ -170,6 +208,29 @@ func LoadSnapshot(manifest SnapshotManifest) (analyzer.Snapshot, error) {
 		}
 		snapshot.Packages = append(snapshot.Packages, entry)
 	}
+	standard := append([]SnapshotStandardExport(nil), manifest.StandardExports...)
+	sort.Slice(standard, func(i, j int) bool { return standard[i].ImportPath < standard[j].ImportPath })
+	for index, item := range standard {
+		relative := snapshotStandardRelativePath(index)
+		if err := checkSnapshotPath(privateRoot, relative); err != nil {
+			return analyzer.Snapshot{}, err
+		}
+		opened, err := privateRoot.Open(relative)
+		if err != nil {
+			return analyzer.Snapshot{}, ErrInvalidSnapshotManifest
+		}
+		info, statErr := opened.Stat()
+		if statErr != nil || !info.Mode().IsRegular() || info.Size() != int64(item.Bytes) {
+			opened.Close()
+			return analyzer.Snapshot{}, ErrInvalidSnapshotManifest
+		}
+		content, readErr := io.ReadAll(io.LimitReader(opened, MaxStandardFileBytes+1))
+		closeErr := opened.Close()
+		if readErr != nil || closeErr != nil || len(content) != item.Bytes || digestBytes(content) != item.Digest {
+			return analyzer.Snapshot{}, ErrInvalidSnapshotManifest
+		}
+		snapshot.StandardExports = append(snapshot.StandardExports, analyzer.StandardExport{ImportPath: item.ImportPath, Content: content})
+	}
 	if _, err := analyzer.SnapshotDigest(snapshot); err != nil {
 		return analyzer.Snapshot{}, fmt.Errorf("%w: %v", ErrInvalidSnapshotManifest, err)
 	}
@@ -208,6 +269,17 @@ func validateSnapshotManifest(manifest SnapshotManifest) error {
 		}
 		validation.Packages = append(validation.Packages, entry)
 	}
+	if len(manifest.StandardExports) > MaxStandardExports {
+		return ErrInvalidSnapshotManifest
+	}
+	standardTotal := 0
+	for _, item := range manifest.StandardExports {
+		if item.Bytes <= 0 || item.Bytes > MaxStandardFileBytes || item.Bytes > MaxStandardBytes-standardTotal || !validDigest(item.Digest) {
+			return ErrInvalidSnapshotManifest
+		}
+		standardTotal += item.Bytes
+		validation.StandardExports = append(validation.StandardExports, analyzer.StandardExport{ImportPath: item.ImportPath, Content: []byte("x")})
+	}
 	if _, err := analyzer.SnapshotDigest(validation); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidSnapshotManifest, err)
 	}
@@ -216,6 +288,14 @@ func validateSnapshotManifest(manifest SnapshotManifest) error {
 
 func snapshotFilePath(root string, packageIndex int, path string) string {
 	return filepath.Join(root, snapshotRelativePath(packageIndex, path))
+}
+
+func snapshotStandardPath(root string, index int) string {
+	return filepath.Join(root, snapshotStandardRelativePath(index))
+}
+
+func snapshotStandardRelativePath(index int) string {
+	return filepath.Join("standard", fmt.Sprintf("%04d.a", index))
 }
 
 func snapshotRelativePath(packageIndex int, path string) string {

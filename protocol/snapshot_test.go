@@ -39,6 +39,63 @@ func TestPrivateSnapshotSeparatesPackagesAndStabilizesDigest(t *testing.T) {
 	}
 }
 
+func TestPrivateSnapshotStagesVerifiedStandardExports(t *testing.T) {
+	source := analyzer.Snapshot{
+		Packages:        []analyzer.Package{{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\n")}}}},
+		StandardExports: []analyzer.StandardExport{{ImportPath: "fmt", Content: []byte("selected-export")}},
+	}
+	first, err := protocol.WriteSnapshot(filepath.Join(t.TempDir(), "source"), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := protocol.WriteSnapshot(filepath.Join(t.TempDir(), "source"), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDigest, err := protocol.SnapshotManifestDigest(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := protocol.SnapshotManifestDigest(second)
+	if err != nil || firstDigest != secondDigest {
+		t.Fatalf("standard snapshot digests = %q, %q, %v", firstDigest, secondDigest, err)
+	}
+	changed := first
+	changed.StandardExports = append([]protocol.SnapshotStandardExport(nil), first.StandardExports...)
+	changed.StandardExports[0].Digest = "sha256:" + strings.Repeat("0", 64)
+	changedDigest, err := protocol.SnapshotManifestDigest(changed)
+	if err != nil || changedDigest == firstDigest {
+		t.Fatalf("changed standard digest = %q, %v", changedDigest, err)
+	}
+	loaded, err := protocol.LoadSnapshot(first)
+	if err != nil || len(loaded.StandardExports) != 1 || string(loaded.StandardExports[0].Content) != "selected-export" {
+		t.Fatalf("loaded standard export = %#v, %v", loaded.StandardExports, err)
+	}
+	path := filepath.Join(first.Root, "standard", "0000.a")
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("changed-export"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := protocol.LoadSnapshot(first); !errors.Is(err, protocol.ErrInvalidSnapshotManifest) {
+		t.Fatalf("changed standard export error = %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	external := filepath.Join(t.TempDir(), "export.a")
+	if err := os.WriteFile(external, []byte("selected-export"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, path); err != nil {
+		t.Skipf("file symlinks unavailable: %v", err)
+	}
+	if _, err := protocol.LoadSnapshot(first); !errors.Is(err, protocol.ErrInvalidSnapshotManifest) {
+		t.Fatalf("symlinked standard export error = %v", err)
+	}
+}
+
 func TestPrivateSnapshotRejectsChangedSourceAndSymlink(t *testing.T) {
 	source := analyzer.Snapshot{Packages: []analyzer.Package{{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\n")}}}}}
 	manifest, err := protocol.WriteSnapshot(filepath.Join(t.TempDir(), "source"), source)
@@ -71,7 +128,10 @@ func TestPrivateSnapshotRejectsChangedSourceAndSymlink(t *testing.T) {
 }
 
 func TestSnapshotManifestRejectsInvalidPathsAndBounds(t *testing.T) {
-	source := analyzer.Snapshot{Packages: []analyzer.Package{{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\n")}}}}}
+	source := analyzer.Snapshot{
+		Packages:        []analyzer.Package{{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\n")}}}},
+		StandardExports: []analyzer.StandardExport{{ImportPath: "fmt", Content: []byte("export")}},
+	}
 	base, err := protocol.WriteSnapshot(filepath.Join(t.TempDir(), "source"), source)
 	if err != nil {
 		t.Fatal(err)
@@ -87,6 +147,26 @@ func TestSnapshotManifestRejectsInvalidPathsAndBounds(t *testing.T) {
 		{"oversized file", func(m *protocol.SnapshotManifest) { m.Packages[0].Files[0].Bytes = protocol.MaxSourceFileBytes + 1 }},
 		{"invalid digest", func(m *protocol.SnapshotManifest) { m.Packages[0].Files[0].Digest = "sha256:bad" }},
 		{"oversized analysis limit", func(m *protocol.SnapshotManifest) { m.Limits.MaxRoots = protocol.MaxRoots + 1 }},
+		{"standard traversal", func(m *protocol.SnapshotManifest) { m.StandardExports[0].ImportPath = "../fmt" }},
+		{"standard source collision", func(m *protocol.SnapshotManifest) { m.StandardExports[0].ImportPath = "example.com/model" }},
+		{"standard zero size", func(m *protocol.SnapshotManifest) { m.StandardExports[0].Bytes = 0 }},
+		{"standard oversized file", func(m *protocol.SnapshotManifest) { m.StandardExports[0].Bytes = protocol.MaxStandardFileBytes + 1 }},
+		{"standard invalid digest", func(m *protocol.SnapshotManifest) { m.StandardExports[0].Digest = "sha256:bad" }},
+		{"standard duplicate", func(m *protocol.SnapshotManifest) {
+			m.StandardExports = append(m.StandardExports, m.StandardExports[0])
+		}},
+		{"too many standard exports", func(m *protocol.SnapshotManifest) {
+			m.StandardExports = nil
+			for index := 0; index <= protocol.MaxStandardExports; index++ {
+				m.StandardExports = append(m.StandardExports, protocol.SnapshotStandardExport{ImportPath: fmt.Sprintf("std%d", index), Digest: base.StandardExports[0].Digest, Bytes: 1})
+			}
+		}},
+		{"too many standard bytes", func(m *protocol.SnapshotManifest) {
+			m.StandardExports = nil
+			for index := 0; index < 9; index++ {
+				m.StandardExports = append(m.StandardExports, protocol.SnapshotStandardExport{ImportPath: fmt.Sprintf("std%d", index), Digest: base.StandardExports[0].Digest, Bytes: protocol.MaxStandardFileBytes})
+			}
+		}},
 		{"too many files", func(m *protocol.SnapshotManifest) {
 			m.Packages[0].Files = nil
 			for index := 0; index <= protocol.MaxSnapshotFiles; index++ {
@@ -104,6 +184,7 @@ func TestSnapshotManifestRejectsInvalidPathsAndBounds(t *testing.T) {
 			manifest := base
 			manifest.Packages = append([]protocol.SnapshotPackage(nil), base.Packages...)
 			manifest.Packages[0].Files = append([]protocol.SnapshotFile(nil), base.Packages[0].Files...)
+			manifest.StandardExports = append([]protocol.SnapshotStandardExport(nil), base.StandardExports...)
 			test.change(&manifest)
 			if _, err := protocol.SnapshotManifestDigest(manifest); !errors.Is(err, protocol.ErrInvalidSnapshotManifest) {
 				t.Fatalf("invalid manifest digest error = %v", err)

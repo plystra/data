@@ -173,7 +173,9 @@ func TestDistributionManifestMatchesProtocolIdentity(t *testing.T) {
 		MaxDiagnostics: protocol.MaxDiagnostics, MaxDiagnosticBytes: protocol.MaxDiagnosticBytes,
 		MaxFrameBytes: protocol.MaxFrameBytes, MaxSnapshotFiles: protocol.MaxSnapshotFiles,
 		MaxSnapshotBytes: protocol.MaxSnapshotBytes, MaxSourceFileBytes: protocol.MaxSourceFileBytes,
-		MaxSourcePathBytes: protocol.MaxSourcePathBytes, MaxArtifacts: protocol.MaxArtifacts,
+		MaxSourcePathBytes: protocol.MaxSourcePathBytes,
+		MaxStandardExports: protocol.MaxStandardExports, MaxStandardBytes: protocol.MaxStandardBytes,
+		MaxStandardFileBytes: protocol.MaxStandardFileBytes, MaxArtifacts: protocol.MaxArtifacts,
 		MaxArtifactBytes: protocol.MaxArtifactBytes, MaxArtifactPathBytes: protocol.MaxArtifactPathBytes,
 	}) {
 		t.Fatalf("manifest = %#v", manifest)
@@ -203,7 +205,7 @@ func TestDistributionManifestMatchesProtocolIdentity(t *testing.T) {
 }
 
 func TestParseDistributionManifestRejectsInvalidContract(t *testing.T) {
-	valid := `{"schema":"plystra.data-compiler-distribution/v1","module_path":"github.com/plystra/data","command_import_path":"github.com/plystra/data/cmd/plystra-data-compiler","analyze_protocol":"plystra.data-analyze/v1","emit_protocol":"plystra.data-emit/v1","declaration_language":"plystra.data-declaration/v1","limits":{"max_roots":1024,"max_nodes":65536,"max_imports":1024,"max_nesting":64,"max_symbol_bytes":128,"max_diagnostics":256,"max_diagnostic_bytes":262144,"max_frame_bytes":16777216,"max_snapshot_files":4096,"max_snapshot_bytes":67108864,"max_source_file_bytes":4194304,"max_source_path_bytes":512,"max_artifacts":4096,"max_artifact_bytes":4194304,"max_artifact_path_bytes":512}}`
+	valid := `{"schema":"plystra.data-compiler-distribution/v1","module_path":"github.com/plystra/data","command_import_path":"github.com/plystra/data/cmd/plystra-data-compiler","analyze_protocol":"plystra.data-analyze/v1","emit_protocol":"plystra.data-emit/v1","declaration_language":"plystra.data-declaration/v1","limits":{"max_roots":1024,"max_nodes":65536,"max_imports":1024,"max_nesting":64,"max_symbol_bytes":128,"max_diagnostics":256,"max_diagnostic_bytes":262144,"max_frame_bytes":16777216,"max_snapshot_files":4096,"max_snapshot_bytes":67108864,"max_source_file_bytes":4194304,"max_source_path_bytes":512,"max_standard_exports":1024,"max_standard_bytes":134217728,"max_standard_file_bytes":16777216,"max_artifacts":4096,"max_artifact_bytes":4194304,"max_artifact_path_bytes":512}}`
 	tests := []struct {
 		name string
 		data string

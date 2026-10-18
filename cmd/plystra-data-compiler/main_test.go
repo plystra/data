@@ -336,6 +336,62 @@ func TestCompilerCommandAnalyzesOneBoundedFrame(t *testing.T) {
 	}
 }
 
+func TestCompilerCommandAnalyzesOnlyStagedStandardExports(t *testing.T) {
+	snapshot := analyzer.Snapshot{Packages: []analyzer.Package{{
+		ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible,
+		Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\nimport \"fmt\"\nvar Text = fmt.Sprint(1)\n")}},
+	}}}
+	missing := runAnalyzeSnapshot(t, snapshot)
+	if missing.Status != protocol.StatusRejected || missing.Output.Valid || len(missing.Diagnostics) != 1 || missing.Diagnostics[0].Code != analyzer.CodeInvalidSnapshot {
+		t.Fatalf("missing standard type input = %#v", missing)
+	}
+	command := exec.Command("go", "list", "-deps", "-export", "-f", "{{if .Export}}{{.ImportPath}}|{{.Export}}{{end}}", "fmt")
+	command.Env = append(os.Environ(), "GOWORK=off")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		importPath, name, ok := strings.Cut(line, "|")
+		if !ok {
+			t.Fatalf("invalid Go export listing %q", line)
+		}
+		content, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot.StandardExports = append(snapshot.StandardExports, analyzer.StandardExport{ImportPath: importPath, Content: content})
+	}
+	selected := runAnalyzeSnapshot(t, snapshot)
+	if selected.Status != protocol.StatusSucceeded || !selected.Output.Valid || len(selected.Diagnostics) != 0 {
+		t.Fatalf("staged standard type input = %#v", selected)
+	}
+}
+
+func TestCompilerCommandUsesTargetArchitectureAndRejectsCgo(t *testing.T) {
+	snapshot := analyzer.Snapshot{Packages: []analyzer.Package{{
+		ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible,
+		Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\nimport \"unsafe\"\nvar _ [4]byte = [unsafe.Sizeof(uintptr(0))]byte{}\n")}},
+	}}}
+	on386 := runAnalyzeSnapshotWithBuild(t, snapshot, protocol.BuildContext{GOOS: "windows", GOARCH: "386"})
+	if on386.Status != protocol.StatusSucceeded || !on386.Output.Valid {
+		t.Fatalf("386 type check = %#v", on386)
+	}
+	onAMD64 := runAnalyzeSnapshot(t, snapshot)
+	if onAMD64.Status != protocol.StatusRejected || onAMD64.Output.Valid || len(onAMD64.Diagnostics) != 1 || onAMD64.Diagnostics[0].Code != analyzer.CodeTypeCheck {
+		t.Fatalf("amd64 type check = %#v", onAMD64)
+	}
+	snapshot.Packages[0].Files[0].Content = []byte("package model\n/* int value; */\nimport \"C\"\nvar Value = C.value\n")
+	cgo := runAnalyzeSnapshot(t, snapshot)
+	if cgo.Status != protocol.StatusRejected || cgo.Output.Valid || len(cgo.Diagnostics) == 0 || cgo.Diagnostics[0].Code != analyzer.CodeUnsupportedCapability {
+		t.Fatalf("unstaged cgo type input = %#v", cgo)
+	}
+}
+
 func TestCompilerCommandValidatesSelectResultsAtAnalyze(t *testing.T) {
 	declarationSource := `package declaration
 type NoAccess struct{}
@@ -500,11 +556,15 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 
 func runAnalyzeSnapshot(t *testing.T, snapshot analyzer.Snapshot) protocol.AnalyzeResponse {
 	t.Helper()
+	return runAnalyzeSnapshotWithBuild(t, snapshot, protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"})
+}
+
+func runAnalyzeSnapshotWithBuild(t *testing.T, snapshot analyzer.Snapshot, build protocol.BuildContext) protocol.AnalyzeResponse {
+	t.Helper()
 	manifest, err := protocol.WriteSnapshot(filepath.Join(t.TempDir(), "source"), snapshot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	build := protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}
 	digest, err := protocol.AnalyzeInputDigest(manifest, build)
 	if err != nil {
 		t.Fatal(err)

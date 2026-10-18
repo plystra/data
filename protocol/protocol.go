@@ -31,6 +31,9 @@ const (
 	MaxSnapshotBytes     = 64 * 1024 * 1024
 	MaxSourceFileBytes   = 4 * 1024 * 1024
 	MaxSourcePathBytes   = 512
+	MaxStandardExports   = analyzer.MaxStandardExports
+	MaxStandardBytes     = analyzer.MaxStandardBytes
+	MaxStandardFileBytes = analyzer.MaxStandardFileBytes
 	MaxArtifacts         = 4096
 	MaxArtifactBytes     = 4 * 1024 * 1024
 	MaxArtifactPathBytes = 512
@@ -235,6 +238,7 @@ func HandleAnalyze(request AnalyzeRequest) AnalyzeResponse {
 		response.Diagnostics = []analyzer.Diagnostic{{Code: analyzer.CodeInvalidSnapshot, Message: "analyze snapshot rejected", Action: "Recreate the private source snapshot before retrying."}}
 		return response
 	}
+	snapshot.TargetGOARCH = request.Build.GOARCH
 	result, err := analyzer.Analyze(snapshot)
 	if err != nil {
 		response.Status = StatusRejected

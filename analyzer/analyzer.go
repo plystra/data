@@ -3,6 +3,7 @@
 package analyzer
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,9 +14,12 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"path"
 	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -32,6 +36,9 @@ const (
 	defaultMaxSymbolBytes = declaration.MaximumSymbolBytes
 	defaultMaxDiagnostics = 256
 	defaultMaxDiagBytes   = 256 * 1024
+	MaxStandardExports    = 1024
+	MaxStandardBytes      = 128 * 1024 * 1024
+	MaxStandardFileBytes  = 16 * 1024 * 1024
 )
 
 var (
@@ -66,6 +73,12 @@ type Package struct {
 	Files           []SourceFile    `json:"files"`
 }
 
+// StandardExport is selected-toolchain type data for one standard package.
+type StandardExport struct {
+	ImportPath string `json:"import_path"`
+	Content    []byte `json:"content"`
+}
+
 // ResourceContract is a Resource contract already validated by the caller's
 // discovery phase. The analyzer uses the exact package/type identity to check
 // a Member access type without importing Core or CLI code.
@@ -77,9 +90,11 @@ type ResourceContract struct {
 
 // Snapshot is the complete read-only input to one analysis operation.
 type Snapshot struct {
-	Packages  []Package          `json:"packages"`
-	Resources []ResourceContract `json:"resources"`
-	Limits    Limits             `json:"limits"`
+	Packages        []Package          `json:"packages"`
+	StandardExports []StandardExport   `json:"standard_exports,omitempty"`
+	Resources       []ResourceContract `json:"resources"`
+	Limits          Limits             `json:"limits"`
+	TargetGOARCH    string             `json:"-"`
 }
 
 // Limits bounds one analysis operation. Zero fields use the protocol defaults.
@@ -123,6 +138,7 @@ type DiagnosticCode string
 const (
 	CodeInvalidRootShape       DiagnosticCode = "invalid-root-shape"
 	CodeUnsupportedExpression  DiagnosticCode = "unsupported-expression"
+	CodeUnsupportedCapability  DiagnosticCode = "unsupported-capability"
 	CodeInvalidID              DiagnosticCode = "invalid-id"
 	CodeDuplicateSymbol        DiagnosticCode = "duplicate-symbol"
 	CodeUnresolvedReference    DiagnosticCode = "unresolved-reference"
@@ -173,14 +189,19 @@ type parsedPackage struct {
 type analysis struct {
 	limits    Limits
 	packages  map[string]*parsedPackage
+	standard  map[string][]byte
+	goarch    string
 	resources map[string]ResourceContract
 	seenRoots map[string]Root
 	result    Result
 }
 
 type sourceImporter struct {
-	owner *analysis
-	state map[string]uint8
+	owner        *analysis
+	state        map[string]uint8
+	standard     types.Importer
+	active       string
+	inputFailure map[string]bool
 }
 
 // Analyze parses and type-checks only the files supplied in snapshot, then
@@ -226,6 +247,16 @@ func SnapshotDigest(snapshot Snapshot) (string, error) {
 		packages = append(packages, identity)
 	}
 	sort.Slice(packages, func(i, j int) bool { return packages[i].ImportPath < packages[j].ImportPath })
+	type standardIdentity struct {
+		ImportPath string `json:"import_path"`
+		Digest     string `json:"digest"`
+		Bytes      int    `json:"bytes"`
+	}
+	standard := make([]standardIdentity, 0, len(snapshot.StandardExports))
+	for _, item := range snapshot.StandardExports {
+		standard = append(standard, standardIdentity{ImportPath: item.ImportPath, Digest: digestBytes(item.Content), Bytes: len(item.Content)})
+	}
+	sort.Slice(standard, func(i, j int) bool { return standard[i].ImportPath < standard[j].ImportPath })
 	resources := append([]ResourceContract(nil), snapshot.Resources...)
 	sort.Slice(resources, func(i, j int) bool {
 		if resources[i].ID != resources[j].ID {
@@ -237,10 +268,11 @@ func SnapshotDigest(snapshot Snapshot) (string, error) {
 		return resources[i].TypeName < resources[j].TypeName
 	})
 	payload, err := json.Marshal(struct {
-		Packages  []packageIdentity  `json:"packages"`
-		Resources []ResourceContract `json:"resources"`
-		Limits    Limits             `json:"limits"`
-	}{packages, resources, a.limits})
+		Packages        []packageIdentity  `json:"packages"`
+		StandardExports []standardIdentity `json:"standard_exports,omitempty"`
+		Resources       []ResourceContract `json:"resources"`
+		Limits          Limits             `json:"limits"`
+	}{packages, standard, resources, a.limits})
 	if err != nil {
 		return "", fmt.Errorf("%w: snapshot digest: %v", ErrInvalidSnapshot, err)
 	}
@@ -277,8 +309,16 @@ func newAnalysis(snapshot Snapshot) (*analysis, error) {
 	a := &analysis{
 		limits:    limits,
 		packages:  make(map[string]*parsedPackage, len(snapshot.Packages)),
+		standard:  make(map[string][]byte, len(snapshot.StandardExports)),
 		resources: make(map[string]ResourceContract, len(snapshot.Resources)),
 		seenRoots: make(map[string]Root),
+	}
+	a.goarch = snapshot.TargetGOARCH
+	if a.goarch == "" {
+		a.goarch = runtime.GOARCH
+	}
+	if types.SizesFor("gc", a.goarch) == nil {
+		return nil, fmt.Errorf("%w: unsupported target architecture", ErrInvalidSnapshot)
 	}
 	for _, pkg := range snapshot.Packages {
 		if pkg.ImportPath == "" || a.packages[pkg.ImportPath] != nil {
@@ -304,6 +344,26 @@ func newAnalysis(snapshot Snapshot) (*analysis, error) {
 			}
 		}
 		a.packages[pkg.ImportPath] = &parsedPackage{source: pkg, contents: make(map[string][]byte, len(pkg.Files))}
+	}
+	if len(snapshot.StandardExports) > MaxStandardExports {
+		return nil, fmt.Errorf("%w: too many standard exports", ErrInvalidSnapshot)
+	}
+	totalStandard := 0
+	for _, item := range snapshot.StandardExports {
+		firstSegment := strings.SplitN(item.ImportPath, "/", 2)[0]
+		if item.ImportPath == "" || len(item.ImportPath) > 512 || item.ImportPath == "." || item.ImportPath == ".." ||
+			strings.HasPrefix(item.ImportPath, "../") || strings.HasPrefix(item.ImportPath, "./") ||
+			item.ImportPath == "unsafe" || path.IsAbs(item.ImportPath) ||
+			path.Clean(item.ImportPath) != item.ImportPath || strings.ContainsAny(item.ImportPath, "\\:") || strings.Contains(firstSegment, ".") ||
+			len(item.Content) == 0 || len(item.Content) > MaxStandardFileBytes ||
+			a.packages[item.ImportPath] != nil || a.standard[item.ImportPath] != nil {
+			return nil, fmt.Errorf("%w: invalid standard export", ErrInvalidSnapshot)
+		}
+		totalStandard += len(item.Content)
+		if totalStandard > MaxStandardBytes {
+			return nil, fmt.Errorf("%w: standard exports exceed byte limit", ErrInvalidSnapshot)
+		}
+		a.standard[item.ImportPath] = append([]byte(nil), item.Content...)
 	}
 	seenResourceIDs := make(map[string]struct{}, len(snapshot.Resources))
 	for _, resource := range snapshot.Resources {
@@ -358,6 +418,13 @@ func (a *analysis) parsePackages() {
 				a.addDiagnostic(pkg, source.Path, nil, CodeTypeCheck, "source parsing failed", "Fix the Go syntax in the reported source file.")
 			}
 			if parsed != nil {
+				for _, imported := range parsed.Imports {
+					value, err := strconv.Unquote(imported.Path.Value)
+					if err == nil && value == "C" {
+						pkg.parseErr = true
+						a.addDiagnostic(pkg, source.Path, imported.Path, CodeUnsupportedCapability, "cgo package type input is unavailable", "Use a Go-only Data declaration or supply a supported cgo type-input route.")
+					}
+				}
 				pkg.files = append(pkg.files, parsed)
 			}
 		}
@@ -368,7 +435,18 @@ func (a *analysis) parsePackages() {
 }
 
 func (a *analysis) typeCheckPackages() {
-	imp := &sourceImporter{owner: a, state: make(map[string]uint8, len(a.packages))}
+	lookup := func(importPath string) (io.ReadCloser, error) {
+		content, exists := a.standard[importPath]
+		if !exists {
+			return nil, fmt.Errorf("standard export is not present in the source snapshot")
+		}
+		return io.NopCloser(bytes.NewReader(content)), nil
+	}
+	imp := &sourceImporter{
+		owner: a, state: make(map[string]uint8, len(a.packages)),
+		standard:     importer.ForCompiler(token.NewFileSet(), "gc", lookup),
+		inputFailure: make(map[string]bool),
+	}
 	for importPath := range a.packages {
 		a.checkPackage(importPath, imp)
 	}
@@ -390,11 +468,18 @@ func (a *analysis) checkPackage(importPath string, imp *sourceImporter) *types.P
 		Scopes:     make(map[ast.Node]*types.Scope),
 	}
 	imp.state[importPath] = 1
-	checker := types.Config{Importer: imp}
+	previous := imp.active
+	imp.active = importPath
+	checker := types.Config{Importer: imp, Sizes: types.SizesFor("gc", a.goarch)}
 	typed, err := checker.Check(importPath, pkg.fset, pkg.files, pkg.info)
+	imp.active = previous
 	pkg.typed = typed
 	if err != nil {
-		a.addPackageDiagnostic(pkg, CodeTypeCheck, "package type checking failed", "Fix the reported Go type error before analyzing Data declarations.")
+		if imp.inputFailure[importPath] {
+			a.addPackageDiagnostic(pkg, CodeInvalidSnapshot, "package type input is unavailable", "Recreate the complete selected Go source and standard-library type snapshot before retrying.")
+		} else {
+			a.addPackageDiagnostic(pkg, CodeTypeCheck, "package type checking failed", "Fix the reported Go type error before analyzing Data declarations.")
+		}
 	}
 	if typed != nil {
 		imp.state[importPath] = 2
@@ -411,10 +496,18 @@ func (i *sourceImporter) Import(importPath string) (*types.Package, error) {
 		}
 		return i.owner.checkPackage(importPath, i), nil
 	}
-	if strings.Contains(importPath, ".") {
+	if importPath == "unsafe" {
+		return types.Unsafe, nil
+	}
+	if _, exists := i.owner.standard[importPath]; !exists {
+		i.inputFailure[i.active] = true
 		return nil, fmt.Errorf("import is not present in the source snapshot")
 	}
-	return importer.Default().Import(importPath)
+	pkg, err := i.standard.Import(importPath)
+	if err != nil {
+		i.inputFailure[i.active] = true
+	}
+	return pkg, err
 }
 
 func (a *analysis) discoverRoots() {

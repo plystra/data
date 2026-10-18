@@ -39,6 +39,9 @@ type DistributionLimits struct {
 	MaxSnapshotBytes     int `json:"max_snapshot_bytes"`
 	MaxSourceFileBytes   int `json:"max_source_file_bytes"`
 	MaxSourcePathBytes   int `json:"max_source_path_bytes"`
+	MaxStandardExports   int `json:"max_standard_exports"`
+	MaxStandardBytes     int `json:"max_standard_bytes"`
+	MaxStandardFileBytes int `json:"max_standard_file_bytes"`
 	MaxArtifacts         int `json:"max_artifacts"`
 	MaxArtifactBytes     int `json:"max_artifact_bytes"`
 	MaxArtifactPathBytes int `json:"max_artifact_path_bytes"`
@@ -94,7 +97,9 @@ func ValidateDistributionManifest(manifest DistributionManifest) error {
 		MaxDiagnostics: MaxDiagnostics, MaxDiagnosticBytes: MaxDiagnosticBytes,
 		MaxFrameBytes: MaxFrameBytes, MaxSnapshotFiles: MaxSnapshotFiles,
 		MaxSnapshotBytes: MaxSnapshotBytes, MaxSourceFileBytes: MaxSourceFileBytes,
-		MaxSourcePathBytes: MaxSourcePathBytes, MaxArtifacts: MaxArtifacts,
+		MaxSourcePathBytes: MaxSourcePathBytes, MaxStandardExports: MaxStandardExports,
+		MaxStandardBytes: MaxStandardBytes, MaxStandardFileBytes: MaxStandardFileBytes,
+		MaxArtifacts:     MaxArtifacts,
 		MaxArtifactBytes: MaxArtifactBytes, MaxArtifactPathBytes: MaxArtifactPathBytes,
 	}) {
 		return fmt.Errorf("%w: bounds are incomplete or outside the supported range", ErrInvalidDistributionManifest)

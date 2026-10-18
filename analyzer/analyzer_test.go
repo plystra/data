@@ -2,6 +2,8 @@ package analyzer_test
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -10,6 +12,92 @@ import (
 )
 
 const resourceID = "data.database/v1"
+
+func TestAnalyzeUsesOnlyDeclaredStandardExports(t *testing.T) {
+	snapshot := analyzer.Snapshot{Packages: []analyzer.Package{{
+		ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible,
+		Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\nimport \"fmt\"\nvar Text = fmt.Sprint(1)\n")}},
+	}}}
+	missing, err := analyzer.Analyze(snapshot)
+	if err != nil || missing.Valid || !hasCode(missing, analyzer.CodeInvalidSnapshot) {
+		t.Fatalf("missing standard export = %#v, %v", missing, err)
+	}
+	command := exec.Command("go", "list", "-deps", "-export", "-f", "{{if .Export}}{{.ImportPath}}|{{.Export}}{{end}}", "fmt")
+	command.Env = append(os.Environ(), "GOWORK=off")
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		importPath, name, ok := strings.Cut(line, "|")
+		if !ok {
+			t.Fatalf("invalid Go export listing %q", line)
+		}
+		content, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		snapshot.StandardExports = append(snapshot.StandardExports, analyzer.StandardExport{ImportPath: importPath, Content: content})
+	}
+	valid, err := analyzer.Analyze(snapshot)
+	if err != nil || !valid.Valid || len(valid.Diagnostics) != 0 {
+		t.Fatalf("selected standard exports = %#v, %v", valid, err)
+	}
+	first, err := analyzer.SnapshotDigest(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.StandardExports[0].Content = append(snapshot.StandardExports[0].Content, 0)
+	second, err := analyzer.SnapshotDigest(snapshot)
+	if err != nil || first == second {
+		t.Fatalf("standard export digest = %q, %q, %v", first, second, err)
+	}
+}
+
+func TestAnalyzeRejectsNonStandardExportInput(t *testing.T) {
+	snapshot := analyzer.Snapshot{
+		Packages: []analyzer.Package{{
+			ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible,
+			Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\nimport _ \"example.com/dep\"\n")}},
+		}},
+		StandardExports: []analyzer.StandardExport{{ImportPath: "example.com/dep", Content: []byte("export")}},
+	}
+	if _, err := analyzer.Analyze(snapshot); !errors.Is(err, analyzer.ErrInvalidSnapshot) {
+		t.Fatalf("non-standard export error = %v", err)
+	}
+}
+
+func TestAnalyzeUsesTargetArchitectureForUnsafe(t *testing.T) {
+	snapshot := analyzer.Snapshot{Packages: []analyzer.Package{{
+		ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible,
+		Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\nimport \"unsafe\"\nvar _ [4]byte = [unsafe.Sizeof(uintptr(0))]byte{}\n")}},
+	}}}
+	snapshot.TargetGOARCH = "386"
+	on386, err := analyzer.Analyze(snapshot)
+	if err != nil || !on386.Valid {
+		t.Fatalf("386 type check = %#v, %v", on386, err)
+	}
+	snapshot.TargetGOARCH = "amd64"
+	onAMD64, err := analyzer.Analyze(snapshot)
+	if err != nil || onAMD64.Valid || !hasCode(onAMD64, analyzer.CodeTypeCheck) {
+		t.Fatalf("amd64 type check = %#v, %v", onAMD64, err)
+	}
+}
+
+func TestAnalyzeRejectsUnstagedCgoTypes(t *testing.T) {
+	snapshot := analyzer.Snapshot{Packages: []analyzer.Package{{
+		ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible,
+		Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte("package model\n/* int value; */\nimport \"C\"\nvar Value = C.value\n")}},
+	}}}
+	result, err := analyzer.Analyze(snapshot)
+	if err != nil || result.Valid || !hasCode(result, analyzer.CodeUnsupportedCapability) {
+		t.Fatalf("unstaged cgo type input = %#v, %v", result, err)
+	}
+}
 
 func TestAnalyzeFindsRootsWithStableProvenance(t *testing.T) {
 	snapshot := sourceSnapshot(`package model

@@ -162,15 +162,21 @@ including the selected Go Module `h1:` checksum and raw distribution-manifest
 digest, Go build context, limits, and an input digest binding both the build context
 and a private source-snapshot manifest. The manifest names one private root
 and carries package eligibility, module-relative file paths, byte counts,
-content digests, Resource contracts, and analysis limits; source bytes stay out
+content digests, selected standard-library export identities, Resource
+contracts, and analysis limits; source and export bytes stay out
 of the protocol frame. `protocol.WriteSnapshot` stages a validated in-memory
 inventory into a new private root, and the compiler rechecks every listed file
 before analysis. Symlinks, changed bytes, unsafe paths, and out-of-bounds
 snapshots are rejected. The published bounds allow at most 4,096 source files,
 64 MiB total source bytes, 4 MiB per source file, and 512 bytes per source path.
+Standard-library `gc` export inputs have separate bounds of 1,024 packages,
+128 MiB total, and 16 MiB each. The analyzer resolves standard imports only
+from verified staged exports, handles `unsafe` intrinsically, applies target
+architecture sizes, and rejects reached cgo packages without a supported type
+input. It never uses ambient package type lookup.
 Responses contain normalized member models with their roots, provenance,
 diagnostics, and output digests. Data-owned discovery of the current Project's
-finite package inventory and private compiler invocation remain unfinished.
+compiler-ready input and private compiler invocation remain unfinished.
 The command writes no generated files and emits no non-protocol stdout. The
 distribution contract is recorded in `plystra-data-compiler.json`.
 

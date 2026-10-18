@@ -18,6 +18,9 @@
     "max_snapshot_bytes": 67108864,
     "max_source_file_bytes": 4194304,
     "max_source_path_bytes": 512,
+    "max_standard_exports": 1024,
+    "max_standard_bytes": 134217728,
+    "max_standard_file_bytes": 16777216,
     "max_artifacts": 4096,
     "max_artifact_bytes": 4194304,
     "max_artifact_path_bytes": 512
