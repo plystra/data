@@ -532,11 +532,13 @@ func TestCompileQueriesRejectsInvalidIntent(t *testing.T) {
 	}{
 		{name: "unknown projection", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Projection: []declaration.Projection{{Column: "missing"}}, Results: []declaration.ResultField{{ID: "missing", Source: "missing", Type: declaration.TypeInt64}}}, want: "result column missing is not present"},
 		{name: "unknown predicate", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Predicate: declaration.Predicate{Kind: declaration.PredicateIsNull, Left: declaration.ColumnRef{Column: "missing"}}}, want: "predicate column missing"},
+		{name: "predicate without kind", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Predicate: declaration.Predicate{Left: declaration.ColumnRef{Column: "id"}}}, want: "predicate has fields without a kind"},
+		{name: "predicate with ignored items", query: declaration.Query{ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}, Predicate: declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(1), Items: []declaration.Predicate{{Kind: declaration.PredicateIsNull, Left: declaration.ColumnRef{Column: "id"}}}}}, want: "predicate comparison has nested items"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			base.Model.Queries = []declaration.Query{test.query}
-			_, err := postgres.CompileQueries([]postgres.SchemaMember{base})
-			if err == nil || !errors.Is(err, postgres.ErrQueryCompilation) || !strings.Contains(err.Error(), test.want) {
+			artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{base})
+			if err == nil || !errors.Is(err, postgres.ErrQueryCompilation) || !strings.Contains(err.Error(), test.want) || len(artifacts) != 0 {
 				t.Fatalf("error = %v, want %q", err, test.want)
 			}
 		})

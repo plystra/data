@@ -42,8 +42,10 @@ for those columns. Cross-Resource and index targets remain unsupported.
 Every explicit `SELECT` projection requires one typed `Results` mapping per
 output. A `SELECT` without an explicit projection retains its existing `*`
 output and has no typed result mapping. Query predicates support comparisons,
-`IS NULL`, `IS NOT NULL`, `AND`, and `OR`;
-comparison operands use explicit `ColumnRef` values and accept either an
+`IS NULL`, `IS NOT NULL`, `AND`, and `OR`. Each kind has a closed field shape,
+and an absent predicate cannot carry operands or nested items. Invalid shapes
+are rejected before SQL emission.
+Comparison operands use explicit `ColumnRef` values and accept either an
 introduced column or a declared typed parameter/literal. Assignments accept
 only declared typed parameters or closed literal values; analysis checks their
 columns and value types against local or imported target tables. Projections,

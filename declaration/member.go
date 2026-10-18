@@ -996,6 +996,9 @@ func validatePlan(plan Plan, imports map[string]struct{}, queries map[string]Que
 
 func validatePredicate(predicate Predicate, imports map[string]struct{}, parameters map[string]ScalarType, introduced map[string]struct{}, base Ref, depth int) error {
 	if predicate.Kind == "" {
+		if predicate.Left != (ColumnRef{}) || predicate.Right != (ColumnRef{}) || predicate.Value != (Value{}) || predicate.Items != nil {
+			return fmt.Errorf("%w: predicate has fields without a kind", ErrInvalidSchema)
+		}
 		return nil
 	}
 	if depth > MaximumNesting {
@@ -1003,6 +1006,9 @@ func validatePredicate(predicate Predicate, imports map[string]struct{}, paramet
 	}
 	switch predicate.Kind {
 	case PredicateEqual, PredicateNotEqual, PredicateLess, PredicateLessEqual, PredicateGreater, PredicateGreaterEqual:
+		if predicate.Items != nil {
+			return fmt.Errorf("%w: predicate comparison has nested items", ErrInvalidSchema)
+		}
 		if err := validatePredicateColumn(predicate.Left, imports, introduced, base); err != nil {
 			return err
 		}
@@ -1011,17 +1017,26 @@ func validatePredicate(predicate Predicate, imports map[string]struct{}, paramet
 			return fmt.Errorf("%w: predicate requires exactly one right operand", ErrInvalidSchema)
 		}
 		if rightSet {
+			if predicate.Value != (Value{}) {
+				return fmt.Errorf("%w: predicate comparison has an unused value", ErrInvalidSchema)
+			}
 			return validatePredicateColumn(predicate.Right, imports, introduced, base)
 		}
 		return validateQueryValue(predicate.Value, parameters)
 	case PredicateIsNull, PredicateIsNotNull:
+		if predicate.Items != nil {
+			return fmt.Errorf("%w: null predicate has nested items", ErrInvalidSchema)
+		}
 		if err := validatePredicateColumn(predicate.Left, imports, introduced, base); err != nil {
 			return err
 		}
-		if predicateColumnSet(predicate.Right) || predicate.Value.Set {
+		if predicate.Right != (ColumnRef{}) || predicate.Value != (Value{}) {
 			return fmt.Errorf("%w: null predicate has an operand", ErrInvalidSchema)
 		}
 	case PredicateAnd, PredicateOr:
+		if predicate.Left != (ColumnRef{}) || predicate.Right != (ColumnRef{}) || predicate.Value != (Value{}) {
+			return fmt.Errorf("%w: boolean predicate has operands", ErrInvalidSchema)
+		}
 		if len(predicate.Items) < 2 {
 			return fmt.Errorf("%w: predicate requires two items", ErrInvalidSchema)
 		}

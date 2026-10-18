@@ -649,3 +649,38 @@ func TestNormalizeAcceptsNotNullPredicate(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNormalizeRejectsMalformedPredicateFields(t *testing.T) {
+	base := declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(1)}
+	valid := declaration.Predicate{Kind: declaration.PredicateAnd, Items: []declaration.Predicate{base, {Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "id"}}}}
+	member := declaration.Member[access]{
+		Namespace: "accounts",
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+		Queries:   []declaration.Query{{ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}, Predicate: valid}},
+	}
+	if _, err := member.Normalize(); err != nil {
+		t.Fatalf("valid nested predicate: %v", err)
+	}
+	for _, test := range []struct {
+		name      string
+		predicate declaration.Predicate
+	}{
+		{"empty kind with column", declaration.Predicate{Left: declaration.ColumnRef{Column: "id"}}},
+		{"empty kind with value", declaration.Predicate{Value: declaration.Int64(1)}},
+		{"empty kind with items", declaration.Predicate{Items: []declaration.Predicate{base}}},
+		{"comparison with items", declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(1), Items: []declaration.Predicate{base}}},
+		{"comparison with unused value", declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Right: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64}}},
+		{"null with items", declaration.Predicate{Kind: declaration.PredicateIsNull, Left: declaration.ColumnRef{Column: "id"}, Items: []declaration.Predicate{base}}},
+		{"null with unused value", declaration.Predicate{Kind: declaration.PredicateIsNull, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64}}},
+		{"boolean with column", declaration.Predicate{Kind: declaration.PredicateAnd, Left: declaration.ColumnRef{Column: "id"}, Items: []declaration.Predicate{base, base}}},
+		{"boolean with value", declaration.Predicate{Kind: declaration.PredicateAnd, Value: declaration.Value{Kind: declaration.TypeInt64}, Items: []declaration.Predicate{base, base}}},
+		{"nested empty kind", declaration.Predicate{Kind: declaration.PredicateAnd, Items: []declaration.Predicate{base, {Left: declaration.ColumnRef{Column: "id"}}}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			member.Queries[0].Predicate = test.predicate
+			if _, err := member.Normalize(); !errors.Is(err, declaration.ErrInvalidSchema) {
+				t.Fatalf("Normalize error = %v, want %v", err, declaration.ErrInvalidSchema)
+			}
+		})
+	}
+}

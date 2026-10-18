@@ -520,7 +520,7 @@ type Value struct { Kind ScalarType; Set bool; String string; Int64 int64 }
 type Assignment struct { Column string; Value Value }
 type ColumnRef struct { Table Ref; Column string }
 type PredicateKind string
-type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value }
+type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }
 type Query struct { ID string; Operation OperationKind; Table Ref; Assignments []Assignment; Predicate Predicate; Returning []Projection; Results []ResultField }
 type Projection struct { Column string; Alias string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
@@ -561,11 +561,20 @@ var Events = declaration.Member[declaration.NoAccess]{Namespace: "audit", Tables
 		{"missing assignment column", strings.Replace(modelSource, `Assignment{{Column: "label"`, `Assignment{{Column: "missing"`, 1), analyzer.CodeUnresolvedReference},
 		{"wrong predicate value type", strings.Replace(modelSource, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "string", Set: true, String: "1"}}`, 1), analyzer.CodeTypeCheck},
 		{"wrong predicate column type", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Right: declaration.ColumnRef{Column: "label"}}`, 1), analyzer.CodeTypeCheck},
+		{"predicate missing kind", strings.Replace(modelSource, `Predicate: declaration.Predicate{Kind: "equal", `, `Predicate: declaration.Predicate{`, 1), analyzer.CodeInvalidRootShape},
+		{"predicate with ignored items", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}, Items: []declaration.Predicate{{Kind: "is-null", Left: declaration.ColumnRef{Column: "label"}}}}`, 1), analyzer.CodeInvalidRootShape},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			invalid := run(t, test.source)
 			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != test.code {
 				t.Fatalf("invalid imported mutation analysis = %#v", invalid)
+			}
+			if test.code == analyzer.CodeInvalidRootShape {
+				for _, root := range invalid.Output.Roots {
+					if root.MemberID == "accounts.user/v1" {
+						t.Fatalf("malformed predicate root was accepted: %#v", invalid.Output.Roots)
+					}
+				}
 			}
 		})
 	}
