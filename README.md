@@ -90,13 +90,14 @@ and typed projected results become ordered `database.Plan` statements. The
 database contract carries result width, scalar kind, and nullability into the
 PostgreSQL transaction, which validates those facts before commit. Joins,
 parameters, imported queries, mutation plans, generated access methods, and
-Core-side generated-tree installation remain separate integration boundaries.
+Data-owned artifact installation remain separate integration boundaries.
 Mutation queries may additionally declare explicit `Returning` projections and
-typed `Results` mappings. The lowerer emits deterministic PostgreSQL
-`RETURNING` clauses and rejects result sources whose scalar type or nullability
-does not match the selected table column. Result mappings are compiler
-metadata; typed access provider and codec generation remains a later
-integration boundary.
+typed `Results` mappings. Data analysis validates returned columns and result
+scalar types and nullability, including imported tables. The lowerer emits
+deterministic PostgreSQL `RETURNING` clauses and rejects result sources whose
+scalar type or nullability does not match the selected table column. Result
+mappings are compiler metadata; typed access provider and codec generation
+remains a later integration boundary.
 Staged query artifacts and their manifest entries include the declaring query
 operation, group-by, optional HAVING, and projection aggregate descriptors,
 parameters in PostgreSQL positional order, and typed result metadata.

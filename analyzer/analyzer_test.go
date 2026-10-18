@@ -148,7 +148,7 @@ import "github.com/plystra/data/declaration"
 //plystra:data accounts.user/v1
 var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts",
-	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "email", Type: "string"}}}},
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "email", Type: "string", Nullable: true}}}},
 	Queries: []declaration.Query{{
 		ID: "update-email", Operation: "update", Table: declaration.Ref{Symbol: "users"},
 		Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: "string", Set: true, String: "updated"}}},
@@ -166,6 +166,46 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	query := result.Roots[0].Model.Queries[0]
 	if len(query.Returning) != 2 || query.Returning[0].Alias != "user-id" || len(query.Results) != 2 || query.Results[1].Nullable != true {
 		t.Fatalf("decoded returning results = %#v", query)
+	}
+}
+
+func TestAnalyzeRejectsImportedReturningResultMismatch(t *testing.T) {
+	source := `package model
+import "github.com/plystra/data/declaration"
+
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts", Imports: []string{"audit.event/v1"},
+	Queries: []declaration.Query{{ID: "update-event", Operation: "update", Table: declaration.Ref{Member: "audit.event/v1", Symbol: "events"},
+		Assignments: []declaration.Assignment{{Column: "label", Value: declaration.Value{Kind: "string", Set: true, String: "updated"}}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+		Returning: []declaration.Projection{{Column: "id"}, {Column: "label", Alias: "event-label"}},
+		Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "label", Source: "event-label", Type: "string", Nullable: true}},
+	}},
+}
+
+//plystra:data audit.event/v1
+var Events = declaration.Member[declaration.NoAccess]{
+	Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "label", Type: "string", Nullable: true}}}},
+}`
+	valid, err := analyzer.Analyze(sourceSnapshot(source))
+	if err != nil || !valid.Valid {
+		t.Fatalf("valid imported RETURNING = %#v, %v", valid, err)
+	}
+	for _, test := range []struct {
+		name, source string
+		code         analyzer.DiagnosticCode
+	}{
+		{"wrong type", strings.Replace(source, `Source: "id", Type: "int64"`, `Source: "id", Type: "string"`, 1), analyzer.CodeTypeCheck},
+		{"wrong nullability", strings.Replace(source, `Source: "event-label", Type: "string", Nullable: true`, `Source: "event-label", Type: "string"`, 1), analyzer.CodeTypeCheck},
+		{"missing returning column", strings.Replace(source, `Column: "label", Alias: "event-label"`, `Column: "missing", Alias: "event-label"`, 1), analyzer.CodeUnresolvedReference},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid, err := analyzer.Analyze(sourceSnapshot(test.source))
+			if err != nil || invalid.Valid || !hasCode(invalid, test.code) {
+				t.Fatalf("invalid imported RETURNING = %#v, %v", invalid, err)
+			}
+		})
 	}
 }
 

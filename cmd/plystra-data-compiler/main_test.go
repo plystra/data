@@ -426,6 +426,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		Results: []declaration.ResultField{{ID: "minimum", Source: "minimum", Type: "int64", Nullable: true}},
 	}},
 }
+
 //plystra:data metrics.sample/v1
 var Samples = declaration.Member[declaration.NoAccess]{Namespace: "metrics", Tables: []declaration.Table{{ID: "samples", Columns: []declaration.Column{{ID: "value", Type: "int64"}}}}}
 `
@@ -444,6 +445,65 @@ var Samples = declaration.Member[declaration.NoAccess]{Namespace: "metrics", Tab
 			invalid := runAnalyzeSnapshot(t, snapshot)
 			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != analyzer.CodeTypeCheck {
 				t.Fatalf("invalid imported aggregate analysis = %#v", invalid)
+			}
+		})
+	}
+}
+
+func TestCompilerCommandRejectsImportedReturningMismatch(t *testing.T) {
+	declarationSource := `package declaration
+type NoAccess struct{}
+type Ref struct { Member string; Symbol string }
+type ScalarType string
+type Member[Access any] struct { Namespace string; Imports []string; Tables []Table; Queries []Query; Access Access }
+type Table struct { ID string; Columns []Column }
+type Column struct { ID string; Type ScalarType; Nullable bool }
+type OperationKind string
+type Value struct { Kind ScalarType; Set bool; String string; Int64 int64 }
+type Assignment struct { Column string; Value Value }
+type ColumnRef struct { Table Ref; Column string }
+type PredicateKind string
+type Predicate struct { Kind PredicateKind; Left ColumnRef; Value Value }
+type Query struct { ID string; Operation OperationKind; Table Ref; Assignments []Assignment; Predicate Predicate; Returning []Projection; Results []ResultField }
+type Projection struct { Column string; Alias string }
+type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
+`
+	modelSource := `package model
+import "github.com/plystra/data/declaration"
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "accounts", Imports: []string{"audit.event/v1"},
+	Queries: []declaration.Query{{ID: "update-event", Operation: "update", Table: declaration.Ref{Member: "audit.event/v1", Symbol: "events"},
+		Assignments: []declaration.Assignment{{Column: "label", Value: declaration.Value{Kind: "string", Set: true, String: "updated"}}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+		Returning: []declaration.Projection{{Column: "id"}, {Column: "label", Alias: "event-label"}},
+		Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "label", Source: "event-label", Type: "string", Nullable: true}},
+	}},
+}
+//plystra:data audit.event/v1
+var Events = declaration.Member[declaration.NoAccess]{Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "label", Type: "string", Nullable: true}}}}}
+`
+	run := func(t *testing.T, source string) protocol.AnalyzeResponse {
+		t.Helper()
+		return runAnalyzeSnapshot(t, analyzer.Snapshot{Packages: []analyzer.Package{
+			{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(declarationSource)}}},
+			{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "models.go", Content: []byte(source)}}},
+		}})
+	}
+	valid := run(t, modelSource)
+	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 2 {
+		t.Fatalf("valid imported RETURNING analysis = %#v", valid)
+	}
+	for _, test := range []struct {
+		name, source string
+	}{
+		{"wrong type", strings.Replace(modelSource, `Source: "id", Type: "int64"`, `Source: "id", Type: "string"`, 1)},
+		{"wrong nullability", strings.Replace(modelSource, `Source: "event-label", Type: "string", Nullable: true`, `Source: "event-label", Type: "string"`, 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := run(t, test.source)
+			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != analyzer.CodeTypeCheck {
+				t.Fatalf("invalid imported RETURNING analysis = %#v", invalid)
 			}
 		})
 	}
