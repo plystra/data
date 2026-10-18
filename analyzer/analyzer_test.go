@@ -570,6 +570,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		Projection: []declaration.Projection{{Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, Column: "name", Alias: "region-name"}, {Aggregate: "max", Table: declaration.Ref{Member: "geo.region/v1", Symbol: "regions"}, Column: "score", Alias: "maximum"}},
 		Having: declaration.Predicate{Kind: "is-not-null", Left: declaration.ColumnRef{Column: "region-name"}},
 		Ordering: []declaration.Ordering{{Column: "region-name", Direction: "asc"}},
+		HasLimit: true, Limit: 2, HasOffset: true, Offset: 1,
 		Results: []declaration.ResultField{{ID: "name", Source: "region-name", Type: "string", Nullable: true}, {ID: "maximum", Source: "maximum", Type: "int64", Nullable: true}},
 	}},
 }
@@ -579,7 +580,7 @@ var Regions = declaration.Member[declaration.NoAccess]{
 	Namespace: "geo", Tables: []declaration.Table{{ID: "regions", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "name", Type: "string"}, {ID: "score", Type: "int64"}}}},
 }`
 	valid, err := analyzer.Analyze(sourceSnapshot(source))
-	if err != nil || !valid.Valid || len(valid.Roots) != 2 || len(valid.Roots[0].Model.Queries) != 1 {
+	if err != nil || !valid.Valid || len(valid.Roots) != 2 || len(valid.Roots[0].Model.Queries) != 1 || !valid.Roots[0].Model.Queries[0].HasLimit || valid.Roots[0].Model.Queries[0].Offset != 1 {
 		t.Fatalf("grouped imported join = %#v, %v", valid, err)
 	}
 	for _, test := range []struct {

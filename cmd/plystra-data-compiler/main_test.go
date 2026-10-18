@@ -56,6 +56,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 			Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: declaration.Ref{Symbol: "teams"}, Column: "id", Alias: "total"}},
 			Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
 			Ordering:   []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}},
+			HasLimit:   true, Limit: 2, HasOffset: true, Offset: 1,
 		}},
 	}).Normalize()
 	if err != nil {
@@ -126,7 +127,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 		}
 		if strings.HasSuffix(artifact.Path, "/count-by-team-region.sql") {
 			foundGroupedJoin = true
-			if artifact.Query == nil || len(artifact.Query.GroupBy) != 1 || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "t1"."region" ORDER BY "t1"."region" ASC;`)) {
+			if artifact.Query == nil || len(artifact.Query.GroupBy) != 1 || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "t1"."region" ORDER BY "t1"."region" ASC LIMIT 2 OFFSET 1;`)) {
 				t.Fatalf("query artifact does not contain grouped join: %#v", artifact)
 			}
 		}
@@ -412,7 +413,7 @@ type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Val
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type OrderingDirection string
 type Ordering struct { Table Ref; Column string; Direction OrderingDirection }
-type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; GroupBy []ColumnRef; Projection []Projection; Having Predicate; Ordering []Ordering; Results []ResultField }
+type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; GroupBy []ColumnRef; Projection []Projection; Having Predicate; Ordering []Ordering; Results []ResultField; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 `
 	modelSource := `package model
 import "github.com/plystra/data/declaration"
@@ -425,7 +426,8 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		GroupBy: []declaration.ColumnRef{{Table: declaration.Ref{Symbol: "teams"}, Column: "region"}},
 		Projection: []declaration.Projection{{Table: declaration.Ref{Symbol: "teams"}, Column: "region", Alias: "zone"}, {Aggregate: "count", Column: "id", Alias: "total"}},
 		Having: declaration.Predicate{Kind: "greater", Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
-		Ordering: []declaration.Ordering{{Column: "total", Direction: "desc"}},
+		Ordering: []declaration.Ordering{{Column: "total", Direction: "desc"}, {Column: "zone", Direction: "asc"}},
+		HasLimit: true, Limit: 2, HasOffset: true, Offset: 1,
 		Results: []declaration.ResultField{{ID: "region", Source: "zone", Type: "string", Nullable: true}, {ID: "total", Source: "total", Type: "int64"}},
 	}},
 }`
@@ -437,7 +439,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		}})
 	}
 	valid := run(t, modelSource)
-	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Ordering) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Joins) != 1 {
+	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Ordering) != 2 || len(valid.Output.Roots[0].Model.Queries[0].Joins) != 1 || valid.Output.Roots[0].Model.Queries[0].Limit != 2 || valid.Output.Roots[0].Model.Queries[0].Offset != 1 {
 		t.Fatalf("valid grouped analysis = %#v", valid)
 	}
 	for _, test := range []struct{ name, source string }{
@@ -455,6 +457,10 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	invalidNullability := run(t, strings.Replace(modelSource, `Source: "zone", Type: "string", Nullable: true`, `Source: "zone", Type: "string"`, 1))
 	if invalidNullability.Status != protocol.StatusRejected || invalidNullability.Output.Valid || len(invalidNullability.Diagnostics) != 1 || invalidNullability.Diagnostics[0].Code != analyzer.CodeTypeCheck {
 		t.Fatalf("invalid joined grouping result = %#v", invalidNullability)
+	}
+	missingGroupOrder := run(t, strings.Replace(modelSource, `{Column: "zone", Direction: "asc"}`, `{Column: "total", Direction: "asc"}`, 1))
+	if missingGroupOrder.Status != protocol.StatusRejected || missingGroupOrder.Output.Valid || len(missingGroupOrder.Output.Roots) != 0 || len(missingGroupOrder.Diagnostics) != 1 || missingGroupOrder.Diagnostics[0].Code != analyzer.CodeInvalidRootShape {
+		t.Fatalf("paged grouped query without key ordering = %#v", missingGroupOrder)
 	}
 	for _, test := range []struct {
 		name, source string

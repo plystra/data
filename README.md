@@ -73,13 +73,18 @@ aggregate ordering, limit, or offset. A bounded grouped SELECT may project one
 or more columns from the base or introduced `INNER`/`LEFT` join tables, named
 by matching `GroupBy` columns, plus one `COUNT`, `MIN`, or `MAX` output. It
 emits deterministic ordered `GROUP BY` columns and matching typed result
-mappings, with no limit or offset. Explicitly imported join tables must use
+mappings. Explicitly imported join tables must use
 the same selected database Resource. A grouping output from the nullable side
 of a `LEFT JOIN` remains nullable even when `HAVING IS NOT NULL` filters rows.
 Grouped ordering names only projected output names without table qualifiers;
 PostgreSQL emits an alias-qualified grouping column for joined queries, a
-base-table-qualified column without joins, or an aggregate expression. A grouped
-query may filter its projected grouping columns or aggregate alias through
+base-table-qualified column without joins, or an aggregate expression. Grouped
+queries may use literal `LIMIT` and `OFFSET` when ordering includes every
+projected grouping key; an aggregate output may precede those keys. Explicit
+zero bounds are allowed. Values without their presence flag or beyond
+PostgreSQL's signed 64-bit range are rejected before SQL emission. An ungrouped
+aggregate still cannot use ordering, limit, or offset. A grouped query may
+filter its projected grouping columns or aggregate alias through
 `Having`, using the closed comparison, `IS NULL`,
 `IS NOT NULL`, `AND`, and `OR` predicate forms. HAVING references are
 unqualified output names; the lowerer substitutes the validated column or

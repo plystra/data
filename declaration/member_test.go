@@ -363,6 +363,7 @@ func TestNormalizeCountProjection(t *testing.T) {
 			query.Results = append(query.Results, declaration.ResultField{ID: "id", Source: "id", Type: declaration.TypeInt64})
 		}, declaration.ErrUnsupported},
 		{"aggregate modifiers", func(query *declaration.Query) { query.HasLimit = true; query.Limit = 1 }, declaration.ErrUnsupported},
+		{"aggregate offset", func(query *declaration.Query) { query.HasOffset = true; query.Offset = 1 }, declaration.ErrUnsupported},
 		{"mutation aggregate", func(query *declaration.Query) {
 			query.Operation = declaration.OperationInsert
 			query.Projection = nil
@@ -557,6 +558,26 @@ func TestNormalizeGroupedAggregateOrdering(t *testing.T) {
 	if len(model.Queries[0].Ordering) != 2 || model.Queries[0].Ordering[0].Column != "total" || model.Queries[0].Ordering[1].Column != "zone" {
 		t.Fatalf("normalized ordering = %#v", model.Queries[0].Ordering)
 	}
+	bounded := member
+	bounded.Queries = append([]declaration.Query(nil), member.Queries...)
+	bounded.Queries[0].HasLimit, bounded.Queries[0].Limit = true, 2
+	bounded.Queries[0].HasOffset, bounded.Queries[0].Offset = true, 1
+	boundedModel, err := bounded.Normalize()
+	if err != nil || !boundedModel.Queries[0].HasLimit || boundedModel.Queries[0].Limit != 2 || !boundedModel.Queries[0].HasOffset || boundedModel.Queries[0].Offset != 1 {
+		t.Fatalf("bounded grouped query = %#v, %v", boundedModel, err)
+	}
+	baselineDigest, err := member.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundedDigest, err := bounded.Digest()
+	if err != nil || boundedDigest == baselineDigest {
+		t.Fatalf("bounded grouped digest = %q, baseline = %q, error = %v", boundedDigest, baselineDigest, err)
+	}
+	bounded.Queries[0].Limit, bounded.Queries[0].Offset = 0, 0
+	if zero, err := bounded.Normalize(); err != nil || !zero.Queries[0].HasLimit || !zero.Queries[0].HasOffset {
+		t.Fatalf("explicit zero bounds = %#v, %v", zero, err)
+	}
 	member.Queries[0].Ordering[0].Column = "zone"
 	if model.Queries[0].Ordering[0].Column != "total" {
 		t.Fatal("normalized ordering changed with authored input")
@@ -573,6 +594,18 @@ func TestNormalizeGroupedAggregateOrdering(t *testing.T) {
 			query.Projection = query.Projection[1:]
 			query.Results = query.Results[1:]
 		}, declaration.ErrUnsupported},
+		{"paged without grouping key order", func(query *declaration.Query) {
+			query.HasLimit, query.Limit = true, 1
+			query.Ordering = query.Ordering[:1]
+		}, declaration.ErrUnsupported},
+		{"offset without ordering", func(query *declaration.Query) {
+			query.HasOffset, query.Offset = true, 1
+			query.Ordering = nil
+		}, declaration.ErrUnsupported},
+		{"disabled limit with value", func(query *declaration.Query) { query.Limit = 1 }, declaration.ErrInvalidSchema},
+		{"disabled offset with value", func(query *declaration.Query) { query.Offset = 1 }, declaration.ErrInvalidSchema},
+		{"limit beyond PostgreSQL range", func(query *declaration.Query) { query.HasLimit, query.Limit = true, ^uint64(0) }, declaration.ErrInvalidSchema},
+		{"offset beyond PostgreSQL range", func(query *declaration.Query) { query.HasOffset, query.Offset = true, ^uint64(0) }, declaration.ErrInvalidSchema},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			query := model.Queries[0]

@@ -291,6 +291,25 @@ func TestCompileQueriesLowersGroupedImportedLeftJoin(t *testing.T) {
 	}
 	baselineDigest := artifact.Digest
 	query := &owner.Model.Queries[0]
+	query.HasLimit, query.Limit = true, 2
+	query.HasOffset, query.Offset = true, 1
+	bounded := compile()
+	if !strings.Contains(bounded.SQL, `ORDER BY "t1"."region" ASC, "t0"."region" DESC, COUNT("t1"."id") DESC LIMIT 2 OFFSET 1;`) || bounded.Digest == baselineDigest {
+		t.Fatalf("bounded grouped join = %#v", bounded)
+	}
+	query.HasLimit, query.Limit = false, 0
+	offsetOnly := compile()
+	if !strings.Contains(offsetOnly.SQL, `COUNT("t1"."id") DESC OFFSET 1;`) || strings.Contains(offsetOnly.SQL, " LIMIT ") {
+		t.Fatalf("offset-only grouped join = %#v", offsetOnly)
+	}
+	query.HasLimit, query.Limit = true, 0
+	query.HasOffset, query.Offset = false, 0
+	zeroLimit := compile()
+	if !strings.Contains(zeroLimit.SQL, `COUNT("t1"."id") DESC LIMIT 0;`) || strings.Contains(zeroLimit.SQL, " OFFSET ") {
+		t.Fatalf("zero-limit grouped join = %#v", zeroLimit)
+	}
+	query.HasLimit, query.Limit = false, 0
+	query.HasOffset, query.Offset = false, 0
 	query.Projection[2] = declaration.Projection{Aggregate: declaration.AggregateCount, Alias: "total"}
 	query.Having = declaration.Predicate{}
 	query.Ordering = nil

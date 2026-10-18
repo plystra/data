@@ -580,7 +580,8 @@ func TestEmitIncludesJoinedSelect(t *testing.T) {
 		Projection: []declaration.Projection{{Table: teams, Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Table: teams, Column: "id", Alias: "total"}},
 		Having:     declaration.Predicate{Kind: declaration.PredicateIsNotNull, Left: declaration.ColumnRef{Column: "zone"}},
 		Ordering:   []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}},
-		Results:    []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+		HasLimit:   true, Limit: 2, HasOffset: true, Offset: 1,
+		Results: []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
 	}}
 	request.Analyze.Roots[0].Model = normalized(t, declaration.Member[struct{}]{Namespace: model.Namespace, Tables: model.Tables, Queries: model.Queries, Migrations: model.Migrations})
 	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
@@ -602,7 +603,7 @@ func TestEmitIncludesJoinedSelect(t *testing.T) {
 	if query == nil || !bytes.Contains(query.Bytes, []byte(`INNER JOIN "accounts"."teams" AS "t1" ON "t0"."team-id" = "t1"."id"`)) || query.Query.ID != "list-accounts" || len(query.Query.Results) != 1 {
 		t.Fatalf("joined query artifact = %#v", query)
 	}
-	if grouped == nil || !bytes.Contains(grouped.Bytes, []byte(`GROUP BY "t1"."region" HAVING "t1"."region" IS NOT NULL ORDER BY "t1"."region" ASC;`)) ||
+	if grouped == nil || !bytes.Contains(grouped.Bytes, []byte(`GROUP BY "t1"."region" HAVING "t1"."region" IS NOT NULL ORDER BY "t1"."region" ASC LIMIT 2 OFFSET 1;`)) ||
 		!reflect.DeepEqual(grouped.Query.GroupBy, []declaration.ColumnRef{{Table: teams, Column: "region"}}) || grouped.Query.Having == nil ||
 		!reflect.DeepEqual(grouped.Query.Results, []declaration.ResultField{{ID: "zone", Source: "zone", Type: declaration.TypeString, Nullable: true}, {ID: "total", Source: "total", Type: declaration.TypeInt64}}) {
 		t.Fatalf("grouped joined query artifact = %#v", grouped)

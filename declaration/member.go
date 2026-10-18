@@ -632,6 +632,10 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 	if !validSymbol(query.ID) || !validOperation(query.Operation) || query.Table.Symbol == "" {
 		return fmt.Errorf("%w: query %q", ErrInvalidSchema, query.ID)
 	}
+	const maxQueryBound uint64 = 1<<63 - 1
+	if (!query.HasLimit && query.Limit != 0) || (!query.HasOffset && query.Offset != 0) || query.Limit > maxQueryBound || query.Offset > maxQueryBound {
+		return fmt.Errorf("%w: query limit or offset", ErrInvalidSchema)
+	}
 	if err := validateRef(query.Table, imports); err != nil {
 		return err
 	}
@@ -811,7 +815,7 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			}
 		}
 	}
-	if aggregateOutputs != 0 && ((len(query.GroupBy) == 0 && len(query.Ordering) != 0) || query.HasLimit || query.HasOffset) {
+	if aggregateOutputs != 0 && len(query.GroupBy) == 0 && (len(query.Ordering) != 0 || query.HasLimit || query.HasOffset) {
 		return fmt.Errorf("%w: aggregate query modifiers", ErrUnsupported)
 	}
 	for _, projection := range outputs {
@@ -949,6 +953,30 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			}
 			if _, exists := introduced[refKey(ordering.Table)]; !exists {
 				return fmt.Errorf("%w: query ordering table %q", ErrReference, ordering.Table.Symbol)
+			}
+		}
+	}
+	if len(query.GroupBy) != 0 && (query.HasLimit || query.HasOffset) {
+		for _, group := range query.GroupBy {
+			output := ""
+			for _, projection := range query.Projection {
+				if projection.Aggregate == "" && sameColumnRef(ColumnRef{Table: projection.Table, Column: projection.Column}, group, query.Table) {
+					output = projection.Column
+					if projection.Alias != "" {
+						output = projection.Alias
+					}
+					break
+				}
+			}
+			ordered := false
+			for _, ordering := range query.Ordering {
+				if ordering.Column == output {
+					ordered = true
+					break
+				}
+			}
+			if !ordered {
+				return fmt.Errorf("%w: paged grouped query must order by every grouping output", ErrUnsupported)
 			}
 		}
 	}
