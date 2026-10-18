@@ -243,9 +243,17 @@ Text and `plystra.data-source-inventory/v1` JSON output contain module version,
 replacement and checksum provenance, selected paths, sizes, digests, and Go
 build context, never source bytes. `--offline` requires the relevant module
 sources to be cached. The scan also rejects authored packages that import
-`dataaccess/` even when they contain no Data directive. Discovery does not yet assemble the
-type-only support closure, validate authored access Resource contracts, invoke
-the selected compiler, or install Data output.
+`dataaccess/` even when they contain no Data directive. Default inspection
+reports declaration packages only; it does not validate authored access
+Resource contracts, invoke the selected compiler, or install Data output.
+
+`inspect sources --closure` additionally follows the Go-selected imports of
+each Data root package and reports non-standard dependencies as `support`
+packages. Those packages cannot contribute Data roots; selected source bytes
+and versioned module identities are checked under the combined source-snapshot
+bounds. The output is a read-only source inventory, not yet a compiler-ready
+analyze request: selected-toolchain standard-library type data, cgo input, and
+compiler invocation are not supplied by this command.
 
 ## Module
 

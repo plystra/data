@@ -165,24 +165,8 @@ func DiscoverDataRoots(ctx context.Context, projectRoot string, options SourceOp
 		}
 	}
 	sort.Slice(result.Packages, func(i, j int) bool { return result.Packages[i].ImportPath < result.Packages[j].ImportPath })
-	packages := make([]analyzer.Package, len(result.Packages))
-	count, total := 0, 0
-	for i := range result.Packages {
-		packages[i] = result.Packages[i].Package
-		for _, file := range packages[i].Files {
-			count++
-			total += len(file.Content)
-			if count > protocol.MaxSnapshotFiles || total > protocol.MaxSnapshotBytes || len(file.Path) > protocol.MaxSourcePathBytes {
-				return SourceInventory{}, ErrSourceInventory
-			}
-			current, err := readSourceFile(filepath.Join(roots[packages[i].ImportPath], filepath.FromSlash(file.Path)), protocol.MaxSourceFileBytes)
-			if err != nil || !bytes.Equal(current, file.Content) {
-				return SourceInventory{}, ErrSourceInventory
-			}
-		}
-	}
-	if _, err := analyzer.SnapshotDigest(analyzer.Snapshot{Packages: packages}); err != nil {
-		return SourceInventory{}, fmt.Errorf("%w: invalid selected package inventory", ErrSourceInventory)
+	if err := validateSourcePackages(result.Packages, roots); err != nil {
+		return SourceInventory{}, err
 	}
 	for _, source := range verified {
 		if err := verifyModuleSource(source.root, source.modulePath, source.version, source.checksum); err != nil {
@@ -195,6 +179,29 @@ func DiscoverDataRoots(ctx context.Context, projectRoot string, options SourceOp
 		return SourceInventory{}, ErrSourceInventory
 	}
 	return result, nil
+}
+
+func validateSourcePackages(selected []SourcePackage, roots map[string]string) error {
+	packages := make([]analyzer.Package, len(selected))
+	count, total := 0, 0
+	for i := range selected {
+		packages[i] = selected[i].Package
+		for _, file := range packages[i].Files {
+			count++
+			total += len(file.Content)
+			if count > protocol.MaxSnapshotFiles || total > protocol.MaxSnapshotBytes || len(file.Path) > protocol.MaxSourcePathBytes {
+				return ErrSourceInventory
+			}
+			current, err := readSourceFile(filepath.Join(roots[packages[i].ImportPath], filepath.FromSlash(file.Path)), protocol.MaxSourceFileBytes)
+			if err != nil || !bytes.Equal(current, file.Content) {
+				return ErrSourceInventory
+			}
+		}
+	}
+	if _, err := analyzer.SnapshotDigest(analyzer.Snapshot{Packages: packages}); err != nil {
+		return fmt.Errorf("%w: invalid selected package inventory", ErrSourceInventory)
+	}
+	return nil
 }
 
 func readOptionalInput(name string) ([]byte, error) {
@@ -518,7 +525,7 @@ func loadCandidate(ctx context.Context, projectRoot string, candidate packageCan
 		}
 	}
 	if !selectedDirective {
-		return analyzer.Package{}, false, nil
+		return pkg, false, nil
 	}
 	return pkg, true, nil
 }

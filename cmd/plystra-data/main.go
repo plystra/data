@@ -40,11 +40,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	format := flags.String("format", "text", "text or json")
 	var offline *bool
 	var tags *string
+	var closure *bool
 	if kind == "compiler" || kind == "sources" {
 		offline = flags.Bool("offline", false, "use only verified cached modules")
 	}
 	if kind == "sources" {
 		tags = flags.String("tags", "", "comma-separated Go build tags")
+		closure = flags.Bool("closure", false, "include type-only support packages")
 	}
 	if err := flags.Parse(args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -77,7 +79,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if *tags != "" {
 			selectedTags = strings.Split(*tags, ",")
 		}
-		return inspectSources(root, *format, *offline, selectedTags, stdout, stderr)
+		return inspectSources(root, *format, *offline, selectedTags, *closure, stdout, stderr)
 	}
 	return inspectAssignments(root, *format, stdout, stderr)
 }
@@ -183,8 +185,15 @@ func inspectCompiler(root, format string, offline bool, stdout, stderr io.Writer
 	return 0
 }
 
-func inspectSources(root, format string, offline bool, tags []string, stdout, stderr io.Writer) int {
-	inventory, err := project.DiscoverDataRoots(context.Background(), root, project.SourceOptions{Offline: offline, BuildTags: tags})
+func inspectSources(root, format string, offline bool, tags []string, closure bool, stdout, stderr io.Writer) int {
+	options := project.SourceOptions{Offline: offline, BuildTags: tags}
+	var inventory project.SourceInventory
+	var err error
+	if closure {
+		inventory, err = project.DiscoverSourceClosure(context.Background(), root, options)
+	} else {
+		inventory, err = project.DiscoverDataRoots(context.Background(), root, options)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, "plystra-data: cannot discover Data source packages in the selected Project module graph")
 		return 2
@@ -195,13 +204,14 @@ func inspectSources(root, format string, offline bool, tags []string, stdout, st
 		Bytes  int    `json:"bytes"`
 	}
 	type sourcePackage struct {
-		ImportPath string               `json:"import_path"`
-		Module     project.ModuleSource `json:"module"`
-		Files      []sourceFile         `json:"files"`
+		ImportPath  string               `json:"import_path"`
+		Eligibility string               `json:"root_eligibility"`
+		Module      project.ModuleSource `json:"module"`
+		Files       []sourceFile         `json:"files"`
 	}
 	packages := make([]sourcePackage, 0, len(inventory.Packages))
 	for _, pkg := range inventory.Packages {
-		entry := sourcePackage{ImportPath: pkg.ImportPath, Module: pkg.Module, Files: make([]sourceFile, 0, len(pkg.Files))}
+		entry := sourcePackage{ImportPath: pkg.ImportPath, Eligibility: string(pkg.RootEligibility), Module: pkg.Module, Files: make([]sourceFile, 0, len(pkg.Files))}
 		for _, file := range pkg.Files {
 			sum := sha256.Sum256(file.Content)
 			entry.Files = append(entry.Files, sourceFile{Path: file.Path, Digest: "sha256:" + hex.EncodeToString(sum[:]), Bytes: len(file.Content)})
@@ -231,7 +241,7 @@ func inspectSources(root, format string, offline bool, tags []string, stdout, st
 		if pkg.Module.Version != "" {
 			identity += "@" + pkg.Module.Version
 		}
-		if _, err := fmt.Fprintf(stdout, "%s (%s, %s)\n", pkg.ImportPath, identity, pkg.Module.Origin); err != nil {
+		if _, err := fmt.Fprintf(stdout, "%s (%s, %s, %s)\n", pkg.ImportPath, identity, pkg.Module.Origin, pkg.Eligibility); err != nil {
 			fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
 			return 1
 		}
@@ -248,5 +258,5 @@ func inspectSources(root, format string, offline bool, tags []string, stdout, st
 func usage(output io.Writer) {
 	fmt.Fprintln(output, "usage: plystra-data inspect assignments [--project DIR] [--format text|json]")
 	fmt.Fprintln(output, "       plystra-data inspect compiler [--project DIR] [--format text|json] [--offline]")
-	fmt.Fprintln(output, "       plystra-data inspect sources [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline]")
+	fmt.Fprintln(output, "       plystra-data inspect sources [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline] [--closure]")
 }

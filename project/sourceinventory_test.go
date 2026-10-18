@@ -166,6 +166,83 @@ func TestDiscoverDataRootsVerifiesVersionedReplacement(t *testing.T) {
 	}
 }
 
+func TestDiscoverSourceClosureMarksSelectedImportsAsSupport(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "go.mod", "module example.com/app\ngo 1.26\nrequire example.com/reuse v0.1.0\nreplace example.com/reuse => ./reuse\n")
+	writeProjectFile(t, root, "plystra.yaml", "project: app\n")
+	writeProjectFile(t, root, "model/member.go", "package model\nimport (\"example.com/app/helper\"; \"example.com/reuse/support\")\n//plystra:data example.member/v1\nvar Member = helper.Value() + support.Value\n")
+	writeProjectFile(t, root, "helper/helper.go", "package helper\nimport \"example.com/app/shared\"\nfunc Value() int { return shared.Value }\n")
+	writeProjectFile(t, root, "shared/shared.go", "package shared\nimport \"fmt\"\nvar Value = len(fmt.Sprint(1))\n")
+	writeProjectFile(t, root, "reuse/go.mod", "module example.com/reuse\ngo 1.26\n")
+	writeProjectFile(t, root, "reuse/support/support.go", "package support\n//plystra:data not.a.root/v1\nconst Value = 2\n")
+	result, err := project.DiscoverSourceClosure(context.Background(), root, project.SourceOptions{Offline: true})
+	if err != nil || len(result.Packages) != 4 {
+		t.Fatalf("support closure = %#v, %v", result, err)
+	}
+	want := map[string]string{
+		"example.com/app/helper":    "support",
+		"example.com/app/model":     "eligible",
+		"example.com/app/shared":    "support",
+		"example.com/reuse/support": "support",
+	}
+	for _, pkg := range result.Packages {
+		if string(pkg.RootEligibility) != want[pkg.ImportPath] || len(pkg.Files) != 1 {
+			t.Fatalf("package = %#v", pkg)
+		}
+		delete(want, pkg.ImportPath)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing packages = %v", want)
+	}
+}
+
+func TestDiscoverSourceClosureVerifiesOrdinaryModule(t *testing.T) {
+	root := t.TempDir()
+	proxy := filepath.Join(root, "proxy")
+	app := filepath.Join(root, "app")
+	writeProjectFile(t, app, "go.mod", "module example.com/app\ngo 1.26\nrequire example.com/support v0.1.0\n")
+	writeProjectFile(t, app, "plystra.yaml", "project: app\n")
+	writeProjectFile(t, app, "model/member.go", "package model\nimport \"example.com/support\"\n//plystra:data example.member/v1\nvar Member = support.Value\n")
+	writeProxyProject(t, proxy, "example.com/support", "v0.1.0", map[string]string{
+		"go.mod":     "module example.com/support\ngo 1.26\n",
+		"support.go": "package support\nconst Value = 1\n",
+	})
+	t.Setenv("GOPROXY", (&url.URL{Scheme: "file", Path: "/" + filepath.ToSlash(proxy)}).String())
+	t.Setenv("GOSUMDB", "off")
+	t.Setenv("GOMODCACHE", filepath.Join(root, "cache"))
+	t.Setenv("GOWORK", "off")
+	command := exec.Command("go", "mod", "download", "example.com/support@v0.1.0")
+	command.Dir = app
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("download support: %v: %s", err, output)
+	}
+	result, err := project.DiscoverSourceClosure(context.Background(), app, project.SourceOptions{Offline: true})
+	if err != nil || len(result.Packages) != 2 || result.Packages[1].ImportPath != "example.com/support" ||
+		result.Packages[1].Module.Origin != "module" || !strings.HasPrefix(result.Packages[1].Module.Checksum, "h1:") {
+		t.Fatalf("ordinary support = %#v, %v", result, err)
+	}
+	cachedFile := filepath.Join(root, "cache", "example.com", "support@v0.1.0", "support.go")
+	if err := os.Chmod(cachedFile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cachedFile, []byte("package support\nconst Value = 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := project.DiscoverSourceClosure(context.Background(), app, project.SourceOptions{Offline: true}); !errors.Is(err, project.ErrSourceInventory) {
+		t.Fatalf("tampered support error = %v", err)
+	}
+}
+
+func TestDiscoverSourceClosureRejectsUnresolvedImport(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "go.mod", "module example.com/app\ngo 1.26\n")
+	writeProjectFile(t, root, "plystra.yaml", "project: app\n")
+	writeProjectFile(t, root, "model/member.go", "package model\nimport _ \"example.com/missing\"\n//plystra:data example.member/v1\nvar Member = 1\n")
+	if _, err := project.DiscoverSourceClosure(context.Background(), root, project.SourceOptions{Offline: true}); !errors.Is(err, project.ErrSourceInventory) {
+		t.Fatalf("missing support error = %v", err)
+	}
+}
+
 func writeProxyProject(t *testing.T, proxy, modulePath, version string, files map[string]string) {
 	t.Helper()
 	root := filepath.Join(proxy, filepath.FromSlash(modulePath), "@v")
