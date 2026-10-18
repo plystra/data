@@ -196,6 +196,18 @@ install staged files in an application. Data-specific activation, generated
 access, transactional installation, and drift checks belong outside the
 generic Core CLI and remain separate unfinished integration work.
 
+The Data-owned `project.ParseAssignments` parser accepts the closed
+`plystra.data.yaml` `data.members` mapping with exact versioned member IDs,
+database Resource instance names, and optional access Resource instance names.
+`plystra-data inspect assignments --project DIR` reads that document without
+changing Project files and lists assignments in member-ID order. Use
+`--format json` for a `plystra.data-assignments/v1` result. Duplicate keys,
+unknown fields, invalid names, duplicate access names, and access names that
+collide with an assigned database Resource are rejected. This inspection does
+not analyze declarations, select a compiler, activate members, generate
+providers, or install artifacts; those Data-owned Project workflows remain
+incomplete.
+
 ## Module
 
 The module path is `github.com/plystra/data`.
