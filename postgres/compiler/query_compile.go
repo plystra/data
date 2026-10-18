@@ -352,6 +352,15 @@ func compileUpdate(owner, tableMember SchemaMember, table declaration.Table, que
 	}
 	values := make([]string, len(query.Assignments))
 	for index, assignment := range query.Assignments {
+		if assignment.Increment {
+			column, exists := columnByID(table, assignment.Column)
+			if !exists || column.Type != declaration.TypeInt64 || column.Nullable {
+				return "", fmt.Errorf("increment assignment %s requires a non-null int64 column", assignment.Column)
+			}
+			name := quoteIdentifier(assignment.Column)
+			values[index] = name + " = " + name + " + 1"
+			continue
+		}
 		value, err := queryValueSQL(table, assignment.Column, assignment.Value, parameters)
 		if err != nil {
 			return "", err

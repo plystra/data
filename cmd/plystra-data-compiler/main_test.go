@@ -25,7 +25,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	model, err := (declaration.Member[struct{}]{
 		Namespace: "accounts",
 		Tables: []declaration.Table{
-			{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}, {ID: "region", Type: declaration.TypeString}, {ID: "team-id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}},
+			{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "email", Type: declaration.TypeString}, {ID: "region", Type: declaration.TypeString}, {ID: "team-id", Type: declaration.TypeInt64}, {ID: "revision", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "accounts-pk", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}},
 			{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "region", Type: declaration.TypeString}}},
 		},
 		Queries: []declaration.Query{{
@@ -40,6 +40,11 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 			Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}}, {Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "email"}}},
 			Conflict:    declaration.Conflict{Constraint: "accounts-pk", Action: declaration.ConflictDoUpdate, UpdateColumns: []string{"email"}},
 			Returning:   []declaration.Projection{{Column: "id"}}, Results: []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+		}, {
+			ID: "revise-account", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"},
+			Parameters:  []declaration.Parameter{{ID: "expected", Type: declaration.TypeInt64}},
+			Assignments: []declaration.Assignment{{Column: "revision", Increment: true}},
+			Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "revision"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "expected"}},
 		}, {
 			ID: "count-by-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
 			GroupBy:    []declaration.ColumnRef{{Column: "region"}},
@@ -103,12 +108,13 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	if err := protocol.ReadFrame(&stdout, &response); err != nil {
 		t.Fatal(err)
 	}
-	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 6 {
+	if err := protocol.ValidateEmitResponse(request, response); err != nil || stdout.Len() != 0 || len(response.Output.Artifacts) != 7 {
 		t.Fatalf("invalid command response: %v, bytes=%d, artifacts=%d", err, stdout.Len(), len(response.Output.Artifacts))
 	}
 	foundUpsert := false
 	foundHaving := false
 	foundGroupedJoin := false
+	foundIncrement := false
 	for _, artifact := range response.Output.Artifacts {
 		if strings.HasSuffix(artifact.Path, "/delete-account.sql") && !bytes.Contains(artifact.Bytes, []byte(`RETURNING "id" AS "account-id";`)) {
 			t.Fatalf("query artifact does not contain typed RETURNING: %q", artifact.Bytes)
@@ -117,6 +123,12 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 			foundUpsert = true
 			if artifact.Query == nil || artifact.Query.Conflict == nil || len(artifact.Query.Conflict.UpdateColumns) != 1 || artifact.Query.Conflict.UpdateColumns[0] != "email" || !bytes.Contains(artifact.Bytes, []byte(`DO UPDATE SET "email" = EXCLUDED."email" RETURNING "id";`)) {
 				t.Fatalf("query artifact does not contain conflict update: %#v", artifact)
+			}
+		}
+		if strings.HasSuffix(artifact.Path, "/revise-account.sql") {
+			foundIncrement = true
+			if artifact.Query == nil || !bytes.Contains(artifact.Bytes, []byte(`SET "revision" = "revision" + 1 WHERE "revision" = $1;`)) {
+				t.Fatalf("query artifact does not contain revision increment: %#v", artifact)
 			}
 		}
 		if strings.HasSuffix(artifact.Path, "/count-by-region.sql") {
@@ -132,8 +144,8 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 			}
 		}
 	}
-	if !foundUpsert || !foundHaving || !foundGroupedJoin {
-		t.Fatal("compiler did not stage the conflict update and grouped queries")
+	if !foundUpsert || !foundIncrement || !foundHaving || !foundGroupedJoin {
+		t.Fatal("compiler did not stage the expected mutation and grouped queries")
 	}
 	after, err := os.ReadDir(".")
 	if err != nil {
@@ -572,7 +584,7 @@ type Table struct { ID string; Columns []Column }
 type Column struct { ID string; Type ScalarType; Nullable bool }
 type OperationKind string
 type Value struct { Kind ScalarType; Set bool; String string; Int64 int64 }
-type Assignment struct { Column string; Value Value }
+type Assignment struct { Column string; Value Value; Increment bool }
 type ColumnRef struct { Table Ref; Column string }
 type PredicateKind string
 type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }
@@ -586,14 +598,14 @@ import "github.com/plystra/data/declaration"
 var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts", Imports: []string{"audit.event/v1"},
 	Queries: []declaration.Query{{ID: "update-event", Operation: "update", Table: declaration.Ref{Member: "audit.event/v1", Symbol: "events"},
-		Assignments: []declaration.Assignment{{Column: "label", Value: declaration.Value{Kind: "string", Set: true, String: "updated"}}},
+		Assignments: []declaration.Assignment{{Column: "label", Value: declaration.Value{Kind: "string", Set: true, String: "updated"}}, {Column: "revision", Increment: true}},
 		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
 		Returning: []declaration.Projection{{Column: "id"}, {Column: "label", Alias: "event-label"}},
 		Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "label", Source: "event-label", Type: "string", Nullable: true}},
 	}},
 }
 //plystra:data audit.event/v1
-var Events = declaration.Member[declaration.NoAccess]{Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "label", Type: "string", Nullable: true}}}}}
+var Events = declaration.Member[declaration.NoAccess]{Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "label", Type: "string", Nullable: true}, {ID: "revision", Type: "int64"}}}}}
 `
 	run := func(t *testing.T, source string) protocol.AnalyzeResponse {
 		t.Helper()
@@ -613,6 +625,8 @@ var Events = declaration.Member[declaration.NoAccess]{Namespace: "audit", Tables
 		{"wrong result type", strings.Replace(modelSource, `Source: "id", Type: "int64"`, `Source: "id", Type: "string"`, 1), analyzer.CodeTypeCheck},
 		{"wrong result nullability", strings.Replace(modelSource, `Source: "event-label", Type: "string", Nullable: true`, `Source: "event-label", Type: "string"`, 1), analyzer.CodeTypeCheck},
 		{"wrong assignment type", strings.Replace(modelSource, `Value{Kind: "string", Set: true, String: "updated"}`, `Value{Kind: "int64", Set: true, Int64: 1}`, 1), analyzer.CodeTypeCheck},
+		{"wrong increment type", strings.Replace(modelSource, `{ID: "revision", Type: "int64"}`, `{ID: "revision", Type: "string"}`, 1), analyzer.CodeTypeCheck},
+		{"nullable increment", strings.Replace(modelSource, `{ID: "revision", Type: "int64"}`, `{ID: "revision", Type: "int64", Nullable: true}`, 1), analyzer.CodeTypeCheck},
 		{"missing assignment column", strings.Replace(modelSource, `Assignment{{Column: "label"`, `Assignment{{Column: "missing"`, 1), analyzer.CodeUnresolvedReference},
 		{"wrong predicate value type", strings.Replace(modelSource, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "string", Set: true, String: "1"}}`, 1), analyzer.CodeTypeCheck},
 		{"wrong predicate column type", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Right: declaration.ColumnRef{Column: "label"}}`, 1), analyzer.CodeTypeCheck},

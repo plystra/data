@@ -194,6 +194,42 @@ func TestNormalizeQueryParametersAndAssignments(t *testing.T) {
 	}
 }
 
+func TestNormalizeExpectedRevisionIncrement(t *testing.T) {
+	member := declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "revision", Type: declaration.TypeInt64}, {ID: "name", Type: declaration.TypeString}}}}, Queries: []declaration.Query{{
+		ID: "revise", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "accounts"},
+		Assignments: []declaration.Assignment{{Column: "revision", Increment: true}},
+		Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "revision"}, Value: declaration.Int64(4)},
+	}}}
+	model, err := member.Normalize()
+	if err != nil || !model.Queries[0].Assignments[0].Increment {
+		t.Fatalf("normalized revision update = %#v, %v", model, err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Member[access])
+	}{
+		{"insert", func(m *declaration.Member[access]) {
+			m.Queries[0].Operation = declaration.OperationInsert
+			m.Queries[0].Predicate = declaration.Predicate{}
+		}},
+		{"mixed value", func(m *declaration.Member[access]) { m.Queries[0].Assignments[0].Value = declaration.Int64(1) }},
+		{"wrong type", func(m *declaration.Member[access]) { m.Tables[0].Columns[1].Type = declaration.TypeString }},
+		{"nullable", func(m *declaration.Member[access]) { m.Tables[0].Columns[1].Nullable = true }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := member
+			changed.Tables = append([]declaration.Table(nil), member.Tables...)
+			changed.Tables[0].Columns = append([]declaration.Column(nil), member.Tables[0].Columns...)
+			changed.Queries = append([]declaration.Query(nil), member.Queries...)
+			changed.Queries[0].Assignments = append([]declaration.Assignment(nil), member.Queries[0].Assignments...)
+			test.edit(&changed)
+			if _, err := changed.Normalize(); !errors.Is(err, declaration.ErrInvalidSchema) {
+				t.Fatalf("increment validation = %v", err)
+			}
+		})
+	}
+}
+
 func TestNormalizeInsertConflictByNamedConstraint(t *testing.T) {
 	member := declaration.Member[access]{
 		Namespace: "authn",

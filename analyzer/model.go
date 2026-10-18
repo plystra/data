@@ -311,6 +311,12 @@ func (d modelDecoder) assignments(value ast.Expr) ([]declaration.Assignment, err
 				return nil, err
 			}
 		}
+		if field, ok := fields["Increment"]; ok {
+			assignment.Increment, err = d.bool(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		result[index] = assignment
 	}
 	return result, nil

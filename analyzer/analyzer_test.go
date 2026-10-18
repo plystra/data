@@ -177,7 +177,7 @@ import "github.com/plystra/data/declaration"
 var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts", Imports: []string{"audit.event/v1"},
 	Queries: []declaration.Query{{ID: "update-event", Operation: "update", Table: declaration.Ref{Member: "audit.event/v1", Symbol: "events"},
-		Assignments: []declaration.Assignment{{Column: "label", Value: declaration.Value{Kind: "string", Set: true, String: "updated"}}},
+		Assignments: []declaration.Assignment{{Column: "label", Value: declaration.Value{Kind: "string", Set: true, String: "updated"}}, {Column: "revision", Increment: true}},
 		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
 		Returning: []declaration.Projection{{Column: "id"}, {Column: "label", Alias: "event-label"}},
 		Results: []declaration.ResultField{{ID: "id", Source: "id", Type: "int64"}, {ID: "label", Source: "event-label", Type: "string", Nullable: true}},
@@ -186,7 +186,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 
 //plystra:data audit.event/v1
 var Events = declaration.Member[declaration.NoAccess]{
-	Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "label", Type: "string", Nullable: true}}}},
+	Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: "int64"}, {ID: "label", Type: "string", Nullable: true}, {ID: "revision", Type: "int64"}}}},
 }`
 	valid, err := analyzer.Analyze(sourceSnapshot(source))
 	if err != nil || !valid.Valid {
@@ -200,6 +200,8 @@ var Events = declaration.Member[declaration.NoAccess]{
 		{"wrong nullability", strings.Replace(source, `Source: "event-label", Type: "string", Nullable: true`, `Source: "event-label", Type: "string"`, 1), analyzer.CodeTypeCheck},
 		{"missing returning column", strings.Replace(source, `Column: "label", Alias: "event-label"`, `Column: "missing", Alias: "event-label"`, 1), analyzer.CodeUnresolvedReference},
 		{"wrong assignment type", strings.Replace(source, `Value{Kind: "string", Set: true, String: "updated"}`, `Value{Kind: "int64", Set: true, Int64: 1}`, 1), analyzer.CodeTypeCheck},
+		{"wrong increment type", strings.Replace(source, `Column{{ID: "id", Type: "int64"}, {ID: "label", Type: "string", Nullable: true}, {ID: "revision", Type: "int64"}`, `Column{{ID: "id", Type: "int64"}, {ID: "label", Type: "string", Nullable: true}, {ID: "revision", Type: "string"}`, 1), analyzer.CodeTypeCheck},
+		{"nullable increment", strings.Replace(source, `{ID: "revision", Type: "int64"}`, `{ID: "revision", Type: "int64", Nullable: true}`, 1), analyzer.CodeTypeCheck},
 		{"missing assignment column", strings.Replace(source, `Assignment{{Column: "label"`, `Assignment{{Column: "missing"`, 1), analyzer.CodeUnresolvedReference},
 		{"wrong predicate value type", strings.Replace(source, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "string", Set: true, String: "1"}}`, 1), analyzer.CodeTypeCheck},
 		{"wrong predicate column type", strings.Replace(source, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Right: declaration.ColumnRef{Column: "label"}}`, 1), analyzer.CodeTypeCheck},
@@ -1041,7 +1043,7 @@ type Constraint struct { ID string; Kind ConstraintKind; Columns []string; Refer
 type Index struct { ID string; Columns []string; Unique bool }
 type OperationKind string
 type Parameter struct { ID string; Type ScalarType }
-type Assignment struct { Column string; Value Value }
+type Assignment struct { Column string; Value Value; Increment bool }
 type ColumnRef struct { Table Ref; Column string }
 type JoinKind string
 const JoinLeft JoinKind = "left"

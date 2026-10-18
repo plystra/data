@@ -97,6 +97,12 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 				a.validateColumn(root, target, assignment.Column)
 				continue
 			}
+			if assignment.Increment {
+				if column.Type != declaration.TypeInt64 || column.Nullable {
+					a.referenceDiagnostic(root, CodeTypeCheck, "Data increment assignment requires a non-null int64 column", "Choose a non-null int64 column for an UPDATE increment.", assignment.Column)
+				}
+				continue
+			}
 			if column.Type != assignment.Value.Kind {
 				a.referenceDiagnostic(root, CodeTypeCheck, "Data assignment value does not match its target column", "Match the assignment value type to the selected table column.", assignment.Column)
 			}

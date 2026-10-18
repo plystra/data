@@ -448,6 +448,64 @@ func TestCompileQueriesSupportsTypedMutationIntent(t *testing.T) {
 	}
 }
 
+func TestCompileQueriesLowersExpectedRevisionIncrement(t *testing.T) {
+	member := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts", Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}, {ID: "revision", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{
+			ID: "revise", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "users"},
+			Parameters:  []declaration.Parameter{{ID: "expected", Type: declaration.TypeInt64}},
+			Assignments: []declaration.Assignment{{Column: "revision", Increment: true}},
+			Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "revision"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "expected"}},
+		}},
+	}}
+	first, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("revision SQL = %#v, %v", first, err)
+	}
+	want := `UPDATE "accounts"."users" SET "revision" = "revision" + 1 WHERE "revision" = $1;`
+	if !strings.Contains(first[0].SQL, want) {
+		t.Fatalf("revision SQL = %q, want %q", first[0].SQL, want)
+	}
+	second, err := postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(second) != 1 || second[0].SQL != first[0].SQL || second[0].Digest != first[0].Digest {
+		t.Fatalf("unstable revision SQL = %#v, %#v, %v", first, second, err)
+	}
+}
+
+func TestCompileQueriesChecksImportedRevisionIncrement(t *testing.T) {
+	owner := postgres.SchemaMember{MemberID: "accounts.user/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts", Imports: []string{"audit.event/v1"},
+		Queries: []declaration.Query{{
+			ID: "revise-event", Operation: declaration.OperationUpdate, Table: declaration.Ref{Member: "audit.event/v1", Symbol: "events"},
+			Assignments: []declaration.Assignment{{Column: "revision", Increment: true}},
+			Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "revision"}, Value: declaration.Int64(4)},
+		}},
+	}}
+	target := postgres.SchemaMember{MemberID: "audit.event/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "revision", Type: declaration.TypeInt64}}}},
+	}}
+	valid, err := postgres.CompileQueries([]postgres.SchemaMember{owner, target})
+	if err != nil || len(valid) != 1 || !strings.Contains(valid[0].SQL, `UPDATE "audit"."events" SET "revision" = "revision" + 1 WHERE "revision" = 4;`) {
+		t.Fatalf("imported revision SQL = %#v, %v", valid, err)
+	}
+	for _, test := range []struct {
+		name   string
+		column declaration.Column
+	}{
+		{"wrong type", declaration.Column{ID: "revision", Type: declaration.TypeString}},
+		{"nullable", declaration.Column{ID: "revision", Type: declaration.TypeInt64, Nullable: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := target
+			changed.Model.Tables = append([]declaration.Table(nil), target.Model.Tables...)
+			changed.Model.Tables[0].Columns = []declaration.Column{test.column}
+			if artifacts, err := postgres.CompileQueries([]postgres.SchemaMember{owner, changed}); err == nil || len(artifacts) != 0 {
+				t.Fatalf("invalid imported revision SQL = %#v, %v", artifacts, err)
+			}
+		})
+	}
+}
+
 func TestCompileQueriesLowersTypedReturningAndResultMapping(t *testing.T) {
 	member := postgres.SchemaMember{
 		MemberID: "accounts.user/v1", Resource: "database.primary",

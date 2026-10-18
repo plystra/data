@@ -107,10 +107,11 @@ type Parameter struct {
 	Type ScalarType `json:"type"`
 }
 
-// Assignment binds one table column to a literal or typed query parameter.
+// Assignment binds one table column to a value or increments it in an UPDATE.
 type Assignment struct {
-	Column string `json:"column"`
-	Value  Value  `json:"value"`
+	Column    string `json:"column"`
+	Value     Value  `json:"value"`
+	Increment bool   `json:"increment,omitempty"`
 }
 
 type ConflictAction string
@@ -732,6 +733,19 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			return fmt.Errorf("%w: query assignment %q", ErrDuplicate, assignment.Column)
 		}
 		seenAssignments[assignment.Column] = struct{}{}
+		if assignment.Increment {
+			if query.Operation != OperationUpdate || assignment.Value != (Value{}) {
+				return fmt.Errorf("%w: increment assignment %s", ErrInvalidSchema, assignment.Column)
+			}
+			if query.Table.Member == "" {
+				for _, column := range tables[query.Table.Symbol].Columns {
+					if column.ID == assignment.Column && (column.Type != TypeInt64 || column.Nullable) {
+						return fmt.Errorf("%w: increment assignment %s requires non-null int64", ErrInvalidSchema, assignment.Column)
+					}
+				}
+			}
+			continue
+		}
 		if err := validateQueryValue(assignment.Value, parameters); err != nil {
 			return fmt.Errorf("%w: assignment %s: %v", ErrInvalidSchema, assignment.Column, err)
 		}
