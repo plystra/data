@@ -48,7 +48,9 @@ introduced column or a declared typed parameter/literal. Assignments accept
 only declared typed parameters or closed literal values; analysis checks their
 columns and value types against local or imported target tables. Projections,
 ordering, limit, offset, and cross-Resource references are validated before
-lowering.
+lowering. Analysis checks scalar types across local and imported predicate
+columns, literals, and named parameters before backend selection; PostgreSQL
+lowering repeats the check before emitting SQL.
 `SELECT` queries can declare ordered `INNER` and `LEFT` equality joins through
 `Query.Joins`. Each join names one table and compares a column on an already
 introduced table with a column on the new table using explicit `ColumnRef`

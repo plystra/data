@@ -322,9 +322,9 @@ func (a *analysis) validatePredicate(root Root, base declaration.Ref, predicate 
 	if predicate.Kind == "" {
 		return
 	}
-	validate := func(ref declaration.ColumnRef) {
+	validate := func(ref declaration.ColumnRef) (declaration.ScalarType, bool) {
 		if ref.Column == "" && ref.Table.Member == "" && ref.Table.Symbol == "" {
-			return
+			return "", false
 		}
 		if ref.Table.Member == "" && ref.Table.Symbol == "" {
 			ref.Table = base
@@ -332,12 +332,22 @@ func (a *analysis) validatePredicate(root Root, base declaration.Ref, predicate 
 		table, exists := introduced[ref.Table]
 		if !exists {
 			a.referenceDiagnostic(root, CodeUnresolvedReference, "Data predicate table is not introduced by the query", "Filter only columns from the base table or an earlier join.", ref.Table.Symbol)
-			return
+			return "", false
 		}
-		a.validateColumn(root, table, ref.Column)
+		column, exists := columnByID(table, ref.Column)
+		if !exists {
+			a.validateColumn(root, table, ref.Column)
+			return "", false
+		}
+		return column.Type, true
 	}
-	validate(predicate.Left)
-	validate(predicate.Right)
+	leftType, leftOK := validate(predicate.Left)
+	rightType, rightOK := validate(predicate.Right)
+	if leftOK {
+		if rightOK && leftType != rightType || predicate.Value.Set && leftType != predicate.Value.Kind {
+			a.referenceDiagnostic(root, CodeTypeCheck, "Data predicate operands have different scalar types", "Compare columns, literals, and parameters with the same scalar type.", predicate.Left.Column)
+		}
+	}
 	for _, item := range predicate.Items {
 		a.validatePredicate(root, base, item, introduced)
 	}

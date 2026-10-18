@@ -463,7 +463,7 @@ type Value struct { Kind ScalarType; Set bool; String string; Int64 int64 }
 type Assignment struct { Column string; Value Value }
 type ColumnRef struct { Table Ref; Column string }
 type PredicateKind string
-type Predicate struct { Kind PredicateKind; Left ColumnRef; Value Value }
+type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value }
 type Query struct { ID string; Operation OperationKind; Table Ref; Assignments []Assignment; Predicate Predicate; Returning []Projection; Results []ResultField }
 type Projection struct { Column string; Alias string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
@@ -502,6 +502,8 @@ var Events = declaration.Member[declaration.NoAccess]{Namespace: "audit", Tables
 		{"wrong result nullability", strings.Replace(modelSource, `Source: "event-label", Type: "string", Nullable: true`, `Source: "event-label", Type: "string"`, 1), analyzer.CodeTypeCheck},
 		{"wrong assignment type", strings.Replace(modelSource, `Value{Kind: "string", Set: true, String: "updated"}`, `Value{Kind: "int64", Set: true, Int64: 1}`, 1), analyzer.CodeTypeCheck},
 		{"missing assignment column", strings.Replace(modelSource, `Assignment{{Column: "label"`, `Assignment{{Column: "missing"`, 1), analyzer.CodeUnresolvedReference},
+		{"wrong predicate value type", strings.Replace(modelSource, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "string", Set: true, String: "1"}}`, 1), analyzer.CodeTypeCheck},
+		{"wrong predicate column type", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Right: declaration.ColumnRef{Column: "label"}}`, 1), analyzer.CodeTypeCheck},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			invalid := run(t, test.source)

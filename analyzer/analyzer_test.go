@@ -201,6 +201,8 @@ var Events = declaration.Member[declaration.NoAccess]{
 		{"missing returning column", strings.Replace(source, `Column: "label", Alias: "event-label"`, `Column: "missing", Alias: "event-label"`, 1), analyzer.CodeUnresolvedReference},
 		{"wrong assignment type", strings.Replace(source, `Value{Kind: "string", Set: true, String: "updated"}`, `Value{Kind: "int64", Set: true, Int64: 1}`, 1), analyzer.CodeTypeCheck},
 		{"missing assignment column", strings.Replace(source, `Assignment{{Column: "label"`, `Assignment{{Column: "missing"`, 1), analyzer.CodeUnresolvedReference},
+		{"wrong predicate value type", strings.Replace(source, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "string", Set: true, String: "1"}}`, 1), analyzer.CodeTypeCheck},
+		{"wrong predicate column type", strings.Replace(source, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}}`, `Right: declaration.ColumnRef{Column: "label"}}`, 1), analyzer.CodeTypeCheck},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			invalid, err := analyzer.Analyze(sourceSnapshot(test.source))
@@ -507,18 +509,29 @@ import "github.com/plystra/data/declaration"
 //plystra:data accounts.user/v1
 var Accounts = declaration.Member[declaration.NoAccess]{
 	Namespace: "accounts", Imports: []string{"teams.member/v1"},
-	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "team-id", Type: "int64"}}}},
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "team-id", Type: "int64"}, {ID: "code", Type: "string"}}}},
 	Queries: []declaration.Query{{ID: "read", Operation: "select", Table: declaration.Ref{Symbol: "users"},
 		Joins: []declaration.Join{{Kind: "inner", Table: declaration.Ref{Member: "teams.member/v1", Symbol: "teams"}, On: declaration.JoinCondition{
 			Left: declaration.ColumnRef{Table: declaration.Ref{Symbol: "users"}, Column: "team-id"},
 			Right: declaration.ColumnRef{Table: declaration.Ref{Member: "teams.member/v1", Symbol: "teams"}, Column: "id"},
 		}}},
+		Predicate: declaration.Predicate{Kind: "and", Items: []declaration.Predicate{
+			{Kind: "equal", Left: declaration.ColumnRef{Table: declaration.Ref{Member: "teams.member/v1", Symbol: "teams"}, Column: "id"}, Right: declaration.ColumnRef{Column: "team-id"}},
+			{Kind: "or", Items: []declaration.Predicate{
+				{Kind: "equal", Left: declaration.ColumnRef{Column: "team-id"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+				{Kind: "is-not-null", Left: declaration.ColumnRef{Column: "code"}},
+			}},
+		}},
 	}},
 }
 
 //plystra:data teams.member/v1
 var Teams = declaration.Member[declaration.NoAccess]{Namespace: "teams", Tables: []declaration.Table{{ID: "teams", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}}}
 `
+	valid, err := analyzer.Analyze(sourceSnapshot(source))
+	if err != nil || !valid.Valid {
+		t.Fatalf("valid joined predicate = %#v, %v", valid, err)
+	}
 	for _, test := range []struct {
 		name, source string
 		code         analyzer.DiagnosticCode
@@ -529,6 +542,8 @@ var Teams = declaration.Member[declaration.NoAccess]{Namespace: "teams", Tables:
 			`Tables: []declaration.Table{{ID: "other", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}}, Queries: []declaration.Query{{ID: "teams", Operation: "select", Table: declaration.Ref{Symbol: "other"}}}}`, 1), analyzer.CodeReferenceKindMismatch},
 		{"missing join column", strings.Replace(source, `Column: "id"`, `Column: "missing"`, 1), analyzer.CodeUnresolvedReference},
 		{"mismatched column type", strings.Replace(source, `ID: "id", Type: "int64"`, `ID: "id", Type: "string"`, 1), analyzer.CodeTypeCheck},
+		{"mismatched joined predicate columns", strings.Replace(source, `Right: declaration.ColumnRef{Column: "team-id"}`, `Right: declaration.ColumnRef{Column: "code"}`, 1), analyzer.CodeTypeCheck},
+		{"mismatched nested predicate value", strings.Replace(source, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Value: declaration.Value{Kind: "string", Set: true, String: "1"}`, 1), analyzer.CodeTypeCheck},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := analyzer.Analyze(sourceSnapshot(test.source))
