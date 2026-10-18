@@ -811,7 +811,7 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			}
 		}
 	}
-	if aggregateOutputs != 0 && (len(query.Ordering) != 0 || query.HasLimit || query.HasOffset) {
+	if aggregateOutputs != 0 && ((len(query.GroupBy) == 0 && len(query.Ordering) != 0) || query.HasLimit || query.HasOffset) {
 		return fmt.Errorf("%w: aggregate query modifiers", ErrUnsupported)
 	}
 	for _, projection := range outputs {
@@ -896,8 +896,8 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			return err
 		}
 	}
+	outputNames := make(map[string]struct{}, len(outputs))
 	if len(query.Results) != 0 {
-		outputNames := make(map[string]struct{}, len(outputs))
 		for _, projection := range outputs {
 			name := projection.Column
 			if projection.Alias != "" {
@@ -933,6 +933,15 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 	for _, ordering := range query.Ordering {
 		if !validSymbol(ordering.Column) || ordering.Direction != OrderingAscending && ordering.Direction != OrderingDescending {
 			return fmt.Errorf("%w: query ordering %q", ErrInvalidSchema, ordering.Column)
+		}
+		if len(query.GroupBy) != 0 {
+			if ordering.Table != (Ref{}) {
+				return fmt.Errorf("%w: grouped ordering cannot name a table", ErrUnsupported)
+			}
+			if _, exists := outputNames[ordering.Column]; !exists {
+				return fmt.Errorf("%w: grouped ordering output %q", ErrReference, ordering.Column)
+			}
+			continue
 		}
 		if ordering.Table.Member != "" || ordering.Table.Symbol != "" {
 			if err := validateRef(ordering.Table, imports); err != nil {

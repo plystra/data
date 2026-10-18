@@ -185,6 +185,40 @@ func compileSelect(owner, tableMember SchemaMember, table declaration.Table, que
 	if len(query.Ordering) != 0 {
 		ordering := make([]string, len(query.Ordering))
 		for index, item := range query.Ordering {
+			if len(query.GroupBy) != 0 {
+				if item.Table != (declaration.Ref{}) {
+					return "", fmt.Errorf("grouped ordering cannot name a table")
+				}
+				found := false
+				for _, projection := range query.Projection {
+					name := projection.Column
+					if projection.Alias != "" {
+						name = projection.Alias
+					}
+					if name != item.Column {
+						continue
+					}
+					expression, err := queryProjectionExpression(query, aliases, projection)
+					if err != nil {
+						return "", err
+					}
+					ordering[index] = expression.sql
+					if projection.Aggregate == "" {
+						ordering[index] = columnSQL(table.ID, projection.Column)
+					}
+					found = true
+					break
+				}
+				if !found {
+					return "", fmt.Errorf("grouped ordering output %s is not projected", item.Column)
+				}
+				if item.Direction == declaration.OrderingDescending {
+					ordering[index] += " DESC"
+				} else {
+					ordering[index] += " ASC"
+				}
+				continue
+			}
 			orderingTable := query.Table
 			if item.Table.Member != "" || item.Table.Symbol != "" {
 				orderingTable = item.Table

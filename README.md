@@ -72,9 +72,11 @@ ungrouped forms are single-output SELECTs with no ordinary projection,
 aggregate ordering, limit, or offset. A bounded grouped SELECT may project one
 or more local table columns named by matching `GroupBy` columns plus one
 `COUNT`, `MIN`, or `MAX` output; it emits deterministic ordered `GROUP BY`
-columns and matching typed result mappings, with no joins, aggregate ordering,
-limit, or offset. A grouped query may filter its projected grouping columns or
-aggregate alias through `Having`, using the closed comparison, `IS NULL`,
+columns and matching typed result mappings, with no joins, limit, or offset.
+Grouped ordering names only projected output names without table qualifiers;
+PostgreSQL emits a qualified grouping column or aggregate expression. A grouped
+query may filter its projected grouping columns or aggregate alias through
+`Having`, using the closed comparison, `IS NULL`,
 `IS NOT NULL`, `AND`, and `OR` predicate forms. HAVING references are
 unqualified output names; the lowerer substitutes the validated column or
 aggregate expression rather than relying on PostgreSQL SELECT aliases in the

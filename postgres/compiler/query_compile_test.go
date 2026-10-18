@@ -176,6 +176,39 @@ func TestCompileQueriesLowersGroupedAggregate(t *testing.T) {
 	if !strings.Contains(artifacts[0].SQL, want) {
 		t.Fatalf("grouped SQL without HAVING = %q, want %q", artifacts[0].SQL, want)
 	}
+	member.Model.Queries[0].Projection[0].Alias = "zone"
+	member.Model.Queries[0].Results[0].Source = "zone"
+	member.Model.Queries[0].Having = declaration.Predicate{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Int64(1)}
+	artifacts, err = postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("aliased grouped artifacts = %#v, error = %v", artifacts, err)
+	}
+	want = `SELECT "region" AS "zone", "tier", COUNT("id") AS "total" FROM "accounts"."users" GROUP BY "region", "tier" HAVING COUNT("id") > 1;`
+	if !strings.Contains(artifacts[0].SQL, want) {
+		t.Fatalf("aliased grouped artifact = %#v, want %q", artifacts[0], want)
+	}
+	baselineDigest := artifacts[0].Digest
+	member.Model.Queries[0].Ordering = []declaration.Ordering{{Column: "total", Direction: declaration.OrderingDescending}, {Column: "zone", Direction: declaration.OrderingAscending}}
+	artifacts, err = postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("ordered grouped artifacts = %#v, error = %v", artifacts, err)
+	}
+	want = `SELECT "region" AS "zone", "tier", COUNT("id") AS "total" FROM "accounts"."users" GROUP BY "region", "tier" HAVING COUNT("id") > 1 ORDER BY COUNT("id") DESC, "users"."region" ASC;`
+	if !strings.Contains(artifacts[0].SQL, want) || artifacts[0].Digest == baselineDigest {
+		t.Fatalf("ordered grouped artifact = %#v, want %q and new digest", artifacts[0], want)
+	}
+	member.Model.Queries[0].Having = declaration.Predicate{}
+	member.Model.Queries[0].Projection[2].Alias = "region"
+	member.Model.Queries[0].Results[2].Source = "region"
+	member.Model.Queries[0].Ordering = []declaration.Ordering{{Column: "zone", Direction: declaration.OrderingAscending}}
+	artifacts, err = postgres.CompileQueries([]postgres.SchemaMember{member})
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("alias-collision grouped artifacts = %#v, error = %v", artifacts, err)
+	}
+	want = `SELECT "region" AS "zone", "tier", COUNT("id") AS "region" FROM "accounts"."users" GROUP BY "region", "tier" ORDER BY "users"."region" ASC;`
+	if !strings.Contains(artifacts[0].SQL, want) {
+		t.Fatalf("alias-collision grouped artifact = %#v, want %q", artifacts[0], want)
+	}
 }
 
 func TestCompileQueriesLowersTypedGroupedHaving(t *testing.T) {
@@ -196,7 +229,8 @@ func TestCompileQueriesLowersTypedGroupedHaving(t *testing.T) {
 					{Kind: declaration.PredicateGreaterEqual, Left: declaration.ColumnRef{Column: "minimum"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "threshold"}},
 					{Kind: declaration.PredicateNotEqual, Left: declaration.ColumnRef{Column: "region"}, Value: declaration.String("inactive")},
 				}},
-				Results: []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "minimum", Source: "minimum", Type: declaration.TypeInt64, Nullable: true}},
+				Ordering: []declaration.Ordering{{Column: "minimum", Direction: declaration.OrderingAscending}, {Column: "region", Direction: declaration.OrderingDescending}},
+				Results:  []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "minimum", Source: "minimum", Type: declaration.TypeInt64, Nullable: true}},
 			}},
 		},
 	}
@@ -204,7 +238,7 @@ func TestCompileQueriesLowersTypedGroupedHaving(t *testing.T) {
 	if err != nil || len(artifacts) != 1 {
 		t.Fatalf("artifacts = %#v, error = %v", artifacts, err)
 	}
-	want := `SELECT "region", MIN("score") AS "minimum" FROM "accounts"."users" GROUP BY "region" HAVING (MIN("score") IS NOT NULL) AND (MIN("score") >= $1) AND ("region" <> 'inactive');`
+	want := `SELECT "region", MIN("score") AS "minimum" FROM "accounts"."users" GROUP BY "region" HAVING (MIN("score") IS NOT NULL) AND (MIN("score") >= $1) AND ("region" <> 'inactive') ORDER BY MIN("score") ASC, "users"."region" DESC;`
 	if !strings.Contains(artifacts[0].SQL, want) {
 		t.Fatalf("SQL = %q, want %q", artifacts[0].SQL, want)
 	}

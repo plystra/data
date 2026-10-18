@@ -42,6 +42,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 			GroupBy:    []declaration.ColumnRef{{Column: "region"}},
 			Projection: []declaration.Projection{{Column: "region"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
 			Having:     declaration.Predicate{Kind: declaration.PredicateGreater, Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Int64(1)},
+			Ordering:   []declaration.Ordering{{Column: "total", Direction: declaration.OrderingDescending}, {Column: "region", Direction: declaration.OrderingAscending}},
 			Results:    []declaration.ResultField{{ID: "region", Source: "region", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
 		}},
 	}).Normalize()
@@ -106,8 +107,8 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 		}
 		if strings.HasSuffix(artifact.Path, "/count-by-region.sql") {
 			foundHaving = true
-			if artifact.Query == nil || artifact.Query.Having == nil || artifact.Query.Having.Left.Column != "total" || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "region" HAVING COUNT("id") > 1;`)) {
-				t.Fatalf("query artifact does not contain typed HAVING: %#v", artifact)
+			if artifact.Query == nil || artifact.Query.Having == nil || artifact.Query.Having.Left.Column != "total" || !bytes.Contains(artifact.Bytes, []byte(`GROUP BY "region" HAVING COUNT("id") > 1 ORDER BY COUNT("id") DESC, "accounts"."region" ASC;`)) {
+				t.Fatalf("query artifact does not contain grouped ordering: %#v", artifact)
 			}
 		}
 	}
@@ -370,7 +371,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
-func TestCompilerCommandValidatesHavingTypesAtAnalyze(t *testing.T) {
+func TestCompilerCommandValidatesGroupedQueryAtAnalyze(t *testing.T) {
 	declarationSource := `package declaration
 type NoAccess struct{}
 type Ref struct { Member string; Symbol string }
@@ -387,7 +388,9 @@ type Value struct { Kind ScalarType; Set bool; Parameter string; Int64 int64; St
 type Parameter struct { ID string; Type ScalarType }
 type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
-type Query struct { ID string; Operation OperationKind; Table Ref; Parameters []Parameter; GroupBy []ColumnRef; Projection []Projection; Having Predicate; Results []ResultField }
+type OrderingDirection string
+type Ordering struct { Table Ref; Column string; Direction OrderingDirection }
+type Query struct { ID string; Operation OperationKind; Table Ref; Parameters []Parameter; GroupBy []ColumnRef; Projection []Projection; Having Predicate; Ordering []Ordering; Results []ResultField }
 `
 	modelSource := `package model
 import "github.com/plystra/data/declaration"
@@ -399,6 +402,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		GroupBy: []declaration.ColumnRef{{Column: "region"}},
 		Projection: []declaration.Projection{{Column: "region"}, {Aggregate: "count", Column: "id", Alias: "total"}},
 		Having: declaration.Predicate{Kind: "greater", Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+		Ordering: []declaration.Ordering{{Column: "total", Direction: "desc"}},
 		Results: []declaration.ResultField{{ID: "region", Source: "region", Type: "string"}, {ID: "total", Source: "total", Type: "int64"}},
 	}},
 }`
@@ -410,8 +414,8 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		}})
 	}
 	valid := run(t, modelSource)
-	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid {
-		t.Fatalf("valid HAVING analysis = %#v", valid)
+	if valid.Status != protocol.StatusSucceeded || !valid.Output.Valid || len(valid.Output.Roots) != 1 || len(valid.Output.Roots[0].Model.Queries[0].Ordering) != 1 {
+		t.Fatalf("valid grouped analysis = %#v", valid)
 	}
 	for _, test := range []struct{ name, source string }{
 		{"wrong value type", strings.Replace(modelSource, `Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}`, `Value: declaration.Value{Kind: "string", Set: true, String: "1"}`, 1)},
@@ -422,6 +426,20 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 			invalid := run(t, test.source)
 			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != analyzer.CodeTypeCheck {
 				t.Fatalf("invalid HAVING analysis = %#v", invalid)
+			}
+		})
+	}
+	for _, test := range []struct {
+		name, source string
+		code         analyzer.DiagnosticCode
+	}{
+		{"missing ordering output", strings.Replace(modelSource, `Column: "total", Direction: "desc"`, `Column: "missing", Direction: "desc"`, 1), analyzer.CodeUnresolvedReference},
+		{"qualified ordering output", strings.Replace(modelSource, `Column: "total", Direction: "desc"`, `Table: declaration.Ref{Symbol: "users"}, Column: "total", Direction: "desc"`, 1), analyzer.CodeInvalidRootShape},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid := run(t, test.source)
+			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != test.code || len(invalid.Output.Roots) != 0 {
+				t.Fatalf("invalid grouped ordering analysis = %#v", invalid)
 			}
 		})
 	}

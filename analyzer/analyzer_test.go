@@ -473,7 +473,7 @@ var Samples = declaration.Member[declaration.NoAccess]{
 }
 
 func TestAnalyzeDecodesGroupedAggregate(t *testing.T) {
-	result, err := analyzer.Analyze(sourceSnapshot(`package model
+	source := `package model
 
 import "github.com/plystra/data/declaration"
 
@@ -486,9 +486,11 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		GroupBy: []declaration.ColumnRef{{Column: "region"}, {Column: "tier"}},
 		Projection: []declaration.Projection{{Column: "region"}, {Column: "tier"}, {Aggregate: "count", Column: "id", Alias: "total"}},
 		Having: declaration.Predicate{Kind: "greater", Left: declaration.ColumnRef{Column: "total"}, Value: declaration.Value{Kind: "int64", Set: true, Int64: 1}},
+		Ordering: []declaration.Ordering{{Column: "total", Direction: "desc"}, {Column: "region", Direction: "asc"}},
 		Results: []declaration.ResultField{{ID: "region", Source: "region", Type: "string"}, {ID: "tier", Source: "tier", Type: "string"}, {ID: "total", Source: "total", Type: "int64"}},
 	}},
-}`))
+}`
+	result, err := analyzer.Analyze(sourceSnapshot(source))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,8 +498,22 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 		t.Fatalf("result = %#v", result)
 	}
 	query := result.Roots[0].Model.Queries[0]
-	if len(query.GroupBy) != 2 || query.GroupBy[0].Column != "region" || query.GroupBy[1].Column != "tier" || len(query.Projection) != 3 || query.Projection[2].Aggregate != declaration.AggregateCount || query.Having.Left.Column != "total" {
+	if len(query.GroupBy) != 2 || query.GroupBy[0].Column != "region" || query.GroupBy[1].Column != "tier" || len(query.Projection) != 3 || query.Projection[2].Aggregate != declaration.AggregateCount || query.Having.Left.Column != "total" || len(query.Ordering) != 2 || query.Ordering[0].Column != "total" {
 		t.Fatalf("decoded grouped query = %#v", query)
+	}
+	for _, test := range []struct {
+		name, source string
+		code         analyzer.DiagnosticCode
+	}{
+		{"missing output", strings.Replace(source, `Column: "total", Direction: "desc"`, `Column: "missing", Direction: "desc"`, 1), analyzer.CodeUnresolvedReference},
+		{"qualified output", strings.Replace(source, `Column: "total", Direction: "desc"`, `Table: declaration.Ref{Symbol: "users"}, Column: "total", Direction: "desc"`, 1), analyzer.CodeInvalidRootShape},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invalid, err := analyzer.Analyze(sourceSnapshot(test.source))
+			if err != nil || invalid.Valid || !hasCode(invalid, test.code) {
+				t.Fatalf("invalid grouped ordering = %#v, %v", invalid, err)
+			}
+		})
 	}
 }
 

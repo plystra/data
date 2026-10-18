@@ -170,6 +170,19 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 			}
 		}
 		for _, ordering := range query.Ordering {
+			if len(query.GroupBy) != 0 {
+				found := false
+				for _, result := range query.Results {
+					if result.Source == ordering.Column {
+						found = true
+						break
+					}
+				}
+				if !found {
+					a.referenceDiagnostic(root, CodeUnresolvedReference, "Data grouped ordering does not name a projected output", "Order by a projected grouping or aggregate output name.", ordering.Column)
+				}
+				continue
+			}
 			orderingTable := ordering.Table
 			if orderingTable.Member == "" && orderingTable.Symbol == "" {
 				orderingTable = query.Table

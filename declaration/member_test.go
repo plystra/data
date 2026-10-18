@@ -538,6 +538,54 @@ func TestNormalizeGroupedAggregate(t *testing.T) {
 	}
 }
 
+func TestNormalizeGroupedAggregateOrdering(t *testing.T) {
+	member := declaration.Member[access]{
+		Namespace: "authn",
+		Tables:    []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "region", Type: declaration.TypeString}, {ID: "id", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{
+			ID: "count-by-region", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+			GroupBy:    []declaration.ColumnRef{{Column: "region"}},
+			Projection: []declaration.Projection{{Column: "region", Alias: "zone"}, {Aggregate: declaration.AggregateCount, Column: "id", Alias: "total"}},
+			Results:    []declaration.ResultField{{ID: "region", Source: "zone", Type: declaration.TypeString}, {ID: "total", Source: "total", Type: declaration.TypeInt64}},
+			Ordering:   []declaration.Ordering{{Column: "total", Direction: declaration.OrderingDescending}, {Column: "zone", Direction: declaration.OrderingAscending}},
+		}},
+	}
+	model, err := member.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(model.Queries[0].Ordering) != 2 || model.Queries[0].Ordering[0].Column != "total" || model.Queries[0].Ordering[1].Column != "zone" {
+		t.Fatalf("normalized ordering = %#v", model.Queries[0].Ordering)
+	}
+	member.Queries[0].Ordering[0].Column = "zone"
+	if model.Queries[0].Ordering[0].Column != "total" {
+		t.Fatal("normalized ordering changed with authored input")
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Query)
+		want error
+	}{
+		{"missing output", func(query *declaration.Query) { query.Ordering[0].Column = "missing" }, declaration.ErrReference},
+		{"qualified output", func(query *declaration.Query) { query.Ordering[0].Table = query.Table }, declaration.ErrUnsupported},
+		{"ungrouped aggregate", func(query *declaration.Query) {
+			query.GroupBy = nil
+			query.Projection = query.Projection[1:]
+			query.Results = query.Results[1:]
+		}, declaration.ErrUnsupported},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := model.Queries[0]
+			query.Ordering = append([]declaration.Ordering(nil), query.Ordering...)
+			test.edit(&query)
+			member.Queries[0] = query
+			if _, err := member.Normalize(); !errors.Is(err, test.want) {
+				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeClonesQueryResultSlices(t *testing.T) {
 	member := declaration.Member[access]{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts"}}, Queries: []declaration.Query{{
 		ID: "find", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
