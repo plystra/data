@@ -450,7 +450,7 @@ var Samples = declaration.Member[declaration.NoAccess]{Namespace: "metrics", Tab
 	}
 }
 
-func TestCompilerCommandRejectsImportedReturningMismatch(t *testing.T) {
+func TestCompilerCommandRejectsImportedMutationMismatch(t *testing.T) {
 	declarationSource := `package declaration
 type NoAccess struct{}
 type Ref struct { Member string; Symbol string }
@@ -496,14 +496,17 @@ var Events = declaration.Member[declaration.NoAccess]{Namespace: "audit", Tables
 	}
 	for _, test := range []struct {
 		name, source string
+		code         analyzer.DiagnosticCode
 	}{
-		{"wrong type", strings.Replace(modelSource, `Source: "id", Type: "int64"`, `Source: "id", Type: "string"`, 1)},
-		{"wrong nullability", strings.Replace(modelSource, `Source: "event-label", Type: "string", Nullable: true`, `Source: "event-label", Type: "string"`, 1)},
+		{"wrong result type", strings.Replace(modelSource, `Source: "id", Type: "int64"`, `Source: "id", Type: "string"`, 1), analyzer.CodeTypeCheck},
+		{"wrong result nullability", strings.Replace(modelSource, `Source: "event-label", Type: "string", Nullable: true`, `Source: "event-label", Type: "string"`, 1), analyzer.CodeTypeCheck},
+		{"wrong assignment type", strings.Replace(modelSource, `Value{Kind: "string", Set: true, String: "updated"}`, `Value{Kind: "int64", Set: true, Int64: 1}`, 1), analyzer.CodeTypeCheck},
+		{"missing assignment column", strings.Replace(modelSource, `Assignment{{Column: "label"`, `Assignment{{Column: "missing"`, 1), analyzer.CodeUnresolvedReference},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			invalid := run(t, test.source)
-			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != analyzer.CodeTypeCheck {
-				t.Fatalf("invalid imported RETURNING analysis = %#v", invalid)
+			if invalid.Status != protocol.StatusRejected || invalid.Output.Valid || len(invalid.Diagnostics) != 1 || invalid.Diagnostics[0].Code != test.code {
+				t.Fatalf("invalid imported mutation analysis = %#v", invalid)
 			}
 		})
 	}

@@ -91,6 +91,16 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 		for _, column := range query.Conflict.UpdateColumns {
 			a.validateColumn(root, target, column)
 		}
+		for _, assignment := range query.Assignments {
+			column, exists := columnByID(target, assignment.Column)
+			if !exists {
+				a.validateColumn(root, target, assignment.Column)
+				continue
+			}
+			if column.Type != assignment.Value.Kind {
+				a.referenceDiagnostic(root, CodeTypeCheck, "Data assignment value does not match its target column", "Match the assignment value type to the selected table column.", assignment.Column)
+			}
+		}
 		a.validateJoinReferences(root, query, target, symbols)
 		introduced := map[declaration.Ref]declaration.Table{query.Table: target}
 		for _, join := range query.Joins {

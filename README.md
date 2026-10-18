@@ -45,9 +45,10 @@ output and has no typed result mapping. Query predicates support comparisons,
 `IS NULL`, `IS NOT NULL`, `AND`, and `OR`;
 comparison operands use explicit `ColumnRef` values and accept either an
 introduced column or a declared typed parameter/literal. Assignments accept
-only declared typed parameters or closed literal values. Projections, ordering,
-limit, offset, and cross-Resource
-references are validated before lowering.
+only declared typed parameters or closed literal values; analysis checks their
+columns and value types against local or imported target tables. Projections,
+ordering, limit, offset, and cross-Resource references are validated before
+lowering.
 `SELECT` queries can declare ordered `INNER` and `LEFT` equality joins through
 `Query.Joins`. Each join names one table and compares a column on an already
 introduced table with a column on the new table using explicit `ColumnRef`

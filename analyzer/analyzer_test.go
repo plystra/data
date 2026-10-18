@@ -169,7 +169,7 @@ var Accounts = declaration.Member[declaration.NoAccess]{
 	}
 }
 
-func TestAnalyzeRejectsImportedReturningResultMismatch(t *testing.T) {
+func TestAnalyzeRejectsImportedMutationMappingMismatch(t *testing.T) {
 	source := `package model
 import "github.com/plystra/data/declaration"
 
@@ -199,6 +199,8 @@ var Events = declaration.Member[declaration.NoAccess]{
 		{"wrong type", strings.Replace(source, `Source: "id", Type: "int64"`, `Source: "id", Type: "string"`, 1), analyzer.CodeTypeCheck},
 		{"wrong nullability", strings.Replace(source, `Source: "event-label", Type: "string", Nullable: true`, `Source: "event-label", Type: "string"`, 1), analyzer.CodeTypeCheck},
 		{"missing returning column", strings.Replace(source, `Column: "label", Alias: "event-label"`, `Column: "missing", Alias: "event-label"`, 1), analyzer.CodeUnresolvedReference},
+		{"wrong assignment type", strings.Replace(source, `Value{Kind: "string", Set: true, String: "updated"}`, `Value{Kind: "int64", Set: true, Int64: 1}`, 1), analyzer.CodeTypeCheck},
+		{"missing assignment column", strings.Replace(source, `Assignment{{Column: "label"`, `Assignment{{Column: "missing"`, 1), analyzer.CodeUnresolvedReference},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			invalid, err := analyzer.Analyze(sourceSnapshot(test.source))
