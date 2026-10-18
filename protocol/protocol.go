@@ -46,7 +46,7 @@ const (
 	StatusFailed    Status = "failed"
 )
 
-// CompilerIdentity is the exact distribution identity supplied by the CLI.
+// CompilerIdentity is the exact distribution identity supplied by the Data command.
 type CompilerIdentity struct {
 	ModulePath          string `json:"module_path"`
 	ModuleVersion       string `json:"module_version"`

@@ -196,6 +196,18 @@ install staged files in an application. Data-specific activation, generated
 access, transactional installation, and drift checks belong outside the
 generic Core CLI and remain separate unfinished integration work.
 
+The independent `plystra-data inspect compiler --project DIR` command selects
+the exact `github.com/plystra/data` version from the Project's Go module graph
+with `GOWORK=off`. It rejects Data module replacements, verifies the selected
+module source against the full `h1:` checksum recorded in the Project's
+`go.sum`, validates the distribution manifest, and reports the raw manifest
+digest and local Go toolchain. `--format json`
+emits `plystra.data-compiler-inspection/v1`; `--offline` requires a warm module
+cache and never uses the network. A Project without the selected version's
+full-module `go.sum` entry must first acquire that checksum through Go's module
+workflow. Inspection does not invoke the compiler, analyze declarations,
+generate providers, or modify Project files.
+
 The Data-owned `project.ParseAssignments` parser accepts the closed
 `plystra.data.yaml` `data.members` mapping with exact versioned member IDs,
 database Resource instance names, and optional access Resource instance names.
@@ -203,8 +215,8 @@ database Resource instance names, and optional access Resource instance names.
 changing Project files and lists assignments in member-ID order. Use
 `--format json` for a `plystra.data-assignments/v1` result. Duplicate keys,
 unknown fields, invalid names, duplicate access names, and access names that
-collide with an assigned database Resource are rejected. This inspection does
-not analyze declarations, select a compiler, activate members, generate
+collide with an assigned database Resource are rejected. Assignment inspection
+does not analyze declarations, select a compiler, activate members, generate
 providers, or install artifacts; those Data-owned Project workflows remain
 incomplete.
 

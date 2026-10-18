@@ -6,6 +6,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/plystra/kernel v0.0.0-20261004024423-1e554d6f14ac
 	go.yaml.in/yaml/v3 v3.0.5
+	golang.org/x/mod v0.38.0
 )
 
 require (

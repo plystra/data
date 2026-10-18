@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -9,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/plystra/data/compilerselection"
 	"github.com/plystra/data/project"
+	"github.com/plystra/data/protocol"
 )
 
 const configName = "plystra.data.yaml"
@@ -23,14 +26,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return 0
 	}
-	if len(args) < 2 || args[0] != "inspect" || args[1] != "assignments" {
+	if len(args) < 2 || args[0] != "inspect" || (args[1] != "assignments" && args[1] != "compiler") {
 		usage(stderr)
 		return 2
 	}
-	flags := flag.NewFlagSet("inspect assignments", flag.ContinueOnError)
+	kind := args[1]
+	flags := flag.NewFlagSet("inspect "+kind, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	projectDir := flags.String("project", ".", "Project directory")
 	format := flags.String("format", "text", "text or json")
+	var offline *bool
+	if kind == "compiler" {
+		offline = flags.Bool("offline", false, "use only verified cached modules")
+	}
 	if err := flags.Parse(args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			usage(stdout)
@@ -54,13 +62,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "plystra-data: Project directory is unavailable")
 		return 2
 	}
+	if kind == "compiler" {
+		return inspectCompiler(root, *format, *offline, stdout, stderr)
+	}
+	return inspectAssignments(root, *format, stdout, stderr)
+}
+
+func inspectAssignments(root, format string, stdout, stderr io.Writer) int {
 	file, err := os.Open(filepath.Join(root, configName))
 	if err != nil {
 		fmt.Fprintln(stderr, "plystra-data: cannot read "+configName+" in the selected Project")
 		return 2
 	}
 	defer file.Close()
-	info, err = file.Stat()
+	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		fmt.Fprintln(stderr, "plystra-data: "+configName+" must be a regular file")
 		return 2
@@ -75,7 +90,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "plystra-data: "+err.Error())
 		return 2
 	}
-	if *format == "json" {
+	if format == "json" {
 		if err := json.NewEncoder(stdout).Encode(struct {
 			Schema  string               `json:"schema"`
 			Members []project.Assignment `json:"members"`
@@ -107,6 +122,54 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+func inspectCompiler(root, format string, offline bool, stdout, stderr io.Writer) int {
+	selection, err := compilerselection.Resolve(context.Background(), root, compilerselection.Options{Offline: offline})
+	if err != nil {
+		switch {
+		case errors.Is(err, compilerselection.ErrConcurrentChange):
+			fmt.Fprintln(stderr, "plystra-data: Project go.mod or go.sum changed during inspection; retry")
+		case errors.Is(err, compilerselection.ErrInvalidSelection):
+			fmt.Fprintln(stderr, "plystra-data: selected Data compiler source or manifest failed integrity validation")
+		default:
+			fmt.Fprintln(stderr, "plystra-data: selected Data compiler is unavailable; check Project go.sum, dependencies, proxy, and module cache")
+		}
+		return 2
+	}
+	if format == "json" {
+		if err := json.NewEncoder(stdout).Encode(struct {
+			Schema              string `json:"schema"`
+			ModulePath          string `json:"module_path"`
+			ModuleVersion       string `json:"module_version"`
+			ModuleChecksum      string `json:"module_checksum"`
+			ManifestDigest      string `json:"manifest_digest"`
+			CommandImportPath   string `json:"command_import_path"`
+			AnalyzeProtocol     string `json:"analyze_protocol"`
+			EmitProtocol        string `json:"emit_protocol"`
+			DeclarationLanguage string `json:"declaration_language"`
+			GoToolchain         string `json:"go_toolchain"`
+		}{
+			Schema: "plystra.data-compiler-inspection/v1", ModulePath: protocol.ModulePath,
+			ModuleVersion: selection.ModuleVersion, ModuleChecksum: selection.ModuleChecksum,
+			ManifestDigest:      selection.ManifestDigest,
+			CommandImportPath:   selection.Manifest.CommandImportPath,
+			AnalyzeProtocol:     selection.Manifest.AnalyzeProtocol,
+			EmitProtocol:        selection.Manifest.EmitProtocol,
+			DeclarationLanguage: selection.Manifest.DeclarationLanguage,
+			GoToolchain:         selection.GoToolchain,
+		}); err != nil {
+			fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
+			return 1
+		}
+		return 0
+	}
+	if _, err := fmt.Fprintf(stdout, "%s@%s  %s  %s\n", protocol.ModulePath, selection.ModuleVersion, selection.ModuleChecksum, selection.ManifestDigest); err != nil {
+		fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
+		return 1
+	}
+	return 0
+}
+
 func usage(output io.Writer) {
 	fmt.Fprintln(output, "usage: plystra-data inspect assignments [--project DIR] [--format text|json]")
+	fmt.Fprintln(output, "       plystra-data inspect compiler [--project DIR] [--format text|json] [--offline]")
 }
