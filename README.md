@@ -29,9 +29,12 @@ closed model and returns a stable sorted copy; `Digest` binds that normalized
 logical model without including the access Resource value or runtime secrets.
 Queries and plans may name an explicit exported Go access `Method`. The
 normalized model and digest preserve that mapping, and duplicate or invalid
-method names fail declaration analysis. This is method identity only: Data does
-not yet validate authored Resource method signatures or generate access
-methods, so `Method` is not evidence that a provider can be emitted.
+method names fail declaration analysis. This is method identity only: Data
+requires exact name coverage against a type-checked authored access Resource
+before accepting its analysis result, including embedded methods; unmatched,
+unexported, and lifecycle methods are rejected. Data does not yet validate
+method signatures or generate access methods, so this name match is not
+evidence that a provider can be emitted.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it

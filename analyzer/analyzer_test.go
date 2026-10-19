@@ -140,6 +140,52 @@ func init() { panic("must not execute") }
 	}
 }
 
+func TestAnalyzeMatchesAccessMethodNames(t *testing.T) {
+	const body = `package model
+import (
+	"github.com/plystra/data/database"
+	"github.com/plystra/data/declaration"
+)
+//plystra:data accounts.reader/v1
+var Reader = declaration.Member[database.Resource]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users"}},
+	Queries: []declaration.Query{{ID: "read-users", Method: "Read", Operation: "select", Table: declaration.Ref{Symbol: "users"}}},
+}`
+	resource := analyzer.ResourceContract{ImportPath: "github.com/plystra/data/database", TypeName: "Resource", ID: resourceID}
+	for _, test := range []struct {
+		name    string
+		methods string
+		valid   bool
+	}{
+		{name: "exact", methods: "Read() error", valid: true},
+		{name: "extra", methods: "Read() error; Write() error"},
+		{name: "missing", methods: ""},
+		{name: "unexported", methods: "Read() error; hidden() error"},
+		{name: "lifecycle", methods: "Read() error; Close() error"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			snapshot := sourceSnapshot(body, resource)
+			snapshot.Packages[1].Files[0].Content = []byte("package database\ntype Resource interface { " + test.methods + " }\n")
+			result, err := analyzer.Analyze(snapshot)
+			if err != nil || result.Valid != test.valid {
+				t.Fatalf("method coverage = %#v, %v", result, err)
+			}
+			if !test.valid && !hasCode(result, analyzer.CodeAccessContractMismatch) {
+				t.Fatalf("missing access mismatch: %#v", result.Diagnostics)
+			}
+		})
+	}
+	t.Run("embedded", func(t *testing.T) {
+		snapshot := sourceSnapshot(body, resource)
+		snapshot.Packages[1].Files[0].Content = []byte("package database\ntype Base interface { Read() error }\ntype Resource interface { Base }\n")
+		result, err := analyzer.Analyze(snapshot)
+		if err != nil || !result.Valid {
+			t.Fatalf("embedded method coverage = %#v, %v", result, err)
+		}
+	})
+}
+
 func TestAnalyzeDecodesAndNormalizesModel(t *testing.T) {
 	result, err := analyzer.Analyze(sourceSnapshot(`package model
 
@@ -1186,7 +1232,7 @@ type MigrationOperation struct { Kind MigrationOperationKind; Table Ref; Column 
 `)}}},
 			{ImportPath: "github.com/plystra/data/database", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "resource.go", Content: []byte(`package database
 
-type Resource interface { Ping() error }
+type Resource interface{}
 `)}}},
 			{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: fileName, Content: []byte(body)}}},
 		},

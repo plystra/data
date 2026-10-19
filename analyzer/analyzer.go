@@ -652,6 +652,12 @@ func (a *analysis) inspectRoot(pkg *parsedPackage, file *ast.File, spec *ast.Val
 		a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, code, "Data declaration could not be normalized", "Correct the typed Data literal and its references before retrying.", memberID, name.Name)
 		return
 	}
+	if !migrationOnly {
+		if err := validateAccessMethodNames(accessType, model); err != nil {
+			a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeAccessContractMismatch, err.Error(), "Match each exported access Resource method to exactly one query or plan Method.", memberID, name.Name)
+			return
+		}
+	}
 	if checker.imports > a.limits.MaxImports {
 		a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeLimitExceeded, "Data member import limit exceeded", "Reduce the member Imports list to the advertised analysis limit.", memberID, name.Name)
 		return
@@ -742,6 +748,41 @@ func (a *analysis) validateAccess(pkg *parsedPackage, access types.Type) (string
 		return "", "", "", false, false
 	}
 	return resource.ImportPath, resource.TypeName, resource.ID, false, true
+}
+
+func validateAccessMethodNames(access types.Type, model declaration.Model) error {
+	named := types.Unalias(access).(*types.Named)
+	iface := types.Unalias(named.Underlying()).(*types.Interface).Complete()
+	mapped := make(map[string]struct{}, len(model.Queries)+len(model.Plans))
+	for _, query := range model.Queries {
+		if query.Method != "" {
+			mapped[query.Method] = struct{}{}
+		}
+	}
+	for _, plan := range model.Plans {
+		if plan.Method != "" {
+			mapped[plan.Method] = struct{}{}
+		}
+	}
+	for i := 0; i < iface.NumMethods(); i++ {
+		method := iface.Method(i)
+		if !method.Exported() || method.Name() == "Start" || method.Name() == "Stop" || method.Name() == "Shutdown" || method.Name() == "Close" {
+			return fmt.Errorf("access Resource cannot expose method %q", method.Name())
+		}
+		if _, exists := mapped[method.Name()]; !exists {
+			return fmt.Errorf("access Resource method %q has no query or plan mapping", method.Name())
+		}
+		delete(mapped, method.Name())
+	}
+	if len(mapped) != 0 {
+		names := make([]string, 0, len(mapped))
+		for name := range mapped {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return fmt.Errorf("query or plan method %q is absent from the access Resource", names[0])
+	}
+	return nil
 }
 
 type literalChecker struct {

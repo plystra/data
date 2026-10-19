@@ -189,7 +189,11 @@ import (
 var Audit = declaration.Member[declaration.NoAccess]{Namespace: "audit"}
 
 //plystra:data accounts.reader/v1
-var Reader = declaration.Member[access.Resource]{Namespace: "accounts"}
+var Reader = declaration.Member[access.Resource]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "entries"}},
+	Queries: []declaration.Query{{ID: "read", Method: "Read", Operation: "select", Table: declaration.Ref{Symbol: "entries"}}},
+}
 `))
 	accessBefore := snapshotAnalyzeProject(t, projectRoot)
 	stdout.Reset()
