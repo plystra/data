@@ -653,7 +653,10 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 		if query.Operation != OperationSelect {
 			outputs = query.Returning
 		}
-		if len(outputs) == 0 ||
+		if len(outputs) == 0 && (query.Operation == OperationSelect || query.Cardinality != CardinalityNone) {
+			return fmt.Errorf("%w: directly callable query %q requires a result cardinality", ErrUnsupported, query.ID)
+		}
+		if len(outputs) != 0 &&
 			(query.Cardinality != CardinalityExactlyOne && query.Cardinality != CardinalityZeroOrOne && query.Cardinality != CardinalityMany) {
 			return fmt.Errorf("%w: directly callable query %q requires typed results and cardinality", ErrUnsupported, query.ID)
 		}

@@ -134,7 +134,7 @@ type Root struct {
 }
 
 // QueryMethod records the authored types needed to implement one validated
-// directly callable query or returning mutation without reopening Project source.
+// directly callable query or mutation without reopening Project source.
 type QueryMethod struct {
 	Name           string                  `json:"name"`
 	Cardinality    declaration.Cardinality `json:"cardinality"`

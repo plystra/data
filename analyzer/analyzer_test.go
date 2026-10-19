@@ -346,6 +346,21 @@ var Writer = declaration.Member[database.Resource]{
 			if badRequest.Valid || !hasCode(badRequest, analyzer.CodeAccessContractMismatch) {
 				t.Fatalf("wrong mutation request = %#v", badRequest)
 			}
+			countBody := strings.Replace(body, `Cardinality: "`+test.cardinality+`"`, `Cardinality: "none"`, 1)
+			countBody = strings.Replace(countBody, `
+		Returning: []declaration.Projection{{Column: "id"}},
+		Results: []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: "int64"}},`, "", 1)
+			countContract := strings.Replace(resourceSource, test.result+", error)", "uint64, error)", 1)
+			countResult := analyze(countBody, countContract)
+			if !countResult.Valid || len(countResult.Roots) != 1 || len(countResult.Roots[0].QueryMethods) != 1 ||
+				countResult.Roots[0].QueryMethods[0].Cardinality != declaration.CardinalityNone ||
+				countResult.Roots[0].QueryMethods[0].RowPackage != "" || countResult.Roots[0].QueryMethods[0].RowType != "" {
+				t.Fatalf("affected-row mutation = %#v", countResult)
+			}
+			wrongCount := analyze(countBody, strings.Replace(countContract, "uint64, error)", "int64, error)", 1))
+			if wrongCount.Valid || !hasCode(wrongCount, analyzer.CodeAccessContractMismatch) {
+				t.Fatalf("wrong affected-row result = %#v", wrongCount)
+			}
 		})
 	}
 }

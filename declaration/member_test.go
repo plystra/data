@@ -196,6 +196,14 @@ func TestNormalizeDirectReturningMutationMethods(t *testing.T) {
 			if err := check(); !errors.Is(err, declaration.ErrUnsupported) {
 				t.Fatalf("mutation without RETURNING = %v", err)
 			}
+			query.Cardinality = declaration.CardinalityNone
+			if err := check(); err != nil {
+				t.Fatalf("affected-row mutation = %v", err)
+			}
+			query.Cardinality = declaration.CardinalityMany
+			if err := check(); !errors.Is(err, declaration.ErrUnsupported) {
+				t.Fatalf("affected-row mutation with row cardinality = %v", err)
+			}
 		})
 	}
 }

@@ -143,6 +143,28 @@ func TestValidateAnalyzeResponseBindsTypedQueryMethods(t *testing.T) {
 
 func TestValidateAnalyzeResponseBindsReturningMutationMethod(t *testing.T) {
 	request := validRequest(t)
+	replaceRequestSnapshot(t, &request, returningMutationSnapshot())
+	response := protocol.HandleAnalyze(request)
+	if response.Status != protocol.StatusSucceeded || len(response.Output.Roots) != 1 || len(response.Output.Roots[0].QueryMethods) != 1 ||
+		response.Output.Roots[0].QueryMethods[0].Cardinality != "exactly_one" {
+		t.Fatalf("returning mutation response = %#v", response)
+	}
+	if err := protocol.ValidateAnalyzeResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+	response.Output.Roots[0].QueryMethods[0].Cardinality = "many"
+	var err error
+	response.OutputDigest, err = analyzer.ResultDigest(response.Output.Roots, response.Diagnostics, response.Truncated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Output.Digest = response.OutputDigest
+	if err := protocol.ValidateAnalyzeResponse(request, response); err == nil {
+		t.Fatal("rehashed mismatched mutation cardinality was accepted")
+	}
+}
+
+func returningMutationSnapshot() analyzer.Snapshot {
 	snapshot := typedAccessSnapshot()
 	snapshot.Packages[1].Files[0].Content = []byte(`package declaration
 type Ref struct{Symbol string}
@@ -170,16 +192,29 @@ import("example.com/access";"github.com/plystra/data/declaration")
 //plystra:data accounts.user/v1
 var Accounts=declaration.Member[access.Resource]{Namespace:"accounts",Tables:[]declaration.Table{{ID:"users",Columns:[]declaration.Column{{ID:"id",Type:"int64"}}}},Queries:[]declaration.Query{{ID:"create",Method:"Create",Cardinality:"exactly_one",Operation:"insert",Table:declaration.Ref{Symbol:"users"},Assignments:[]declaration.Assignment{{Column:"id",Value:declaration.Value{Kind:"int64",Set:true,Int64:1}}},Returning:[]declaration.Projection{{Column:"id"}},Results:[]declaration.ResultField{{ID:"id",GoField:"ID",Source:"id",Type:"int64"}}}}}
 `)
+	return snapshot
+}
+
+func TestValidateAnalyzeResponseBindsAffectedRowMutationMethod(t *testing.T) {
+	request := validRequest(t)
+	snapshot := returningMutationSnapshot()
+	snapshot.Packages[2].Files[0].Content = []byte(strings.Replace(string(snapshot.Packages[2].Files[0].Content), "(Row,error)", "(uint64,error)", 1))
+	model := string(snapshot.Packages[3].Files[0].Content)
+	model = strings.Replace(model, `Cardinality:"exactly_one"`, `Cardinality:"none"`, 1)
+	model = strings.Replace(model, `,Returning:[]declaration.Projection{{Column:"id"}},Results:[]declaration.ResultField{{ID:"id",GoField:"ID",Source:"id",Type:"int64"}}`, "", 1)
+	snapshot.Packages[3].Files[0].Content = []byte(model)
 	replaceRequestSnapshot(t, &request, snapshot)
 	response := protocol.HandleAnalyze(request)
 	if response.Status != protocol.StatusSucceeded || len(response.Output.Roots) != 1 || len(response.Output.Roots[0].QueryMethods) != 1 ||
-		response.Output.Roots[0].QueryMethods[0].Cardinality != "exactly_one" {
-		t.Fatalf("returning mutation response = %#v", response)
+		response.Output.Roots[0].QueryMethods[0].Cardinality != "none" ||
+		response.Output.Roots[0].QueryMethods[0].RowPackage != "" || response.Output.Roots[0].QueryMethods[0].RowType != "" {
+		t.Fatalf("affected-row mutation response = %#v", response)
 	}
 	if err := protocol.ValidateAnalyzeResponse(request, response); err != nil {
 		t.Fatal(err)
 	}
-	response.Output.Roots[0].QueryMethods[0].Cardinality = "many"
+	response.Output.Roots[0].QueryMethods[0].RowPackage = "example.com/access"
+	response.Output.Roots[0].QueryMethods[0].RowType = "Row"
 	var err error
 	response.OutputDigest, err = analyzer.ResultDigest(response.Output.Roots, response.Diagnostics, response.Truncated)
 	if err != nil {
@@ -187,7 +222,7 @@ var Accounts=declaration.Member[access.Resource]{Namespace:"accounts",Tables:[]d
 	}
 	response.Output.Digest = response.OutputDigest
 	if err := protocol.ValidateAnalyzeResponse(request, response); err == nil {
-		t.Fatal("rehashed mismatched mutation cardinality was accepted")
+		t.Fatal("rehashed unexpected affected-row row type was accepted")
 	}
 }
 

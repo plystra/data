@@ -382,9 +382,15 @@ func validateQueryMethods(packages map[string]SnapshotPackage, root analyzer.Roo
 	for _, method := range root.QueryMethods {
 		query, exists := queries[method.Name]
 		if !exists || method.Name <= previous || method.Cardinality != query.Cardinality ||
-			!validAccessTypeName(method.RequestType) || !validAccessTypeName(method.RowType) ||
-			packages[method.RequestPackage].ImportPath == "" || packages[method.RowPackage].ImportPath == "" {
+			!validAccessTypeName(method.RequestType) || packages[method.RequestPackage].ImportPath == "" {
 			return fmt.Errorf("analyze root query method shape is invalid")
+		}
+		if query.Cardinality == declaration.CardinalityNone {
+			if query.Operation == declaration.OperationSelect || len(query.Returning) != 0 || method.RowPackage != "" || method.RowType != "" {
+				return fmt.Errorf("analyze root affected-row method shape is invalid")
+			}
+		} else if !validAccessTypeName(method.RowType) || packages[method.RowPackage].ImportPath == "" {
+			return fmt.Errorf("analyze root query row type is invalid")
 		}
 		previous = method.Name
 	}

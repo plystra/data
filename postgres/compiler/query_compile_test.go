@@ -489,19 +489,22 @@ func TestCompileQueriesSupportsTypedMutationIntent(t *testing.T) {
 	}
 	base.Model.Queries = []declaration.Query{
 		{
-			ID: "insert", Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"},
-			Parameters:  []declaration.Parameter{{ID: "email", Type: declaration.TypeString}},
+			ID: "insert", Method: "Insert", Cardinality: declaration.CardinalityNone,
+			Operation: declaration.OperationInsert, Table: declaration.Ref{Symbol: "users"},
+			Parameters:  []declaration.Parameter{{ID: "email", GoField: "Email", Type: declaration.TypeString}},
 			Assignments: []declaration.Assignment{{Column: "email", Value: declaration.Value{Kind: declaration.TypeString, Set: true, Parameter: "email"}}},
 		},
 		{
-			ID: "update", Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "users"},
-			Parameters:  []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
+			ID: "update", Method: "Update", Cardinality: declaration.CardinalityNone,
+			Operation: declaration.OperationUpdate, Table: declaration.Ref{Symbol: "users"},
+			Parameters:  []declaration.Parameter{{ID: "id", GoField: "ID", Type: declaration.TypeInt64}},
 			Assignments: []declaration.Assignment{{Column: "email", Value: declaration.String("updated")}},
 			Predicate:   declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
 		},
 		{
-			ID: "delete", Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "users"},
-			Parameters: []declaration.Parameter{{ID: "id", Type: declaration.TypeInt64}},
+			ID: "delete", Method: "Delete", Cardinality: declaration.CardinalityNone,
+			Operation: declaration.OperationDelete, Table: declaration.Ref{Symbol: "users"},
+			Parameters: []declaration.Parameter{{ID: "id", GoField: "ID", Type: declaration.TypeInt64}},
 			Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
 		},
 	}

@@ -40,14 +40,17 @@ Its authored method has the shape
 `Method(context.Context, Request) (Row, error)`, `(*Row, error)`, or
 `([]Row, error)` respectively. `Request` and `Row` are exported named structs
 whose fields exactly match the explicit mappings; nullable result fields are
-`*T`. The same cardinality and typed request/row shapes are accepted for
-directly callable `INSERT`, `UPDATE`, and `DELETE` only with explicit
-`RETURNING` projections and complete typed result mappings. The method's
-cardinality constrains returned rows. The initial validated access scalar
-subset is `bool`, `[]byte`, `float64`, `int64`, and `string`. Unsupported
-signatures, direct mutations without `RETURNING`, and callable plans fail
-analysis. Accepted method types and cardinality are bound to the analyze
-result, but provider generation and installation are not yet present.
+`*T`. A directly callable `INSERT`, `UPDATE`, or `DELETE` with explicit
+`RETURNING` projections and complete typed result mappings uses the same
+cardinality and typed request/row shapes. Its cardinality constrains returned
+rows. Without `RETURNING`, a directly callable mutation declares
+`Cardinality: none` and has the exact method shape
+`Method(context.Context, Request) (uint64, error)`; the `uint64` is the
+affected-row count, and there is no typed row mapping. The initial validated
+access scalar subset is `bool`, `[]byte`, `float64`, `int64`, and `string`.
+Unsupported signatures and callable plans fail analysis. Accepted method types
+and cardinality are bound to the analyze result, but provider generation and
+installation are not yet present.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it

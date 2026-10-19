@@ -179,10 +179,12 @@ import "context"
 //plystra:resource accounts.access/v1
 type Resource interface {
 	Create(context.Context, CreateRequest) (CreateRow, error)
+	Delete(context.Context, DeleteRequest) (uint64, error)
 	Read(context.Context, Request) ([]Row, error)
 }
 type CreateRequest struct{ ID int64 }
 type CreateRow struct{ ID int64 }
+type DeleteRequest struct{ ID int64 }
 type Request struct{}
 type Row struct { ID int64 }
 `))
@@ -206,6 +208,10 @@ var Reader = declaration.Member[access.Resource]{
 		Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: "int64", Set: true, Parameter: "id"}}},
 		Returning: []declaration.Projection{{Column: "id"}},
 		Results: []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: "int64"}},
+	}, {
+		ID: "delete", Method: "Delete", Cardinality: "none", Operation: "delete", Table: declaration.Ref{Symbol: "entries"},
+		Parameters: []declaration.Parameter{{ID: "id", GoField: "ID", Type: "int64"}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Parameter: "id"}},
 	}, {
 		ID: "read", Method: "Read", Cardinality: "many", Operation: "select", Table: declaration.Ref{Symbol: "entries"},
 		Projection: []declaration.Projection{{Column: "id"}},
@@ -231,11 +237,13 @@ var Reader = declaration.Member[access.Resource]{
 		case "accounts.reader/v1":
 			foundAccess = true
 			if root.AccessPackage != "example.com/app/access" || root.AccessType != "Resource" ||
-				root.AccessID != "accounts.access/v1" || root.MigrationOnly || len(root.QueryMethods) != 2 ||
+				root.AccessID != "accounts.access/v1" || root.MigrationOnly || len(root.QueryMethods) != 3 ||
 				root.QueryMethods[0].Name != "Create" || root.QueryMethods[0].RequestType != "CreateRequest" ||
 				root.QueryMethods[0].RowType != "CreateRow" || root.QueryMethods[0].Cardinality != "exactly_one" ||
-				root.QueryMethods[1].Name != "Read" || root.QueryMethods[1].RequestType != "Request" ||
-				root.QueryMethods[1].RowType != "Row" || root.QueryMethods[1].Cardinality != "many" {
+				root.QueryMethods[1].Name != "Delete" || root.QueryMethods[1].RequestType != "DeleteRequest" ||
+				root.QueryMethods[1].RowPackage != "" || root.QueryMethods[1].RowType != "" || root.QueryMethods[1].Cardinality != "none" ||
+				root.QueryMethods[2].Name != "Read" || root.QueryMethods[2].RequestType != "Request" ||
+				root.QueryMethods[2].RowType != "Row" || root.QueryMethods[2].Cardinality != "many" {
 				t.Fatalf("access root = %#v", root)
 			}
 		case "audit.log/v1":

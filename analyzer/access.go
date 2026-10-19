@@ -42,9 +42,6 @@ func validateQueryMethodShapes(access types.Type, model declaration.Model) ([]Qu
 }
 
 func validateQueryMethodShape(method *types.Func, query declaration.Query) (QueryMethod, error) {
-	if query.Operation != declaration.OperationSelect && len(query.Returning) == 0 {
-		return QueryMethod{}, fmt.Errorf("direct mutation methods require RETURNING")
-	}
 	signature, ok := method.Type().(*types.Signature)
 	if !ok || signature.Variadic() || signature.Params().Len() != 2 || signature.Results().Len() != 2 ||
 		!isContextType(signature.Params().At(0).Type()) ||
@@ -61,6 +58,16 @@ func validateQueryMethodShape(method *types.Func, query declaration.Query) (Quer
 	}
 	if err := matchAccessFields(request, parameters); err != nil {
 		return QueryMethod{}, fmt.Errorf("request: %w", err)
+	}
+	if query.Operation != declaration.OperationSelect && len(query.Returning) == 0 {
+		if query.Cardinality != declaration.CardinalityNone ||
+			!types.Identical(types.Unalias(signature.Results().At(0).Type()), types.Typ[types.Uint64]) {
+			return QueryMethod{}, fmt.Errorf("mutation without RETURNING must return uint64 affected rows")
+		}
+		return QueryMethod{
+			Name: method.Name(), Cardinality: declaration.CardinalityNone,
+			RequestPackage: request.Obj().Pkg().Path(), RequestType: request.Obj().Name(),
+		}, nil
 	}
 	result := types.Unalias(signature.Results().At(0).Type())
 	var rowType types.Type
