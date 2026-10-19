@@ -49,7 +49,11 @@ func StageAnalyzeInput(ctx context.Context, projectRoot, snapshotRoot string, op
 	if err != nil {
 		return StagedAnalyzeInput{}, err
 	}
-	snapshot := analyzer.Snapshot{TargetGOARCH: inventory.Build.GOARCH, StandardExports: exports}
+	resources, err := selectedResourceContracts(inventory.Packages, inventory.ProjectModules)
+	if err != nil {
+		return StagedAnalyzeInput{}, err
+	}
+	snapshot := analyzer.Snapshot{TargetGOARCH: inventory.Build.GOARCH, StandardExports: exports, Resources: resources}
 	for _, pkg := range inventory.Packages {
 		snapshot.Packages = append(snapshot.Packages, pkg.Package)
 	}

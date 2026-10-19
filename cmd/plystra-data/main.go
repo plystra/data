@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/plystra/data/analyzer"
 	"github.com/plystra/data/compilerselection"
 	"github.com/plystra/data/project"
 	"github.com/plystra/data/protocol"
@@ -138,6 +139,8 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "plystra-data: selected Data compiler is unavailable")
 		case errors.Is(err, compilerselection.ErrConcurrentChange):
 			fmt.Fprintln(stderr, "plystra-data: Project module inputs changed during compiler selection")
+		case errors.Is(err, project.ErrInvalidResourceContract):
+			fmt.Fprintln(stderr, "plystra-data: "+err.Error())
 		case errors.Is(err, project.ErrSourceInventory):
 			fmt.Fprintln(stderr, "plystra-data: selected Data source or type input is unavailable or changed")
 		case errors.Is(err, project.ErrCompilerResponse):
@@ -189,7 +192,11 @@ func inspectInputs(root, format string, offline bool, tags []string, stdout, std
 	defer os.RemoveAll(private)
 	staged, err := project.StageAnalyzeInput(context.Background(), root, filepath.Join(private, "snapshot"), project.SourceOptions{Offline: offline, BuildTags: tags})
 	if err != nil {
-		fmt.Fprintln(stderr, "plystra-data: cannot obtain the selected source and standard-library type inputs")
+		if errors.Is(err, project.ErrInvalidResourceContract) {
+			fmt.Fprintln(stderr, "plystra-data: "+err.Error())
+		} else {
+			fmt.Fprintln(stderr, "plystra-data: cannot obtain the selected source and standard-library type inputs")
+		}
 		return 2
 	}
 	digest, err := protocol.SnapshotManifestDigest(staged.Manifest)
@@ -209,16 +216,18 @@ func inspectInputs(root, format string, offline bool, tags []string, stdout, std
 			SnapshotDigest  string                            `json:"snapshot_digest"`
 			SourcePackages  int                               `json:"source_packages"`
 			StandardExports []protocol.SnapshotStandardExport `json:"standard_exports"`
+			Resources       []analyzer.ResourceContract       `json:"resources"`
 		}{
 			Schema: "plystra.data-input-inspection/v1", Build: staged.Build, GoToolchain: staged.GoToolchain,
 			SnapshotDigest: digest, SourcePackages: len(staged.Manifest.Packages), StandardExports: staged.Manifest.StandardExports,
+			Resources: staged.Manifest.Resources,
 		}); err != nil {
 			fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
 			return 1
 		}
 		return 0
 	}
-	if _, err := fmt.Fprintf(stdout, "%s  %s  %d source packages  %d standard exports\n", staged.GoToolchain, digest, len(staged.Manifest.Packages), len(staged.Manifest.StandardExports)); err != nil {
+	if _, err := fmt.Fprintf(stdout, "%s  %s  %d source packages  %d standard exports  %d Resource contracts\n", staged.GoToolchain, digest, len(staged.Manifest.Packages), len(staged.Manifest.StandardExports), len(staged.Manifest.Resources)); err != nil {
 		fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
 		return 1
 	}

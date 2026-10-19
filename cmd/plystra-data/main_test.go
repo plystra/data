@@ -180,9 +180,10 @@ func TestPublicInspectSourcesClosureCommand(t *testing.T) {
 func TestPublicInspectInputsCommand(t *testing.T) {
 	root := t.TempDir()
 	for name, content := range map[string]string{
-		"go.mod":          "module example.com/app\ngo 1.26\n",
-		"plystra.yaml":    "project: app\n",
-		"model/member.go": "package model\nimport \"fmt\"\n//plystra:data accounts.user/v1\nvar Member = fmt.Sprint(missingAuthoredName)\n",
+		"go.mod":             "module example.com/app\ngo 1.26\n",
+		"plystra.yaml":       "project: app\n",
+		"model/member.go":    "package model\nimport (\"fmt\"; \"example.com/app/access\")\n//plystra:data accounts.user/v1\nvar Member = fmt.Sprint(missingAuthoredName)\nvar Contract access.Resource\n",
+		"access/resource.go": "package access\n//plystra:resource accounts.access/v1\ntype Resource interface { Read() error }\n",
 	} {
 		path := filepath.Join(root, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -211,8 +212,13 @@ func TestPublicInspectInputsCommand(t *testing.T) {
 			Digest     string `json:"digest"`
 			Bytes      int    `json:"bytes"`
 		} `json:"standard_exports"`
+		Resources []struct {
+			ImportPath string `json:"import_path"`
+			TypeName   string `json:"type_name"`
+			ID         string `json:"id"`
+		} `json:"resources"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Schema != "plystra.data-input-inspection/v1" || result.GoToolchain == "" || !strings.HasPrefix(result.SnapshotDigest, "sha256:") || result.SourcePackages != 1 || len(result.StandardExports) == 0 {
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil || result.Schema != "plystra.data-input-inspection/v1" || result.GoToolchain == "" || !strings.HasPrefix(result.SnapshotDigest, "sha256:") || result.SourcePackages != 2 || len(result.StandardExports) == 0 || len(result.Resources) != 1 || result.Resources[0].ImportPath != "example.com/app/access" || result.Resources[0].TypeName != "Resource" || result.Resources[0].ID != "accounts.access/v1" {
 		t.Fatalf("input inspection = %#v, %v", result, err)
 	}
 	foundFmt := false
@@ -226,6 +232,15 @@ func TestPublicInspectInputsCommand(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "go.sum")); !os.IsNotExist(err) {
 		t.Fatalf("Project go.sum changed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "access", "resource.go"), []byte("package access\n//plystra:resource invalid\ntype Resource interface { Read() error }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"inspect", "inputs", "--project", root, "--format", "json", "--offline"}, &stdout, &stderr); code != 2 || stdout.Len() != 0 ||
+		!strings.Contains(stderr.String(), "invalid selected Resource contract") || !strings.Contains(stderr.String(), "access/resource.go") || strings.Contains(stderr.String(), root) {
+		t.Fatalf("malformed Resource inspection = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 }
 

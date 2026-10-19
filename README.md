@@ -182,13 +182,19 @@ Responses contain normalized member models with their roots, provenance,
 diagnostics, and output digests. `project.StageAnalyzeInput` obtains the
 Go-selected source closure and standard-library `gc` exports for the selected
 Project toolchain, target build context, and tags, then verifies their private
-snapshot without compiling authored packages. `project.AnalyzeCurrentProject`
-builds the verified versioned compiler from the Project module graph with
+snapshot without compiling authored packages. It discovers Resource directive
+identities only from selected Plystra Project modules in that source closure
+and includes them in the snapshot digest; the analyzer checks the referenced
+Go access type. This does not yet establish complete Core Resource contract
+compatibility or generate an access provider.
+`project.AnalyzeCurrentProject` builds the verified versioned compiler from the
+Project module graph with
 `GOWORK=off`, sends one bounded analyze frame, validates the response, and
 rechecks compiler selection and source inputs before returning. It does not
-compile authored packages or install Project artifacts. Data-owned Resource
-contract discovery is not yet supplied by this Project workflow, so members
-requiring an access Resource cannot yet be accepted through it.
+compile authored packages or install Project artifacts. Authored access
+Resource members can now be analyzed, but Data-owned provider generation and
+installation remain incomplete.
+
 The compiler command writes no generated files and emits no non-protocol
 stdout. The distribution contract is recorded in
 `plystra-data-compiler.json`.
@@ -279,10 +285,11 @@ compiler invocation are not supplied by this command.
 `plystra-data inspect inputs --project DIR` obtains the selected source closure
 and its standard-library exports, stages and verifies a private snapshot, and
 removes that temporary snapshot after inspection. `--tags` and `--offline`
-follow source inspection. Text and `plystra.data-input-inspection/v1` JSON
-report the selected Go toolchain, build context, source-package count, standard
-export identities, and root-independent snapshot digest without exposing
-source bytes, export bytes, private paths, or build-cache paths. An authored
+follow source inspection. Text reports selected input counts;
+`plystra.data-input-inspection/v1` JSON also lists standard export and selected
+Resource contract identities and the build context. Both include the Go
+toolchain, source-package count, and root-independent snapshot digest without
+exposing source bytes, export bytes, private paths, or build-cache paths. An authored
 package need not build for this type-input acquisition to succeed. This
 inspection does not select or invoke the exact Data compiler, accept a member
 model, or install generated access.

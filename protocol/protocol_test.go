@@ -113,6 +113,18 @@ func TestValidateAnalyzeRequestRejectsDigestMismatch(t *testing.T) {
 	}
 }
 
+func TestAnalyzeInputDigestBindsResourceContracts(t *testing.T) {
+	request := validRequest(t)
+	request.Snapshot.Resources = []analyzer.ResourceContract{{ImportPath: "example.com/access", TypeName: "Resource", ID: "accounts.access/v1"}}
+	if err := protocol.ValidateAnalyzeRequest(request); err == nil {
+		t.Fatal("request accepted a Resource identity outside the input digest")
+	}
+	updated, err := protocol.AnalyzeInputDigest(request.Snapshot, request.Build)
+	if err != nil || updated == request.InputDigest {
+		t.Fatalf("Resource identity did not change input digest: %s, %v", updated, err)
+	}
+}
+
 func TestValidateAnalyzeRequestRequiresGoModuleChecksum(t *testing.T) {
 	request := validRequest(t)
 	request.Compiler.ModuleChecksum = "sha256:" + strings.Repeat("1", 64)

@@ -43,6 +43,7 @@ type SourceOptions struct {
 type SourceInventory struct {
 	Packages         []SourcePackage
 	StandardPackages []string
+	ProjectModules   []string
 	Build            protocol.BuildContext
 }
 
@@ -134,6 +135,7 @@ func DiscoverDataRoots(ctx context.Context, projectRoot string, options SourceOp
 	}
 	sort.Slice(modules, func(i, j int) bool { return modules[i].Path < modules[j].Path })
 	var candidates []packageCandidate
+	var projectModules []string
 	var verified []struct{ root, version, checksum, modulePath string }
 	for _, module := range modules {
 		moduleRoot, source, err := selectedModuleRoot(ctx, root, env, module)
@@ -143,6 +145,7 @@ func DiscoverDataRoots(ctx context.Context, projectRoot string, options SourceOp
 		if !regularFile(filepath.Join(moduleRoot, "plystra.yaml")) {
 			continue
 		}
+		projectModules = append(projectModules, module.Path)
 		if source.Checksum != "" {
 			selectedPath, selectedVersion := module.Path, module.Version
 			if module.Replace != nil {
@@ -158,6 +161,7 @@ func DiscoverDataRoots(ctx context.Context, projectRoot string, options SourceOp
 	}
 	var result SourceInventory
 	result.Build = build
+	result.ProjectModules = projectModules
 	roots := make(map[string]string, len(candidates))
 	for _, candidate := range candidates {
 		pkg, selected, err := loadCandidate(ctx, root, candidate, env, options.BuildTags)

@@ -173,6 +173,83 @@ var Audit = declaration.Member[declaration.NoAccess]{Namespace: "audit"}
 	if !reflect.DeepEqual(validBefore, snapshotAnalyzeProject(t, projectRoot)) {
 		t.Fatal("valid analyze changed Project files")
 	}
+	writeAnalyzeFixture(t, filepath.Join(projectRoot, "access", "resource.go"), []byte(`package access
+
+//plystra:resource accounts.access/v1
+type Resource interface { Read() error }
+`))
+	writeAnalyzeFixture(t, filepath.Join(projectRoot, "model", "member.go"), []byte(`package model
+
+import (
+	"example.com/app/access"
+	"github.com/plystra/data/declaration"
+)
+
+//plystra:data audit.log/v1
+var Audit = declaration.Member[declaration.NoAccess]{Namespace: "audit"}
+
+//plystra:data accounts.reader/v1
+var Reader = declaration.Member[access.Resource]{Namespace: "accounts"}
+`))
+	accessBefore := snapshotAnalyzeProject(t, projectRoot)
+	stdout.Reset()
+	stderr.Reset()
+	command = exec.CommandContext(ctx, commandPath, "analyze", "--project", projectRoot, "--format", "json", "--offline")
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil || stderr.Len() != 0 {
+		t.Fatalf("access public analyze = %v, stdout = %q, stderr = %q", err, stdout.String(), stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil || output.Response.Status != protocol.StatusSucceeded ||
+		len(output.Response.Diagnostics) != 0 || len(output.Response.Output.Roots) != 2 {
+		t.Fatalf("access analysis = %#v, %v", output.Response, err)
+	}
+	var foundAccess, foundNoAccess bool
+	for _, root := range output.Response.Output.Roots {
+		switch root.MemberID {
+		case "accounts.reader/v1":
+			foundAccess = true
+			if root.AccessPackage != "example.com/app/access" || root.AccessType != "Resource" ||
+				root.AccessID != "accounts.access/v1" || root.MigrationOnly {
+				t.Fatalf("access root = %#v", root)
+			}
+		case "audit.log/v1":
+			foundNoAccess = true
+			if !root.MigrationOnly {
+				t.Fatalf("NoAccess root = %#v", root)
+			}
+		default:
+			t.Fatalf("unexpected root = %#v", root)
+		}
+	}
+	if !foundAccess || !foundNoAccess {
+		t.Fatalf("missing access or NoAccess root: %#v", output.Response.Output.Roots)
+	}
+	if !reflect.DeepEqual(accessBefore, snapshotAnalyzeProject(t, projectRoot)) {
+		t.Fatal("access analyze changed Project files")
+	}
+	writeAnalyzeFixture(t, filepath.Join(projectRoot, "access", "resource.go"), []byte(`package access
+
+type Resource interface { Read() error }
+`))
+	missingDirectiveBefore := snapshotAnalyzeProject(t, projectRoot)
+	stdout.Reset()
+	stderr.Reset()
+	command = exec.CommandContext(ctx, commandPath, "analyze", "--project", projectRoot, "--format", "json", "--offline")
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err = command.Run()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 2 || stderr.Len() != 0 {
+		t.Fatalf("missing Resource directive analyze = %v, stdout = %q, stderr = %q", err, stdout.String(), stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil || output.Response.Status != protocol.StatusRejected {
+		t.Fatalf("missing Resource directive response = %#v, %v", output.Response, err)
+	}
+	foundAccessMismatch := false
+	for _, diagnostic := range output.Response.Diagnostics {
+		foundAccessMismatch = foundAccessMismatch || diagnostic.Code == analyzer.CodeAccessContractMismatch
+	}
+	if !foundAccessMismatch || !reflect.DeepEqual(missingDirectiveBefore, snapshotAnalyzeProject(t, projectRoot)) {
+		t.Fatalf("missing Resource directive was not rejected without Project mutation: %#v", output.Response.Diagnostics)
+	}
 }
 
 func writeAnalyzeFixture(t *testing.T, path string, content []byte) {
