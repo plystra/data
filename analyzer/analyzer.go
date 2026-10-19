@@ -127,9 +127,21 @@ type Root struct {
 	AccessPackage  string            `json:"access_package,omitempty"`
 	AccessType     string            `json:"access_type,omitempty"`
 	AccessID       string            `json:"access_id,omitempty"`
+	QueryMethods   []QueryMethod     `json:"query_methods,omitempty"`
 	MigrationOnly  bool              `json:"migration_only"`
 	SourceDigest   string            `json:"source_digest"`
 	DeclarationPos Span              `json:"declaration_pos"`
+}
+
+// QueryMethod records the authored types needed to implement one validated
+// directly callable query without reopening Project source during emission.
+type QueryMethod struct {
+	Name           string                  `json:"name"`
+	Cardinality    declaration.Cardinality `json:"cardinality"`
+	RequestPackage string                  `json:"request_package"`
+	RequestType    string                  `json:"request_type"`
+	RowPackage     string                  `json:"row_package"`
+	RowType        string                  `json:"row_type"`
 }
 
 // DiagnosticCode is a stable source-facing failure class.
@@ -652,9 +664,15 @@ func (a *analysis) inspectRoot(pkg *parsedPackage, file *ast.File, spec *ast.Val
 		a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, code, "Data declaration could not be normalized", "Correct the typed Data literal and its references before retrying.", memberID, name.Name)
 		return
 	}
+	var queryMethods []QueryMethod
 	if !migrationOnly {
 		if err := validateAccessMethodNames(accessType, model); err != nil {
 			a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeAccessContractMismatch, err.Error(), "Match each exported access Resource method to exactly one query or plan Method.", memberID, name.Name)
+			return
+		}
+		queryMethods, err = validateQueryMethodShapes(accessType, model)
+		if err != nil {
+			a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeAccessContractMismatch, err.Error(), "Use a supported typed SELECT method and map every request and row field explicitly.", memberID, name.Name)
 			return
 		}
 	}
@@ -679,6 +697,7 @@ func (a *analysis) inspectRoot(pkg *parsedPackage, file *ast.File, spec *ast.Val
 		AccessPackage:  accessPackage,
 		AccessType:     accessName,
 		AccessID:       accessID,
+		QueryMethods:   queryMethods,
 		MigrationOnly:  migrationOnly,
 		SourceDigest:   digestBytes(pkg.contents[fileName(pkg, file)]),
 		DeclarationPos: span(pkg.fset, initializer.Pos(), initializer.End()),

@@ -276,6 +276,12 @@ func (d modelDecoder) parameters(value ast.Expr) ([]declaration.Parameter, error
 				return nil, err
 			}
 		}
+		if field, ok := fields["GoField"]; ok {
+			parameter.GoField, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if field, ok := fields["Type"]; ok {
 			parameter.Type, err = d.scalar(field)
 			if err != nil {
@@ -517,6 +523,13 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 			if err != nil {
 				return nil, err
 			}
+		}
+		if field, ok := fields["Cardinality"]; ok {
+			value, valueErr := d.string(field)
+			if valueErr != nil {
+				return nil, valueErr
+			}
+			query.Cardinality = declaration.Cardinality(value)
 		}
 		if field, ok := fields["Operation"]; ok {
 			value, valueErr := d.string(field)
@@ -801,6 +814,12 @@ func (d modelDecoder) resultFields(value ast.Expr) ([]declaration.ResultField, e
 		item := declaration.ResultField{}
 		if field, ok := fields["ID"]; ok {
 			item.ID, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["GoField"]; ok {
+			item.GoField, err = d.string(field)
 			if err != nil {
 				return nil, err
 			}

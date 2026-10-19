@@ -10,9 +10,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/token"
 	"io"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/plystra/data/analyzer"
 	"github.com/plystra/data/declaration"
@@ -340,11 +343,13 @@ func validateAnalyzeRoots(snapshot SnapshotManifest, roots []analyzer.Root) erro
 			return fmt.Errorf("analyze root source is not in the snapshot")
 		}
 		if root.MigrationOnly {
-			if root.AccessPackage != "github.com/plystra/data/declaration" || root.AccessType != "NoAccess" || root.AccessID != "" {
+			if root.AccessPackage != "github.com/plystra/data/declaration" || root.AccessType != "NoAccess" || root.AccessID != "" || len(root.QueryMethods) != 0 {
 				return fmt.Errorf("analyze migration-only access identity is invalid")
 			}
 		} else if root.AccessPackage == "" || root.AccessType == "" || root.AccessID == "" || resources[root.AccessPackage+"\x00"+root.AccessType] != root.AccessID {
 			return fmt.Errorf("analyze root access identity is not in the snapshot")
+		} else if err := validateQueryMethods(packages, root); err != nil {
+			return err
 		}
 		model, err := (declaration.Member[struct{}]{
 			Namespace: root.Model.Namespace, Imports: root.Model.Imports,
@@ -356,6 +361,39 @@ func validateAnalyzeRoots(snapshot SnapshotManifest, roots []analyzer.Root) erro
 		}
 	}
 	return nil
+}
+
+func validateQueryMethods(packages map[string]SnapshotPackage, root analyzer.Root) error {
+	queries := make(map[string]declaration.Query)
+	for _, query := range root.Model.Queries {
+		if query.Method != "" {
+			queries[query.Method] = query
+		}
+	}
+	for _, plan := range root.Model.Plans {
+		if plan.Method != "" {
+			return fmt.Errorf("analyze root has an unsupported access plan method")
+		}
+	}
+	if len(queries) == 0 || len(root.QueryMethods) != len(queries) {
+		return fmt.Errorf("analyze root query method inventory is incomplete")
+	}
+	previous := ""
+	for _, method := range root.QueryMethods {
+		query, exists := queries[method.Name]
+		if !exists || method.Name <= previous || method.Cardinality != query.Cardinality ||
+			!validAccessTypeName(method.RequestType) || !validAccessTypeName(method.RowType) ||
+			packages[method.RequestPackage].ImportPath == "" || packages[method.RowPackage].ImportPath == "" {
+			return fmt.Errorf("analyze root query method shape is invalid")
+		}
+		previous = method.Name
+	}
+	return nil
+}
+
+func validAccessTypeName(value string) bool {
+	first, _ := utf8.DecodeRuneInString(value)
+	return len(value) <= declaration.MaximumSymbolBytes && token.IsIdentifier(value) && unicode.IsUpper(first)
 }
 
 func validateAnalyzeDiagnostics(snapshot SnapshotManifest, diagnostics []analyzer.Diagnostic) error {

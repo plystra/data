@@ -112,7 +112,13 @@ var Accounts = declaration.Member[database.Resource]{
 	Namespace: "accounts",
 	Tables: []declaration.Table{{
 		ID: "users",
-		Columns: []declaration.Column{{ID: "id", Type: declaration.TypeUUID}},
+		Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}},
+	}},
+	Queries: []declaration.Query{{
+		ID: "read", Method: "Read", Cardinality: "many", Operation: "select",
+		Table: declaration.Ref{Symbol: "users"},
+		Projection: []declaration.Projection{{Column: "id"}},
+		Results: []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: "int64"}},
 	}},
 }
 
@@ -135,6 +141,11 @@ func init() { panic("must not execute") }
 	if result.Roots[0].AccessID != resourceID || result.Roots[0].SourceDigest == "" || result.Digest == "" {
 		t.Fatalf("root provenance = %#v", result.Roots[0])
 	}
+	if len(result.Roots[0].QueryMethods) != 1 || result.Roots[0].QueryMethods[0].Name != "Read" ||
+		result.Roots[0].QueryMethods[0].RequestPackage != "github.com/plystra/data/database" ||
+		result.Roots[0].QueryMethods[0].RowType != "Row" {
+		t.Fatalf("query method shape = %#v", result.Roots[0].QueryMethods)
+	}
 	if result.Roots[0].DeclarationPos.StartLine == 0 || result.Roots[0].DeclarationPos.Path != "models.go" {
 		t.Fatalf("span = %#v", result.Roots[0].DeclarationPos)
 	}
@@ -149,8 +160,13 @@ import (
 //plystra:data accounts.reader/v1
 var Reader = declaration.Member[database.Resource]{
 	Namespace: "accounts",
-	Tables: []declaration.Table{{ID: "users"}},
-	Queries: []declaration.Query{{ID: "read-users", Method: "Read", Operation: "select", Table: declaration.Ref{Symbol: "users"}}},
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}},
+	Queries: []declaration.Query{{
+		ID: "read-users", Method: "Read", Cardinality: "many", Operation: "select",
+		Table: declaration.Ref{Symbol: "users"},
+		Projection: []declaration.Projection{{Column: "id"}},
+		Results: []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: "int64"}},
+	}},
 }`
 	resource := analyzer.ResourceContract{ImportPath: "github.com/plystra/data/database", TypeName: "Resource", ID: resourceID}
 	for _, test := range []struct {
@@ -158,15 +174,22 @@ var Reader = declaration.Member[database.Resource]{
 		methods string
 		valid   bool
 	}{
-		{name: "exact", methods: "Read() error", valid: true},
-		{name: "extra", methods: "Read() error; Write() error"},
+		{name: "exact", methods: "Read(context.Context, Request) ([]Row, error)", valid: true},
+		{name: "extra", methods: "Read(context.Context, Request) ([]Row, error); Write() error"},
 		{name: "missing", methods: ""},
-		{name: "unexported", methods: "Read() error; hidden() error"},
-		{name: "lifecycle", methods: "Read() error; Close() error"},
+		{name: "unexported", methods: "Read(context.Context, Request) ([]Row, error); hidden() error"},
+		{name: "lifecycle", methods: "Read(context.Context, Request) ([]Row, error); Close() error"},
+		{name: "missing context", methods: "Read(Request) ([]Row, error)"},
+		{name: "missing request", methods: "Read(context.Context) ([]Row, error)"},
+		{name: "pointer request", methods: "Read(context.Context, *Request) ([]Row, error)"},
+		{name: "wrong cardinality", methods: "Read(context.Context, Request) (Row, error)"},
+		{name: "wrong row", methods: "Read(context.Context, Request) ([]int64, error)"},
+		{name: "wrong error", methods: "Read(context.Context, Request) ([]Row, bool)"},
+		{name: "variadic", methods: "Read(context.Context, ...Request) ([]Row, error)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			snapshot := sourceSnapshot(body, resource)
-			snapshot.Packages[1].Files[0].Content = []byte("package database\ntype Resource interface { " + test.methods + " }\n")
+			snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\nvar _ context.Context\ntype Request struct{}\ntype Row struct{ID int64}\ntype Resource interface { " + test.methods + " }\n")
 			result, err := analyzer.Analyze(snapshot)
 			if err != nil || result.Valid != test.valid {
 				t.Fatalf("method coverage = %#v, %v", result, err)
@@ -178,10 +201,95 @@ var Reader = declaration.Member[database.Resource]{
 	}
 	t.Run("embedded", func(t *testing.T) {
 		snapshot := sourceSnapshot(body, resource)
-		snapshot.Packages[1].Files[0].Content = []byte("package database\ntype Base interface { Read() error }\ntype Resource interface { Base }\n")
+		snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID int64}\ntype Base interface { Read(context.Context, Request) ([]Row, error) }\ntype Resource interface { Base }\n")
 		result, err := analyzer.Analyze(snapshot)
 		if err != nil || !result.Valid {
 			t.Fatalf("embedded method coverage = %#v, %v", result, err)
+		}
+	})
+	t.Run("wrong row field type", func(t *testing.T) {
+		snapshot := sourceSnapshot(body, resource)
+		snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID string}\ntype Resource interface { Read(context.Context, Request) ([]Row, error) }\n")
+		result, err := analyzer.Analyze(snapshot)
+		if err != nil || result.Valid || !hasCode(result, analyzer.CodeAccessContractMismatch) {
+			t.Fatalf("row field type mismatch = %#v, %v", result, err)
+		}
+	})
+	t.Run("request field mapping", func(t *testing.T) {
+		withParameter := strings.Replace(body, `Projection: []declaration.Projection`, `Parameters: []declaration.Parameter{{ID: "id", GoField: "ID", Type: "int64"}},
+		Projection: []declaration.Projection`, 1)
+		for _, test := range []struct {
+			name, field string
+			valid       bool
+		}{
+			{name: "exact", field: "ID int64", valid: true},
+			{name: "wrong type", field: "ID string"},
+			{name: "extra field", field: "ID int64; Other string"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				snapshot := sourceSnapshot(withParameter, resource)
+				snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{" + test.field + "}\ntype Row struct{ID int64}\ntype Resource interface { Read(context.Context, Request) ([]Row, error) }\n")
+				result, err := analyzer.Analyze(snapshot)
+				if err != nil || result.Valid != test.valid || (!test.valid && !hasCode(result, analyzer.CodeAccessContractMismatch)) {
+					t.Fatalf("request mapping = %#v, %v", result, err)
+				}
+			})
+		}
+	})
+	for _, test := range []struct {
+		name, cardinality, result string
+	}{
+		{name: "exactly one", cardinality: "exactly_one", result: "Row"},
+		{name: "zero or one", cardinality: "zero_or_one", result: "*Row"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			selected := strings.Replace(body, `Cardinality: "many"`, `Cardinality: "`+test.cardinality+`"`, 1)
+			snapshot := sourceSnapshot(selected, resource)
+			snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID int64}\ntype Resource interface { Read(context.Context, Request) (" + test.result + ", error) }\n")
+			result, err := analyzer.Analyze(snapshot)
+			if err != nil || !result.Valid || len(result.Roots) != 1 || result.Roots[0].QueryMethods[0].Cardinality != declaration.Cardinality(test.cardinality) {
+				t.Fatalf("cardinality shape = %#v, %v", result, err)
+			}
+		})
+	}
+	t.Run("nullable result", func(t *testing.T) {
+		selected := strings.Replace(body, `Columns: []declaration.Column{{ID: "id", Type: "int64"}}`, `Columns: []declaration.Column{{ID: "id", Type: "int64", Nullable: true}}`, 1)
+		selected = strings.Replace(selected, `GoField: "ID", Source: "id", Type: "int64"`, `GoField: "ID", Source: "id", Type: "int64", Nullable: true`, 1)
+		for _, test := range []struct {
+			name, field string
+			valid       bool
+		}{
+			{name: "pointer", field: "ID *int64", valid: true},
+			{name: "value", field: "ID int64"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				snapshot := sourceSnapshot(selected, resource)
+				snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{" + test.field + "}\ntype Resource interface { Read(context.Context, Request) ([]Row, error) }\n")
+				result, err := analyzer.Analyze(snapshot)
+				if err != nil || result.Valid != test.valid || (!test.valid && !hasCode(result, analyzer.CodeAccessContractMismatch)) {
+					t.Fatalf("nullable result shape = %#v, %v", result, err)
+				}
+			})
+		}
+	})
+	t.Run("unsupported access scalar", func(t *testing.T) {
+		selected := strings.ReplaceAll(body, `Type: "int64"`, `Type: "uuid"`)
+		snapshot := sourceSnapshot(selected, resource)
+		snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID string}\ntype Resource interface { Read(context.Context, Request) ([]Row, error) }\n")
+		result, err := analyzer.Analyze(snapshot)
+		if err != nil || result.Valid || !hasCode(result, analyzer.CodeAccessContractMismatch) {
+			t.Fatalf("unsupported access scalar = %#v, %v", result, err)
+		}
+	})
+	t.Run("callable plan is not yet executable", func(t *testing.T) {
+		selected := strings.Replace(body, "\n}", `
+	Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: "many"}}}},
+}`, 1)
+		snapshot := sourceSnapshot(selected, resource)
+		snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID int64}\ntype Resource interface { Read(context.Context, Request) ([]Row, error); ReadPlan() error }\n")
+		result, err := analyzer.Analyze(snapshot)
+		if err != nil || result.Valid || !hasCode(result, analyzer.CodeAccessContractMismatch) {
+			t.Fatalf("callable plan = %#v, %v", result, err)
 		}
 	})
 }
@@ -200,7 +308,6 @@ import "github.com/plystra/data/declaration"
 	},
 	Queries: []declaration.Query{{
 		ID: "list-users",
-		Method: "ListUsers",
 		Operation: "select",
 		Table: declaration.Ref{Symbol: "a-users"},
 		Projection: []declaration.Projection{{Column: "id", Alias: "user-id"}},
@@ -208,7 +315,6 @@ import "github.com/plystra/data/declaration"
 	}},
 	Plans: []declaration.Plan{{
 		ID: "list-plan",
-		Method: "ListPlan",
 		Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "list-users"}, Cardinality: "many"}},
 	}},
 	Migrations: []declaration.Migration{{
@@ -233,10 +339,10 @@ import "github.com/plystra/data/declaration"
 	if len(model.Tables[1].Columns) != 2 || model.Tables[1].Columns[0].ID != "email" || model.Tables[1].Columns[1].ID != "id" {
 		t.Fatalf("normalized columns = %#v", model.Tables[1].Columns)
 	}
-	if len(model.Queries) != 1 || model.Queries[0].Method != "ListUsers" || model.Queries[0].Operation != "select" || model.Queries[0].Table.Symbol != "a-users" || model.Queries[0].Projection[0].Alias != "user-id" {
+	if len(model.Queries) != 1 || model.Queries[0].Operation != "select" || model.Queries[0].Table.Symbol != "a-users" || model.Queries[0].Projection[0].Alias != "user-id" {
 		t.Fatalf("decoded query = %#v", model.Queries)
 	}
-	if len(model.Plans) != 1 || model.Plans[0].Method != "ListPlan" || model.Plans[0].Statements[0].Query.Symbol != "list-users" {
+	if len(model.Plans) != 1 || model.Plans[0].Statements[0].Query.Symbol != "list-users" {
 		t.Fatalf("decoded plan = %#v", model.Plans)
 	}
 	if len(model.Migrations) != 1 || model.Migrations[0].Version != 1 || model.Migrations[0].Operations[0].Table.Symbol != "a-users" {
@@ -1198,6 +1304,7 @@ type NoAccess struct{}
 type Ref struct { Member string; Symbol string }
 type ScalarType string
 const TypeUUID ScalarType = "uuid"
+const TypeInt64 ScalarType = "int64"
 type Value struct { Kind ScalarType; Set bool; Parameter string; String string; Int64 int64; Uint64 uint64; Float64 float64; Bool bool; Bytes string }
 type Member[Access any] struct { Namespace string; Imports []string; Tables []Table; Queries []Query; Plans []Plan; Migrations []Migration; Access Access }
 type Table struct { ID string; Columns []Column; Constraints []Constraint; Indexes []Index }
@@ -1206,7 +1313,7 @@ type ConstraintKind string
 type Constraint struct { ID string; Kind ConstraintKind; Columns []string; ReferencedTable Ref; ReferencedCols []string }
 type Index struct { ID string; Columns []string; Unique bool }
 type OperationKind string
-type Parameter struct { ID string; Type ScalarType }
+type Parameter struct { ID string; GoField string; Type ScalarType }
 type Assignment struct { Column string; Value Value; Increment bool }
 type ColumnRef struct { Table Ref; Column string }
 type JoinKind string
@@ -1215,9 +1322,9 @@ type JoinCondition struct { Left ColumnRef; Right ColumnRef }
 type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
 type ConflictAction string
 type Conflict struct { Constraint string; Action ConflictAction; UpdateColumns []string }
-type Query struct { ID string; Method string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; GroupBy []ColumnRef; Having Predicate; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
+type Query struct { ID string; Method string; Cardinality Cardinality; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; GroupBy []ColumnRef; Having Predicate; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 type Projection struct { Table Ref; Column string; Alias string; Aggregate string }
-type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
+type ResultField struct { ID string; GoField string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string
 type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }
 type OrderingDirection string
@@ -1231,10 +1338,13 @@ type MigrationOperationKind string
 type MigrationOperation struct { Kind MigrationOperationKind; Table Ref; Column Column; Index Index }
 `)}}},
 			{ImportPath: "github.com/plystra/data/database", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "resource.go", Content: []byte(`package database
-
-type Resource interface{}
+import "context"
+type Request struct{}
+type Row struct{ID int64}
+type Resource interface{ Read(context.Context, Request) ([]Row, error) }
 `)}}},
 			{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: fileName, Content: []byte(body)}}},
+			{ImportPath: "context", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "context.go", Content: []byte("package context\ntype Context interface{}\n")}}},
 		},
 		Resources: validResources,
 	}

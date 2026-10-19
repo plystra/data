@@ -71,9 +71,14 @@ func TestNormalizeSortsAndDigestsTheLogicalModel(t *testing.T) {
 func TestNormalizePreservesExplicitAccessMethods(t *testing.T) {
 	member := declaration.Member[access]{
 		Namespace: "accounts",
-		Tables:    []declaration.Table{{ID: "users"}},
-		Queries:   []declaration.Query{{ID: "read-users", Method: "ReadUsers", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}}},
-		Plans:     []declaration.Plan{{ID: "read-plan", Method: "ReadPlan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: declaration.CardinalityMany}}}},
+		Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{
+			ID: "read-users", Method: "ReadUsers", Cardinality: declaration.CardinalityMany,
+			Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+			Projection: []declaration.Projection{{Column: "id"}},
+			Results:    []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: declaration.TypeInt64}},
+		}},
+		Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: declaration.CardinalityMany}}}},
 	}
 	model, err := member.Normalize()
 	if err != nil {
@@ -103,6 +108,58 @@ func TestNormalizePreservesExplicitAccessMethods(t *testing.T) {
 		if _, err := member.Normalize(); !errors.Is(err, declaration.ErrInvalidID) {
 			t.Fatalf("invalid method %q error = %v", method, err)
 		}
+	}
+}
+
+func TestNormalizeDirectQueryMethodFields(t *testing.T) {
+	base := declaration.Query{
+		ID: "read-users", Method: "ReadUsers", Cardinality: declaration.CardinalityMany,
+		Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+		Parameters: []declaration.Parameter{{ID: "id", GoField: "ID", Type: declaration.TypeInt64}},
+		Projection: []declaration.Projection{{Column: "id"}},
+		Results:    []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: declaration.TypeInt64}},
+	}
+	check := func(query declaration.Query) error {
+		_, err := (declaration.Member[access]{
+			Namespace: "accounts",
+			Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{
+				{ID: "id", Type: declaration.TypeInt64}, {ID: "name", Type: declaration.TypeString},
+			}}},
+			Queries: []declaration.Query{query},
+		}).Normalize()
+		return err
+	}
+	if err := check(base); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Query)
+		want error
+	}{
+		{name: "missing cardinality", edit: func(q *declaration.Query) { q.Cardinality = "" }, want: declaration.ErrUnsupported},
+		{name: "cardinality without method", edit: func(q *declaration.Query) { q.Method = "" }, want: declaration.ErrInvalidSchema},
+		{name: "missing parameter field", edit: func(q *declaration.Query) { q.Parameters[0].GoField = "" }, want: declaration.ErrInvalidID},
+		{name: "duplicate parameter field", edit: func(q *declaration.Query) {
+			q.Parameters = append(q.Parameters, declaration.Parameter{ID: "name", GoField: "ID", Type: declaration.TypeString})
+		}, want: declaration.ErrDuplicate},
+		{name: "missing result field", edit: func(q *declaration.Query) { q.Results[0].GoField = "" }, want: declaration.ErrInvalidID},
+		{name: "duplicate result field", edit: func(q *declaration.Query) {
+			q.Projection = append(q.Projection, declaration.Projection{Column: "name"})
+			q.Results = append(q.Results, declaration.ResultField{ID: "name", GoField: "ID", Source: "name", Type: declaration.TypeString})
+		}, want: declaration.ErrDuplicate},
+		{name: "mutation method", edit: func(q *declaration.Query) { q.Operation = declaration.OperationDelete }, want: declaration.ErrUnsupported},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			query := base
+			query.Parameters = append([]declaration.Parameter(nil), base.Parameters...)
+			query.Results = append([]declaration.ResultField(nil), base.Results...)
+			query.Projection = append([]declaration.Projection(nil), base.Projection...)
+			test.edit(&query)
+			if err := check(query); !errors.Is(err, test.want) {
+				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
 	}
 }
 

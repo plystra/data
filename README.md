@@ -32,9 +32,17 @@ normalized model and digest preserve that mapping, and duplicate or invalid
 method names fail declaration analysis. This is method identity only: Data
 requires exact name coverage against a type-checked authored access Resource
 before accepting its analysis result, including embedded methods; unmatched,
-unexported, and lifecycle methods are rejected. Data does not yet validate
-method signatures or generate access methods, so this name match is not
-evidence that a provider can be emitted.
+unexported, and lifecycle methods are rejected. A directly callable SELECT
+query additionally declares `Cardinality` (`exactly_one`, `zero_or_one`, or
+`many`) and maps each parameter and typed result through an exported `GoField`.
+Its authored method has the shape
+`Method(context.Context, Request) (Row, error)`, `(*Row, error)`, or
+`([]Row, error)` respectively. `Request` and `Row` are exported named structs
+whose fields exactly match the explicit mappings; nullable result fields are
+`*T`. The initial validated access scalar subset is `bool`, `[]byte`,
+`float64`, `int64`, and `string`. Unsupported signatures, mapped mutations, and
+callable plans fail analysis. Accepted method types and cardinality are bound to the
+analyze result, but provider generation and installation are not yet present.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it

@@ -104,6 +104,43 @@ func TestValidateAnalyzeResponseRejectsTampering(t *testing.T) {
 	}
 }
 
+func TestValidateAnalyzeResponseBindsTypedQueryMethods(t *testing.T) {
+	request := validRequest(t)
+	replaceRequestSnapshot(t, &request, typedAccessSnapshot())
+	base := protocol.HandleAnalyze(request)
+	if base.Status != protocol.StatusSucceeded || len(base.Output.Roots) != 1 || len(base.Output.Roots[0].QueryMethods) != 1 {
+		t.Fatalf("typed access response = %#v", base)
+	}
+	if err := protocol.ValidateAnalyzeResponse(request, base); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*analyzer.Root)
+	}{
+		{name: "missing", edit: func(root *analyzer.Root) { root.QueryMethods = nil }},
+		{name: "wrong cardinality", edit: func(root *analyzer.Root) { root.QueryMethods[0].Cardinality = "exactly_one" }},
+		{name: "unknown request package", edit: func(root *analyzer.Root) { root.QueryMethods[0].RequestPackage = "example.com/other" }},
+		{name: "unexported row", edit: func(root *analyzer.Root) { root.QueryMethods[0].RowType = "row" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := base
+			changed.Output.Roots = append([]analyzer.Root(nil), base.Output.Roots...)
+			changed.Output.Roots[0].QueryMethods = append([]analyzer.QueryMethod(nil), base.Output.Roots[0].QueryMethods...)
+			test.edit(&changed.Output.Roots[0])
+			var err error
+			changed.OutputDigest, err = analyzer.ResultDigest(changed.Output.Roots, changed.Diagnostics, changed.Truncated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed.Output.Digest = changed.OutputDigest
+			if err := protocol.ValidateAnalyzeResponse(request, changed); err == nil {
+				t.Fatal("rehashed invalid query method inventory was accepted")
+			}
+		})
+	}
+}
+
 func TestValidateAnalyzeRequestRejectsDigestMismatch(t *testing.T) {
 	request := validRequest(t)
 	request.InputDigest = "sha256:" + strings.Repeat("0", 64)
@@ -340,6 +377,39 @@ import "github.com/plystra/data/declaration"
 var Accounts = declaration.Member[declaration.NoAccess]{Namespace: "accounts"}
 `)}}},
 		},
+	}
+}
+
+func typedAccessSnapshot() analyzer.Snapshot {
+	return analyzer.Snapshot{
+		Packages: []analyzer.Package{
+			{ImportPath: "context", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "context.go", Content: []byte("package context\ntype Context interface{}\n")}}},
+			{ImportPath: "github.com/plystra/data/declaration", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "declaration.go", Content: []byte(`package declaration
+type Ref struct{Symbol string}
+type ScalarType string
+type Cardinality string
+type OperationKind string
+type Member[A any] struct{Namespace string;Tables []Table;Queries []Query;Access A}
+type Table struct{ID string;Columns []Column}
+type Column struct{ID string;Type ScalarType}
+type Query struct{ID string;Method string;Cardinality Cardinality;Operation OperationKind;Table Ref;Projection []Projection;Results []ResultField}
+type Projection struct{Column string}
+type ResultField struct{ID string;GoField string;Source string;Type ScalarType}
+`)}}},
+			{ImportPath: "example.com/access", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "access.go", Content: []byte(`package access
+import "context"
+//plystra:resource accounts.access/v1
+type Resource interface{Read(context.Context, Request)([]Row,error)}
+type Request struct{}
+type Row struct{ID int64}
+`)}}},
+			{ImportPath: "example.com/model", RootEligibility: analyzer.RootEligible, Files: []analyzer.SourceFile{{Path: "model.go", Content: []byte(`package model
+import("example.com/access";"github.com/plystra/data/declaration")
+//plystra:data accounts.user/v1
+var Accounts=declaration.Member[access.Resource]{Namespace:"accounts",Tables:[]declaration.Table{{ID:"users",Columns:[]declaration.Column{{ID:"id",Type:"int64"}}}},Queries:[]declaration.Query{{ID:"read",Method:"Read",Cardinality:"many",Operation:"select",Table:declaration.Ref{Symbol:"users"},Projection:[]declaration.Projection{{Column:"id"}},Results:[]declaration.ResultField{{ID:"id",GoField:"ID",Source:"id",Type:"int64"}}}}}
+`)}}},
+		},
+		Resources: []analyzer.ResourceContract{{ImportPath: "example.com/access", TypeName: "Resource", ID: "accounts.access/v1"}},
 	}
 }
 

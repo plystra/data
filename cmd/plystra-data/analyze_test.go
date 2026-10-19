@@ -174,9 +174,12 @@ var Audit = declaration.Member[declaration.NoAccess]{Namespace: "audit"}
 		t.Fatal("valid analyze changed Project files")
 	}
 	writeAnalyzeFixture(t, filepath.Join(projectRoot, "access", "resource.go"), []byte(`package access
+import "context"
 
 //plystra:resource accounts.access/v1
-type Resource interface { Read() error }
+type Resource interface { Read(context.Context, Request) ([]Row, error) }
+type Request struct{}
+type Row struct { ID int64 }
 `))
 	writeAnalyzeFixture(t, filepath.Join(projectRoot, "model", "member.go"), []byte(`package model
 
@@ -191,8 +194,12 @@ var Audit = declaration.Member[declaration.NoAccess]{Namespace: "audit"}
 //plystra:data accounts.reader/v1
 var Reader = declaration.Member[access.Resource]{
 	Namespace: "accounts",
-	Tables: []declaration.Table{{ID: "entries"}},
-	Queries: []declaration.Query{{ID: "read", Method: "Read", Operation: "select", Table: declaration.Ref{Symbol: "entries"}}},
+	Tables: []declaration.Table{{ID: "entries", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}},
+	Queries: []declaration.Query{{
+		ID: "read", Method: "Read", Cardinality: "many", Operation: "select", Table: declaration.Ref{Symbol: "entries"},
+		Projection: []declaration.Projection{{Column: "id"}},
+		Results: []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: "int64"}},
+	}},
 }
 `))
 	accessBefore := snapshotAnalyzeProject(t, projectRoot)
@@ -213,7 +220,9 @@ var Reader = declaration.Member[access.Resource]{
 		case "accounts.reader/v1":
 			foundAccess = true
 			if root.AccessPackage != "example.com/app/access" || root.AccessType != "Resource" ||
-				root.AccessID != "accounts.access/v1" || root.MigrationOnly {
+				root.AccessID != "accounts.access/v1" || root.MigrationOnly || len(root.QueryMethods) != 1 ||
+				root.QueryMethods[0].Name != "Read" || root.QueryMethods[0].RequestType != "Request" ||
+				root.QueryMethods[0].RowType != "Row" || root.QueryMethods[0].Cardinality != "many" {
 				t.Fatalf("access root = %#v", root)
 			}
 		case "audit.log/v1":
@@ -327,6 +336,30 @@ var Reader = declaration.Member[access.Resource]{
 		!strings.Contains(stderr.String(), "requires an accepted access contract and instance") ||
 		!reflect.DeepEqual(invalidBefore, snapshotAnalyzeProject(t, projectRoot)) {
 		t.Fatalf("invalid assignment check = %v, stdout = %q, stderr = %q", err, stdout.String(), stderr.String())
+	}
+	writeAnalyzeFixture(t, filepath.Join(projectRoot, "access", "resource.go"), []byte(`package access
+//plystra:resource accounts.access/v1
+type Resource interface { Read() error }
+`))
+	wrongShapeBefore := snapshotAnalyzeProject(t, projectRoot)
+	stdout.Reset()
+	stderr.Reset()
+	command = exec.CommandContext(ctx, commandPath, "analyze", "--project", projectRoot, "--format", "json", "--offline")
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err = command.Run()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 2 || stderr.Len() != 0 {
+		t.Fatalf("wrong access shape analyze = %v, stdout = %q, stderr = %q", err, stdout.String(), stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil || output.Response.Status != protocol.StatusRejected ||
+		!reflect.DeepEqual(wrongShapeBefore, snapshotAnalyzeProject(t, projectRoot)) {
+		t.Fatalf("wrong access shape response = %#v, %v", output.Response, err)
+	}
+	wrongShapeMismatch := false
+	for _, diagnostic := range output.Response.Diagnostics {
+		wrongShapeMismatch = wrongShapeMismatch || diagnostic.Code == analyzer.CodeAccessContractMismatch
+	}
+	if !wrongShapeMismatch {
+		t.Fatalf("wrong access shape diagnostic = %#v", output.Response.Diagnostics)
 	}
 	writeAnalyzeFixture(t, filepath.Join(projectRoot, "access", "resource.go"), []byte(`package access
 

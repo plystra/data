@@ -105,8 +105,9 @@ func Bytes(value string) Value    { return Value{Kind: TypeBytes, Set: true, Byt
 
 // Parameter is one named typed query input.
 type Parameter struct {
-	ID   string     `json:"id"`
-	Type ScalarType `json:"type"`
+	ID      string     `json:"id"`
+	GoField string     `json:"go_field,omitempty"`
+	Type    ScalarType `json:"type"`
 }
 
 // Assignment binds one table column to a value or increments it in an UPDATE.
@@ -184,6 +185,7 @@ const (
 type Query struct {
 	ID          string        `json:"id"`
 	Method      string        `json:"method,omitempty"`
+	Cardinality Cardinality   `json:"cardinality,omitempty"`
 	Operation   OperationKind `json:"operation"`
 	Table       Ref           `json:"table"`
 	Joins       []Join        `json:"joins,omitempty"`
@@ -259,6 +261,7 @@ type Projection struct {
 // ResultField maps one named query output to a typed result field.
 type ResultField struct {
 	ID       string     `json:"id"`
+	GoField  string     `json:"go_field,omitempty"`
 	Source   string     `json:"source"`
 	Type     ScalarType `json:"type"`
 	Nullable bool       `json:"nullable,omitempty"`
@@ -645,6 +648,14 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 	if !validSymbol(query.ID) || !validOperation(query.Operation) || query.Table.Symbol == "" {
 		return fmt.Errorf("%w: query %q", ErrInvalidSchema, query.ID)
 	}
+	if query.Method != "" {
+		if query.Operation != OperationSelect || len(query.Projection) == 0 ||
+			(query.Cardinality != CardinalityExactlyOne && query.Cardinality != CardinalityZeroOrOne && query.Cardinality != CardinalityMany) {
+			return fmt.Errorf("%w: directly callable query %q requires typed SELECT cardinality", ErrUnsupported, query.ID)
+		}
+	} else if query.Cardinality != "" {
+		return fmt.Errorf("%w: query %q has cardinality without an access method", ErrInvalidSchema, query.ID)
+	}
 	const maxQueryBound uint64 = 1<<63 - 1
 	if (!query.HasLimit && query.Limit != 0) || (!query.HasOffset && query.Offset != 0) || query.Limit > maxQueryBound || query.Offset > maxQueryBound {
 		return fmt.Errorf("%w: query limit or offset", ErrInvalidSchema)
@@ -689,9 +700,19 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 		}
 		introduced[key] = struct{}{}
 	}
+	parameterFields := make(map[string]struct{}, len(query.Parameters))
 	for _, parameter := range query.Parameters {
 		if !validSymbol(parameter.ID) || !validScalar(parameter.Type) {
 			return fmt.Errorf("%w: query parameter %q", ErrInvalidSchema, parameter.ID)
+		}
+		if query.Method != "" {
+			if !validExportedGoName(parameter.GoField) {
+				return fmt.Errorf("%w: query parameter %q Go field", ErrInvalidID, parameter.ID)
+			}
+			if _, exists := parameterFields[parameter.GoField]; exists {
+				return fmt.Errorf("%w: query parameter Go field %q", ErrDuplicate, parameter.GoField)
+			}
+			parameterFields[parameter.GoField] = struct{}{}
 		}
 		if _, exists := parameters[parameter.ID]; exists {
 			return fmt.Errorf("%w: query parameter %q", ErrDuplicate, parameter.ID)
@@ -946,9 +967,19 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 		}
 		resultIDs := make(map[string]struct{}, len(query.Results))
 		resultSources := make(map[string]struct{}, len(query.Results))
+		resultFields := make(map[string]struct{}, len(query.Results))
 		for _, result := range query.Results {
 			if !validSymbol(result.ID) || !validSymbol(result.Source) || !validScalar(result.Type) {
 				return fmt.Errorf("%w: query result %q", ErrInvalidSchema, result.ID)
+			}
+			if query.Method != "" {
+				if !validExportedGoName(result.GoField) {
+					return fmt.Errorf("%w: query result %q Go field", ErrInvalidID, result.ID)
+				}
+				if _, exists := resultFields[result.GoField]; exists {
+					return fmt.Errorf("%w: query result Go field %q", ErrDuplicate, result.GoField)
+				}
+				resultFields[result.GoField] = struct{}{}
 			}
 			if _, exists := resultIDs[result.ID]; exists {
 				return fmt.Errorf("%w: query result %q", ErrDuplicate, result.ID)
@@ -1375,8 +1406,7 @@ func addAccessMethod(methods map[string]string, method, owner string) error {
 	if method == "" {
 		return nil
 	}
-	first, _ := utf8.DecodeRuneInString(method)
-	if len(method) > MaximumSymbolBytes || !token.IsIdentifier(method) || !unicode.IsUpper(first) {
+	if !validExportedGoName(method) {
 		return fmt.Errorf("%w: access method %q", ErrInvalidID, method)
 	}
 	if previous, exists := methods[method]; exists {
@@ -1384,6 +1414,11 @@ func addAccessMethod(methods map[string]string, method, owner string) error {
 	}
 	methods[method] = owner
 	return nil
+}
+
+func validExportedGoName(value string) bool {
+	first, _ := utf8.DecodeRuneInString(value)
+	return len(value) <= MaximumSymbolBytes && token.IsIdentifier(value) && unicode.IsUpper(first)
 }
 
 func validSegment(value string) bool {
