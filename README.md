@@ -313,6 +313,12 @@ active members and their logical-model digests; `--tags` and `--offline` have
 the same meaning as for `analyze`. The check is read-only and does not verify
 that named database instances exist, select a backend, generate a Resource
 provider, or install Data artifacts.
+The `project.ValidateDatabaseSelections` API accepts the Core CLI's generic
+configured-Resource facts after active-member validation. It requires each
+assigned database instance to have a visible `data.database/v1` provider at
+`github.com/plystra/data/postgres.New` and selects `postgres/v1`; an invisible
+generated access provider remains permitted. This API does not invoke the CLI,
+validate the complete application graph, or install files.
 
 ## Module
 
