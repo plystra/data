@@ -76,6 +76,34 @@ func TestInspectAssignmentsRejectsInvalidProjectInput(t *testing.T) {
 	}
 }
 
+func TestCheckAssignmentsRejectsInvalidProjectInput(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"invalid format", []string{"check", "assignments", "--project", root, "--format", "yaml"}, "expected --format"},
+		{"positional argument", []string{"check", "assignments", "extra"}, "no positional arguments"},
+		{"missing file", []string{"check", "assignments", "--project", root}, "cannot read plystra.data.yaml"},
+		{"missing directory", []string{"check", "assignments", "--project", filepath.Join(root, "missing")}, "Project directory is unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(test.args, &stdout, &stderr); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("check = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+	if err := os.WriteFile(filepath.Join(root, configName), []byte("data:\n  members:\n    invalid: {resource: database.primary}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"check", "assignments", "--project", root}, &stdout, &stderr); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "line 3 column 5") {
+		t.Fatalf("invalid configuration = %d, %q", code, stderr.String())
+	}
+}
+
 func TestPublicInspectAssignmentsCommand(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, configName), []byte("data:\n  members:\n    authn.persistence/v1: {resource: database.primary, access: authn.persistence}\n"), 0o600); err != nil {

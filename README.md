@@ -302,6 +302,18 @@ The selected Data module's full checksum must be present in Project `go.sum`.
 The command leaves Project files unchanged and does not emit or install
 generated access, activate members, or alter Core selection.
 
+`plystra-data check assignments --project DIR` reads the closed
+`plystra.data.yaml` document and invokes that same selected analyzer before
+validating explicit member activation. It requires each assigned member to
+have an accepted root, enforces access-instance and per-database namespace
+ownership, and requires every import of an active member to have its own
+assignment to the same database Resource. Visible unassigned roots remain
+dormant. `--format json` emits `plystra.data-activation-check/v1` with sorted
+active members and their logical-model digests; `--tags` and `--offline` have
+the same meaning as for `analyze`. The check is read-only and does not verify
+that named database instances exist, select a backend, generate a Resource
+provider, or install Data artifacts.
+
 ## Module
 
 The module path is `github.com/plystra/data`.

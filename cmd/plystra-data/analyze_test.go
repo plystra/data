@@ -227,6 +227,57 @@ var Reader = declaration.Member[access.Resource]{Namespace: "accounts"}
 	if !reflect.DeepEqual(accessBefore, snapshotAnalyzeProject(t, projectRoot)) {
 		t.Fatal("access analyze changed Project files")
 	}
+	assignmentPath := filepath.Join(projectRoot, configName)
+	writeAnalyzeFixture(t, assignmentPath, []byte("data:\n  members:\n    accounts.reader/v1: {resource: database.primary, access: accounts.reader}\n    audit.log/v1: {resource: database.primary}\n"))
+	assignedBefore := snapshotAnalyzeProject(t, projectRoot)
+	stdout.Reset()
+	stderr.Reset()
+	command = exec.CommandContext(ctx, commandPath, "check", "assignments", "--project", projectRoot, "--format", "json", "--offline")
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil || stderr.Len() != 0 {
+		t.Fatalf("public assignment check = %v, stdout = %q, stderr = %q", err, stdout.String(), stderr.String())
+	}
+	var checked struct {
+		Schema  string `json:"schema"`
+		Members []struct {
+			MemberID      string `json:"member_id"`
+			Resource      string `json:"resource"`
+			Access        string `json:"access"`
+			AccessPackage string `json:"access_package"`
+			AccessID      string `json:"access_id"`
+			ModelDigest   string `json:"model_digest"`
+		} `json:"members"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &checked); err != nil || checked.Schema != "plystra.data-activation-check/v1" ||
+		len(checked.Members) != 2 || checked.Members[0].MemberID != "accounts.reader/v1" ||
+		checked.Members[0].Resource != "database.primary" || checked.Members[0].Access != "accounts.reader" ||
+		checked.Members[0].AccessPackage != "example.com/app/access" || checked.Members[0].AccessID != "accounts.access/v1" ||
+		!strings.HasPrefix(checked.Members[0].ModelDigest, "sha256:") || checked.Members[1].MemberID != "audit.log/v1" ||
+		checked.Members[1].Access != "" || !reflect.DeepEqual(assignedBefore, snapshotAnalyzeProject(t, projectRoot)) {
+		t.Fatalf("assignment check = %#v, %v", checked, err)
+	}
+	writeAnalyzeFixture(t, assignmentPath, []byte("data:\n  members:\n    audit.log/v1: {resource: database.primary}\n"))
+	dormantBefore := snapshotAnalyzeProject(t, projectRoot)
+	stdout.Reset()
+	stderr.Reset()
+	command = exec.CommandContext(ctx, commandPath, "check", "assignments", "--project", projectRoot, "--offline")
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil || stderr.Len() != 0 || stdout.String() != "Validated 1 active Data members.\naudit.log/v1  database.primary\n" ||
+		!reflect.DeepEqual(dormantBefore, snapshotAnalyzeProject(t, projectRoot)) {
+		t.Fatalf("dormant assignment check = %v, stdout = %q, stderr = %q", err, stdout.String(), stderr.String())
+	}
+	writeAnalyzeFixture(t, assignmentPath, []byte("data:\n  members:\n    accounts.reader/v1: {resource: database.primary}\n"))
+	invalidBefore := snapshotAnalyzeProject(t, projectRoot)
+	stdout.Reset()
+	stderr.Reset()
+	command = exec.CommandContext(ctx, commandPath, "check", "assignments", "--project", projectRoot, "--offline")
+	command.Stdout, command.Stderr = &stdout, &stderr
+	err = command.Run()
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 2 || stdout.Len() != 0 ||
+		!strings.Contains(stderr.String(), "requires an accepted access contract and instance") ||
+		!reflect.DeepEqual(invalidBefore, snapshotAnalyzeProject(t, projectRoot)) {
+		t.Fatalf("invalid assignment check = %v, stdout = %q, stderr = %q", err, stdout.String(), stderr.String())
+	}
 	writeAnalyzeFixture(t, filepath.Join(projectRoot, "access", "resource.go"), []byte(`package access
 
 type Resource interface { Read() error }

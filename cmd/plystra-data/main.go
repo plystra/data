@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -32,6 +33,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(args) != 0 && args[0] == "analyze" {
 		return runAnalyze(args[1:], stdout, stderr)
+	}
+	if len(args) >= 2 && args[0] == "check" && args[1] == "assignments" {
+		return runCheckAssignments(args[2:], stdout, stderr)
 	}
 	if len(args) < 2 || args[0] != "inspect" || (args[1] != "assignments" && args[1] != "compiler" && args[1] != "sources" && args[1] != "inputs") {
 		usage(stderr)
@@ -132,22 +136,7 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	}
 	result, err := project.AnalyzeCurrentProject(context.Background(), root, project.SourceOptions{Offline: *offline, BuildTags: selectedTags})
 	if err != nil {
-		switch {
-		case errors.Is(err, compilerselection.ErrInvalidSelection):
-			fmt.Fprintln(stderr, "plystra-data: selected Data compiler failed integrity validation")
-		case errors.Is(err, compilerselection.ErrUnavailable):
-			fmt.Fprintln(stderr, "plystra-data: selected Data compiler is unavailable")
-		case errors.Is(err, compilerselection.ErrConcurrentChange):
-			fmt.Fprintln(stderr, "plystra-data: Project module inputs changed during compiler selection")
-		case errors.Is(err, project.ErrInvalidResourceContract):
-			fmt.Fprintln(stderr, "plystra-data: "+err.Error())
-		case errors.Is(err, project.ErrSourceInventory):
-			fmt.Fprintln(stderr, "plystra-data: selected Data source or type input is unavailable or changed")
-		case errors.Is(err, project.ErrCompilerResponse):
-			fmt.Fprintln(stderr, "plystra-data: selected Data compiler returned an invalid response")
-		default:
-			fmt.Fprintln(stderr, "plystra-data: selected Data compiler invocation failed")
-		}
+		writeAnalyzeError(err, stderr)
 		return 2
 	}
 	if *format == "json" {
@@ -179,6 +168,114 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	}
 	if result.Response.Status != protocol.StatusSucceeded {
 		return 2
+	}
+	return 0
+}
+
+func writeAnalyzeError(err error, stderr io.Writer) {
+	switch {
+	case errors.Is(err, compilerselection.ErrInvalidSelection):
+		fmt.Fprintln(stderr, "plystra-data: selected Data compiler failed integrity validation")
+	case errors.Is(err, compilerselection.ErrUnavailable):
+		fmt.Fprintln(stderr, "plystra-data: selected Data compiler is unavailable")
+	case errors.Is(err, compilerselection.ErrConcurrentChange):
+		fmt.Fprintln(stderr, "plystra-data: Project module inputs changed during compiler selection")
+	case errors.Is(err, project.ErrInvalidResourceContract):
+		fmt.Fprintln(stderr, "plystra-data: "+err.Error())
+	case errors.Is(err, project.ErrSourceInventory):
+		fmt.Fprintln(stderr, "plystra-data: selected Data source or type input is unavailable or changed")
+	case errors.Is(err, project.ErrCompilerResponse):
+		fmt.Fprintln(stderr, "plystra-data: selected Data compiler returned an invalid response")
+	default:
+		fmt.Fprintln(stderr, "plystra-data: selected Data compiler invocation failed")
+	}
+}
+
+func runCheckAssignments(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("check assignments", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	projectDir := flags.String("project", ".", "Project directory")
+	format := flags.String("format", "text", "text or json")
+	offline := flags.Bool("offline", false, "use only cached modules and toolchains")
+	tags := flags.String("tags", "", "comma-separated Go build tags")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			usage(stdout)
+			return 0
+		}
+		fmt.Fprintln(stderr, "plystra-data: invalid check arguments")
+		return 2
+	}
+	if flags.NArg() != 0 || (*format != "text" && *format != "json") {
+		fmt.Fprintln(stderr, "plystra-data: expected --format text or json and no positional arguments")
+		return 2
+	}
+	root, err := filepath.Abs(*projectDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "plystra-data: invalid Project directory")
+		return 2
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		fmt.Fprintln(stderr, "plystra-data: Project directory is unavailable")
+		return 2
+	}
+	assignments, content, err := loadAssignments(root)
+	if err != nil {
+		fmt.Fprintln(stderr, "plystra-data: "+err.Error())
+		return 2
+	}
+	var selectedTags []string
+	if *tags != "" {
+		selectedTags = strings.Split(*tags, ",")
+	}
+	result, err := project.AnalyzeCurrentProject(context.Background(), root, project.SourceOptions{Offline: *offline, BuildTags: selectedTags})
+	if err != nil {
+		writeAnalyzeError(err, stderr)
+		return 2
+	}
+	if result.Response.Status != protocol.StatusSucceeded {
+		for _, diagnostic := range result.Response.Diagnostics {
+			fmt.Fprintf(stderr, "%s: %s\n", diagnostic.Code, diagnostic.Message)
+		}
+		return 2
+	}
+	active, err := project.ValidateActivation(assignments, result.Response.Output.Roots)
+	if err != nil {
+		fmt.Fprintln(stderr, "plystra-data: "+err.Error())
+		return 2
+	}
+	_, current, err := loadAssignments(root)
+	if err != nil || !bytes.Equal(content, current) {
+		fmt.Fprintln(stderr, "plystra-data: "+configName+" changed during validation; retry")
+		return 2
+	}
+	if *format == "json" {
+		if err := json.NewEncoder(stdout).Encode(struct {
+			Schema   string                    `json:"schema"`
+			Compiler protocol.CompilerIdentity `json:"compiler"`
+			Members  []project.ActiveMember    `json:"members"`
+		}{Schema: "plystra.data-activation-check/v1", Compiler: result.Compiler, Members: active}); err != nil {
+			fmt.Fprintln(stderr, "plystra-data: cannot write assignment check output")
+			return 1
+		}
+		return 0
+	}
+	if _, err := fmt.Fprintf(stdout, "Validated %d active Data members.\n", len(active)); err != nil {
+		fmt.Fprintln(stderr, "plystra-data: cannot write assignment check output")
+		return 1
+	}
+	for _, member := range active {
+		var err error
+		if member.Access == "" {
+			_, err = fmt.Fprintf(stdout, "%s  %s\n", member.MemberID, member.Resource)
+		} else {
+			_, err = fmt.Fprintf(stdout, "%s  %s  %s\n", member.MemberID, member.Resource, member.Access)
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "plystra-data: cannot write assignment check output")
+			return 1
+		}
 	}
 	return 0
 }
@@ -235,23 +332,7 @@ func inspectInputs(root, format string, offline bool, tags []string, stdout, std
 }
 
 func inspectAssignments(root, format string, stdout, stderr io.Writer) int {
-	file, err := os.Open(filepath.Join(root, configName))
-	if err != nil {
-		fmt.Fprintln(stderr, "plystra-data: cannot read "+configName+" in the selected Project")
-		return 2
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() {
-		fmt.Fprintln(stderr, "plystra-data: "+configName+" must be a regular file")
-		return 2
-	}
-	content, err := io.ReadAll(io.LimitReader(file, project.MaxAssignmentDocumentBytes+1))
-	if err != nil {
-		fmt.Fprintln(stderr, "plystra-data: cannot read "+configName)
-		return 2
-	}
-	assignments, err := project.ParseAssignments(content)
+	assignments, _, err := loadAssignments(root)
 	if err != nil {
 		fmt.Fprintln(stderr, "plystra-data: "+err.Error())
 		return 2
@@ -286,6 +367,27 @@ func inspectAssignments(root, format string, stdout, stderr io.Writer) int {
 		}
 	}
 	return 0
+}
+
+func loadAssignments(root string) ([]project.Assignment, []byte, error) {
+	file, err := os.Open(filepath.Join(root, configName))
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot read %s in the selected Project", configName)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%s must be a regular file", configName)
+	}
+	content, err := io.ReadAll(io.LimitReader(file, project.MaxAssignmentDocumentBytes+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("cannot read %s", configName)
+	}
+	assignments, err := project.ParseAssignments(content)
+	if err != nil {
+		return nil, nil, err
+	}
+	return assignments, content, nil
 }
 
 func inspectCompiler(root, format string, offline bool, stdout, stderr io.Writer) int {
@@ -407,6 +509,7 @@ func inspectSources(root, format string, offline bool, tags []string, closure bo
 
 func usage(output io.Writer) {
 	fmt.Fprintln(output, "usage: plystra-data analyze [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline]")
+	fmt.Fprintln(output, "       plystra-data check assignments [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline]")
 	fmt.Fprintln(output, "usage: plystra-data inspect assignments [--project DIR] [--format text|json]")
 	fmt.Fprintln(output, "       plystra-data inspect compiler [--project DIR] [--format text|json] [--offline]")
 	fmt.Fprintln(output, "       plystra-data inspect sources [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline] [--closure]")
