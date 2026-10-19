@@ -35,8 +35,72 @@ func TestAnalyzeFrameRoundTripAndNoGeneratedOutput(t *testing.T) {
 	if len(response.Output.Roots) != 1 || response.OutputDigest == "" || len(response.Diagnostics) != 0 {
 		t.Fatalf("output = %#v", response.Output)
 	}
+	if err := protocol.ValidateAnalyzeResponse(request, response); err != nil {
+		t.Fatalf("response validation = %v", err)
+	}
 	if output.Len() != 0 {
 		t.Fatal("protocol emitted more than one frame")
+	}
+}
+
+func TestValidateAnalyzeResponseRejectsTampering(t *testing.T) {
+	request := validRequest(t)
+	base := protocol.HandleAnalyze(request)
+	if err := protocol.ValidateAnalyzeResponse(request, base); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*protocol.AnalyzeResponse)
+	}{
+		{"request identity", func(value *protocol.AnalyzeResponse) { value.RequestID = "other" }},
+		{"input digest", func(value *protocol.AnalyzeResponse) { value.InputDigest = "sha256:" + strings.Repeat("0", 64) }},
+		{"output digest", func(value *protocol.AnalyzeResponse) { value.OutputDigest = "sha256:" + strings.Repeat("0", 64) }},
+		{"status", func(value *protocol.AnalyzeResponse) { value.Status = protocol.StatusRejected }},
+		{"truncation", func(value *protocol.AnalyzeResponse) { value.Truncated = true }},
+		{"source digest", func(value *protocol.AnalyzeResponse) {
+			value.Output.Roots[0].SourceDigest = "sha256:" + strings.Repeat("0", 64)
+		}},
+		{"model", func(value *protocol.AnalyzeResponse) { value.Output.Roots[0].Model.Namespace = "changed" }},
+		{"access", func(value *protocol.AnalyzeResponse) { value.Output.Roots[0].AccessID = "invented.access/v1" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := base
+			changed.Output.Roots = append([]analyzer.Root(nil), base.Output.Roots...)
+			test.edit(&changed)
+			if err := protocol.ValidateAnalyzeResponse(request, changed); err == nil {
+				t.Fatalf("tampered response accepted: %#v", changed)
+			}
+		})
+	}
+	changed := base
+	changed.Output.Roots = append([]analyzer.Root(nil), base.Output.Roots...)
+	changed.Output.Roots[0].AccessID = "invented.access/v1"
+	digest, err := analyzer.ResultDigest(changed.Output.Roots, changed.Diagnostics, changed.Truncated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed.OutputDigest = digest
+	changed.Output.Digest = changed.OutputDigest
+	if err := protocol.ValidateAnalyzeResponse(request, changed); err == nil {
+		t.Fatal("rehashed access identity was accepted")
+	}
+	changed = base
+	changed.Diagnostics = []analyzer.Diagnostic{{Code: analyzer.CodeTypeCheck, Message: "bad", Action: "fix", PackagePath: "example.com/model", FilePath: "C:/private/source.go", Span: analyzer.Span{Path: "C:/private/source.go"}}}
+	digest, err = analyzer.ResultDigest(changed.Output.Roots, changed.Diagnostics, changed.Truncated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed.OutputDigest = digest
+	changed.Output.Digest = changed.OutputDigest
+	changed.Output.Valid = false
+	changed.Status = protocol.StatusRejected
+	if err := protocol.ValidateAnalyzeResponse(request, changed); err == nil {
+		t.Fatal("rehashed host-path diagnostic was accepted")
+	}
+	request.InputDigest = "sha256:" + strings.Repeat("0", 64)
+	if err := protocol.ValidateAnalyzeResponse(request, protocol.HandleAnalyze(request)); err == nil {
+		t.Fatal("invalid request was accepted with a rejected response")
 	}
 }
 

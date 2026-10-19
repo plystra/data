@@ -222,7 +222,7 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 	if response.Schema != EmitSchema || response.Phase != EmitPhase || response.RequestID != request.RequestID || response.InputDigest != request.InputDigest || response.Truncated {
 		return fmt.Errorf("emit response identity or truncation mismatch")
 	}
-	if err := validateEmitDiagnostics(response.Diagnostics, request.Limits); err != nil {
+	if err := validateDiagnostics(response.Diagnostics, request.Limits); err != nil {
 		return err
 	}
 	if response.Status == StatusRejected {
@@ -337,7 +337,7 @@ func expectedSQLDigests(request EmitRequest) (map[string]string, error) {
 	return expected, nil
 }
 
-func validateEmitDiagnostics(diagnostics []analyzer.Diagnostic, limits analyzer.Limits) error {
+func validateDiagnostics(diagnostics []analyzer.Diagnostic, limits analyzer.Limits) error {
 	maxDiagnostics := limits.MaxDiagnostics
 	if maxDiagnostics == 0 {
 		maxDiagnostics = MaxDiagnostics
@@ -347,13 +347,13 @@ func validateEmitDiagnostics(diagnostics []analyzer.Diagnostic, limits analyzer.
 		maxDiagnosticBytes = MaxDiagnosticBytes
 	}
 	if len(diagnostics) > maxDiagnostics {
-		return fmt.Errorf("emit diagnostic count exceeds the limit")
+		return fmt.Errorf("compiler diagnostic count exceeds the limit")
 	}
 	bytesUsed := 0
 	for _, diagnostic := range diagnostics {
 		encoded, err := json.Marshal(diagnostic)
 		if err != nil || len(encoded) == 0 || bytesUsed+len(encoded) > maxDiagnosticBytes {
-			return fmt.Errorf("emit diagnostics exceed the limit")
+			return fmt.Errorf("compiler diagnostics exceed the limit")
 		}
 		bytesUsed += len(encoded)
 	}

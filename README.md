@@ -182,10 +182,16 @@ Responses contain normalized member models with their roots, provenance,
 diagnostics, and output digests. `project.StageAnalyzeInput` obtains the
 Go-selected source closure and standard-library `gc` exports for the selected
 Project toolchain, target build context, and tags, then verifies their private
-snapshot without compiling authored packages. Private invocation of the
-Project-selected compiler remains unfinished.
-The command writes no generated files and emits no non-protocol stdout. The
-distribution contract is recorded in `plystra-data-compiler.json`.
+snapshot without compiling authored packages. `project.AnalyzeCurrentProject`
+builds the verified versioned compiler from the Project module graph with
+`GOWORK=off`, sends one bounded analyze frame, validates the response, and
+rechecks compiler selection and source inputs before returning. It does not
+compile authored packages or install Project artifacts. Data-owned Resource
+contract discovery is not yet supplied by this Project workflow, so members
+requiring an access Resource cannot yet be accepted through it.
+The compiler command writes no generated files and emits no non-protocol
+stdout. The distribution contract is recorded in
+`plystra-data-compiler.json`.
 
 The command also implements `plystra.data-emit/v1` for the currently supported
 PostgreSQL schema, query, and migration SQL. An emit request carries the accepted
@@ -280,6 +286,14 @@ source bytes, export bytes, private paths, or build-cache paths. An authored
 package need not build for this type-input acquisition to succeed. This
 inspection does not select or invoke the exact Data compiler, accept a member
 model, or install generated access.
+
+`plystra-data analyze --project DIR` selects the exact Project-pinned Data
+compiler, stages selected source and standard type inputs, and returns a
+validated analysis result. `--format json` emits
+`plystra.data-analysis/v1`; `--tags` and `--offline` follow input inspection.
+The selected Data module's full checksum must be present in Project `go.sum`.
+The command leaves Project files unchanged and does not emit or install
+generated access, activate members, or alter Core selection.
 
 ## Module
 

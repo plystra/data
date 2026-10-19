@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/plystra/data/analyzer"
+	"github.com/plystra/data/declaration"
 )
 
 const (
@@ -255,6 +256,151 @@ func HandleAnalyze(request AnalyzeRequest) AnalyzeResponse {
 		response.Status = StatusRejected
 	}
 	return response
+}
+
+// ValidateAnalyzeResponse checks a compiler result before the Data command
+// accepts any discovered member or diagnostic as Project analysis output.
+func ValidateAnalyzeResponse(request AnalyzeRequest, response AnalyzeResponse) error {
+	if err := ValidateAnalyzeRequest(request); err != nil {
+		return fmt.Errorf("invalid analyze request: %w", err)
+	}
+	if response.Schema != AnalyzeSchema || response.Phase != AnalyzePhase || response.RequestID != request.RequestID || response.InputDigest != request.InputDigest || response.Truncated != response.Output.Truncated {
+		return fmt.Errorf("analyze response identity or truncation mismatch")
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil || len(encoded) > MaxFrameBytes {
+		return fmt.Errorf("analyze response frame exceeds the limit")
+	}
+	if err := validateDiagnostics(response.Diagnostics, request.Limits); err != nil {
+		return err
+	}
+	if err := validateAnalyzeDiagnostics(request.Snapshot, response.Diagnostics); err != nil {
+		return err
+	}
+	if response.Status != StatusSucceeded && response.Status != StatusRejected && response.Status != StatusFailed {
+		return fmt.Errorf("analyze response status is invalid")
+	}
+	if response.OutputDigest == "" {
+		if response.Status == StatusSucceeded || response.Output.Digest != "" || len(response.Output.Roots) != 0 || response.Output.Valid || response.Truncated || len(response.Diagnostics) == 0 {
+			return fmt.Errorf("analyze response is missing its output digest")
+		}
+		return nil
+	}
+	if response.Status == StatusFailed || !validDigest(response.OutputDigest) || response.Output.Digest != response.OutputDigest {
+		return fmt.Errorf("analyze response digest or status is invalid")
+	}
+	maximumRoots := request.Limits.MaxRoots
+	if maximumRoots == 0 {
+		maximumRoots = MaxRoots
+	}
+	if len(response.Output.Roots) > maximumRoots {
+		return fmt.Errorf("analyze root count exceeds the limit")
+	}
+	if err := validateAnalyzeRoots(request.Snapshot, response.Output.Roots); err != nil {
+		return err
+	}
+	digest, err := analyzer.ResultDigest(response.Output.Roots, response.Diagnostics, response.Truncated)
+	if err != nil || digest != response.OutputDigest {
+		return fmt.Errorf("analyze output digest mismatch")
+	}
+	valid := len(response.Diagnostics) == 0 && !response.Truncated
+	if response.Output.Valid != valid || (response.Status == StatusSucceeded) != valid {
+		return fmt.Errorf("analyze response validity or status mismatch")
+	}
+	return nil
+}
+
+func validateAnalyzeRoots(snapshot SnapshotManifest, roots []analyzer.Root) error {
+	packages := make(map[string]SnapshotPackage, len(snapshot.Packages))
+	for _, pkg := range snapshot.Packages {
+		packages[pkg.ImportPath] = pkg
+	}
+	resources := make(map[string]string, len(snapshot.Resources))
+	for _, resource := range snapshot.Resources {
+		resources[resource.ImportPath+"\x00"+resource.TypeName] = resource.ID
+	}
+	previous := ""
+	for _, root := range roots {
+		if !declaration.ValidMemberID(root.MemberID) || root.MemberID <= previous || root.Symbol == "" || root.DeclarationPos.Path != root.FilePath || root.DeclarationPos.StartLine < 1 || root.DeclarationPos.StartColumn < 1 {
+			return fmt.Errorf("analyze root identity or order is invalid")
+		}
+		previous = root.MemberID
+		pkg, exists := packages[root.PackagePath]
+		if !exists || pkg.RootEligibility != analyzer.RootEligible {
+			return fmt.Errorf("analyze root package is not eligible")
+		}
+		matched := false
+		for _, file := range pkg.Files {
+			if file.Path == root.FilePath && file.Digest == root.SourceDigest {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("analyze root source is not in the snapshot")
+		}
+		if root.MigrationOnly {
+			if root.AccessPackage != "github.com/plystra/data/declaration" || root.AccessType != "NoAccess" || root.AccessID != "" {
+				return fmt.Errorf("analyze migration-only access identity is invalid")
+			}
+		} else if root.AccessPackage == "" || root.AccessType == "" || root.AccessID == "" || resources[root.AccessPackage+"\x00"+root.AccessType] != root.AccessID {
+			return fmt.Errorf("analyze root access identity is not in the snapshot")
+		}
+		model, err := (declaration.Member[struct{}]{
+			Namespace: root.Model.Namespace, Imports: root.Model.Imports,
+			Tables: root.Model.Tables, Queries: root.Model.Queries,
+			Plans: root.Model.Plans, Migrations: root.Model.Migrations,
+		}).Normalize()
+		if err != nil || !jsonEqual(model, root.Model) {
+			return fmt.Errorf("analyze root model is not normalized")
+		}
+	}
+	return nil
+}
+
+func validateAnalyzeDiagnostics(snapshot SnapshotManifest, diagnostics []analyzer.Diagnostic) error {
+	packages := make(map[string]SnapshotPackage, len(snapshot.Packages))
+	for _, pkg := range snapshot.Packages {
+		packages[pkg.ImportPath] = pkg
+	}
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Message == "" || diagnostic.Action == "" || !validAnalyzeDiagnosticCode(diagnostic.Code) {
+			return fmt.Errorf("analyze diagnostic identity is invalid")
+		}
+		if diagnostic.PackagePath == "" {
+			if diagnostic.FilePath != "" || diagnostic.Span.Path != "" || diagnostic.MemberID != "" || diagnostic.Symbol != "" {
+				return fmt.Errorf("analyze diagnostic has unowned provenance")
+			}
+			continue
+		}
+		pkg, exists := packages[diagnostic.PackagePath]
+		if !exists || diagnostic.FilePath == "" || diagnostic.Span.Path != diagnostic.FilePath {
+			return fmt.Errorf("analyze diagnostic package or path is not in the snapshot")
+		}
+		matched := false
+		for _, file := range pkg.Files {
+			if file.Path == diagnostic.FilePath {
+				matched = true
+				break
+			}
+		}
+		if !matched || (diagnostic.MemberID != "" && !declaration.ValidMemberID(diagnostic.MemberID)) {
+			return fmt.Errorf("analyze diagnostic source is not in the snapshot")
+		}
+	}
+	return nil
+}
+
+func validAnalyzeDiagnosticCode(code analyzer.DiagnosticCode) bool {
+	switch code {
+	case analyzer.CodeInvalidRootShape, analyzer.CodeUnsupportedExpression, analyzer.CodeUnsupportedCapability,
+		analyzer.CodeInvalidID, analyzer.CodeDuplicateSymbol, analyzer.CodeUnresolvedReference,
+		analyzer.CodeReferenceKindMismatch, analyzer.CodeImportCycle, analyzer.CodeAccessContractMismatch,
+		analyzer.CodeLimitExceeded, analyzer.CodeTypeCheck, analyzer.CodeInvalidSnapshot:
+		return true
+	default:
+		return false
+	}
 }
 
 // Run serves length-delimited requests until stdin reaches EOF.
