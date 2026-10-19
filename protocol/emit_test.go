@@ -37,14 +37,14 @@ func TestEmitFrameProducesFrozenStagedPostgresArtifacts(t *testing.T) {
 		t.Fatalf("artifacts = %#v", response.Output.Artifacts)
 	}
 	for _, artifact := range response.Output.Artifacts {
-		if !strings.HasPrefix(artifact.Path, "generated/data/database.primary/") || artifact.Mode != 0644 || artifact.Digest != postgres.DigestSQL(string(artifact.Bytes)) || artifact.Backend != "postgres/v1" || artifact.Resource != "database.primary" || artifact.Compiler != request.Compiler || artifact.FrozenModelDigest != request.FrozenModelDigest {
+		if !strings.HasPrefix(artifact.Path, "dataaccess/database.primary/") || artifact.Mode != 0644 || artifact.Digest != postgres.DigestSQL(string(artifact.Bytes)) || artifact.Backend != "postgres/v1" || artifact.Resource != "database.primary" || artifact.Compiler != request.Compiler || artifact.FrozenModelDigest != request.FrozenModelDigest {
 			t.Fatalf("invalid artifact = %#v", artifact)
 		}
 	}
-	if response.Output.Artifacts[0].Path != "generated/data/database.primary/manifest.json" || !bytes.Contains(response.Output.Artifacts[0].Bytes, []byte("plystra.data-instance-manifest/v1")) {
+	if response.Output.Artifacts[0].Path != "dataaccess/database.primary/manifest.json" || !bytes.Contains(response.Output.Artifacts[0].Bytes, []byte("plystra.data-instance-manifest/v1")) {
 		t.Fatalf("manifest artifact = %#v", response.Output.Artifacts[0])
 	}
-	if response.Output.Artifacts[1].Path != "generated/data/database.primary/migrations/accounts.user/v1/create-accounts.sql" || response.Output.Artifacts[1].Migration == nil || response.Output.Artifacts[1].Migration.ArtifactDigest != response.Output.Artifacts[1].Digest {
+	if response.Output.Artifacts[1].Path != "dataaccess/database.primary/migrations/accounts.user/v1/create-accounts.sql" || response.Output.Artifacts[1].Migration == nil || response.Output.Artifacts[1].Migration.ArtifactDigest != response.Output.Artifacts[1].Digest {
 		t.Fatalf("migration artifact = %#v", response.Output.Artifacts[1])
 	}
 	var manifest struct {
@@ -59,7 +59,7 @@ func TestEmitFrameProducesFrozenStagedPostgresArtifacts(t *testing.T) {
 	if len(manifest.Artifacts) != 2 || manifest.Artifacts[0].Migration == nil || !reflect.DeepEqual(manifest.Artifacts[0].Migration, response.Output.Artifacts[1].Migration) {
 		t.Fatalf("manifest migration provenance = %#v", manifest.Artifacts)
 	}
-	if response.Output.Artifacts[2].Path != "generated/data/database.primary/schema/schema.sql" || !reflect.DeepEqual(response.Output.Artifacts[2].OwningMembers, []string{"accounts.user/v1"}) {
+	if response.Output.Artifacts[2].Path != "dataaccess/database.primary/schema/schema.sql" || !reflect.DeepEqual(response.Output.Artifacts[2].OwningMembers, []string{"accounts.user/v1"}) {
 		t.Fatalf("schema artifact = %#v", response.Output.Artifacts[2])
 	}
 	if err := protocol.ValidateEmitResponse(request, response); err != nil {
@@ -87,7 +87,7 @@ func TestEmitIncludesOwnedQueryArtifactAndManifestEntry(t *testing.T) {
 	}
 	var query protocol.StagedArtifact
 	for _, artifact := range response.Output.Artifacts {
-		if artifact.Path == "generated/data/database.primary/queries/accounts.user/v1/list-accounts.sql" {
+		if artifact.Path == "dataaccess/database.primary/queries/accounts.user/v1/list-accounts.sql" {
 			query = artifact
 		}
 	}
@@ -132,7 +132,7 @@ func TestEmitIncludesTypedMutationQueryArtifact(t *testing.T) {
 	}
 	var query protocol.StagedArtifact
 	for _, artifact := range response.Output.Artifacts {
-		if artifact.Path == "generated/data/database.primary/queries/accounts.user/v1/update-account.sql" {
+		if artifact.Path == "dataaccess/database.primary/queries/accounts.user/v1/update-account.sql" {
 			query = artifact
 		}
 	}
@@ -277,7 +277,7 @@ func TestEmitIncludesTypedReturningMutation(t *testing.T) {
 	}
 	var query protocol.StagedArtifact
 	for _, artifact := range response.Output.Artifacts {
-		if artifact.Path == "generated/data/database.primary/queries/accounts.user/v1/delete-account.sql" {
+		if artifact.Path == "dataaccess/database.primary/queries/accounts.user/v1/delete-account.sql" {
 			query = artifact
 		}
 	}
@@ -652,7 +652,7 @@ func TestEmitIncludesExecutableAtomicPlanArtifact(t *testing.T) {
 			plan = artifact
 		}
 	}
-	if plan.Path != "generated/data/database.primary/plans/accounts.user/v1/read-plan.json" || plan.Plan == nil || plan.Plan.ID != "read-plan" || len(plan.Plan.Statements) != 1 || plan.Plan.Statements[0].Query != "read" || !bytes.Contains(plan.Bytes, []byte(`"cardinality":"many"`)) {
+	if plan.Path != "dataaccess/database.primary/plans/accounts.user/v1/read-plan.json" || plan.Plan == nil || plan.Plan.ID != "read-plan" || len(plan.Plan.Statements) != 1 || plan.Plan.Statements[0].Query != "read" || !bytes.Contains(plan.Bytes, []byte(`"cardinality":"many"`)) {
 		t.Fatalf("plan artifact = %#v", plan)
 	}
 	if err := protocol.ValidateEmitResponse(request, response); err != nil {
@@ -941,9 +941,10 @@ func TestEmitRejectsUnsafeRootAndUnsupportedBackend(t *testing.T) {
 		assignment protocol.EmitAssignment
 		code       analyzer.DiagnosticCode
 	}{
-		{"traversal", protocol.EmitAssignment{AllowedRoot: "generated/data/database.primary/../../outside"}, analyzer.CodeEmitPath},
+		{"traversal", protocol.EmitAssignment{AllowedRoot: "dataaccess/database.primary/../../outside"}, analyzer.CodeEmitPath},
 		{"absolute", protocol.EmitAssignment{AllowedRoot: "C:/outside"}, analyzer.CodeEmitPath},
-		{"unselected root", protocol.EmitAssignment{AllowedRoot: "generated/data/database.other"}, analyzer.CodeEmitPath},
+		{"unselected root", protocol.EmitAssignment{AllowedRoot: "dataaccess/database.other"}, analyzer.CodeEmitPath},
+		{"superseded Core-owned root", protocol.EmitAssignment{AllowedRoot: "generated/data/database.primary"}, analyzer.CodeEmitPath},
 		{"backend", protocol.EmitAssignment{Backend: "sqlite/v1"}, analyzer.CodeEmitBackend},
 		{"provider", protocol.EmitAssignment{Provider: ""}, analyzer.CodeEmitBackend},
 	}
@@ -981,14 +982,14 @@ func TestEmitGroupsMembersByResourceAndRequiresExplicitImports(t *testing.T) {
 	if response := protocol.HandleEmit(request); response.Status != protocol.StatusRejected || response.Diagnostics[0].Code != analyzer.CodeEmitBackend {
 		t.Fatalf("inactive import response = %#v", response)
 	}
-	request.Assignments = append(request.Assignments, protocol.EmitAssignment{MemberID: second.MemberID, Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "generated/data/database.primary"})
+	request.Assignments = append(request.Assignments, protocol.EmitAssignment{MemberID: second.MemberID, Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "dataaccess/database.primary"})
 	refreshEmitDigest(t, &request)
 	response := protocol.HandleEmit(request)
 	if response.Status != protocol.StatusSucceeded || len(response.Output.Artifacts) != 3 || !reflect.DeepEqual(response.Output.Artifacts[2].OwningMembers, []string{"accounts.user/v1", "audit.events/v1"}) {
 		t.Fatalf("shared Resource response = %#v", response)
 	}
 	request.Assignments[1].Resource = "database.audit"
-	request.Assignments[1].AllowedRoot = "generated/data/database.audit"
+	request.Assignments[1].AllowedRoot = "dataaccess/database.audit"
 	refreshEmitDigest(t, &request)
 	if response := protocol.HandleEmit(request); response.Status != protocol.StatusRejected || response.Diagnostics[0].Code != analyzer.CodeEmitBackend {
 		t.Fatalf("cross-Resource import response = %#v", response)
@@ -1001,7 +1002,7 @@ func TestEmitOutputIsDeterministicAcrossAssignmentOrder(t *testing.T) {
 	request.Analyze.Roots = append(request.Analyze.Roots, second)
 	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
 	request.AnalyzeDigest = request.Analyze.Digest
-	request.Assignments = append(request.Assignments, protocol.EmitAssignment{MemberID: second.MemberID, Resource: "database.audit", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "generated/data/database.audit"})
+	request.Assignments = append(request.Assignments, protocol.EmitAssignment{MemberID: second.MemberID, Resource: "database.audit", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "dataaccess/database.audit"})
 	refreshEmitDigest(t, &request)
 	first := protocol.HandleEmit(request)
 	if first.Status != protocol.StatusSucceeded || len(first.Output.Artifacts) != 5 {
@@ -1027,7 +1028,10 @@ func TestValidateEmitResponseRejectsTampering(t *testing.T) {
 	}{
 		{"content", func(r *protocol.EmitResponse) { r.Output.Artifacts[0].Bytes = []byte("changed") }},
 		{"path traversal", func(r *protocol.EmitResponse) {
-			r.Output.Artifacts[0].Path = "generated/data/database.primary/../outside"
+			r.Output.Artifacts[0].Path = "dataaccess/database.primary/../outside"
+		}},
+		{"superseded Core-owned path", func(r *protocol.EmitResponse) {
+			r.Output.Artifacts[0].Path = "generated/data/database.primary/manifest.json"
 		}},
 		{"mode", func(r *protocol.EmitResponse) { r.Output.Artifacts[0].Mode = 0755 }},
 		{"owner", func(r *protocol.EmitResponse) { r.Output.Artifacts[0].OwningMembers = []string{"other.member/v1"} }},
@@ -1130,7 +1134,7 @@ func validEmitRequest(t *testing.T) protocol.EmitRequest {
 		Compiler: validRequest(t).Compiler, Build: protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"},
 		Analyze: protocol.AnalyzeOutput{Roots: roots, Digest: resultDigest, Valid: true}, AnalyzeDigest: resultDigest,
 		FrozenModelDigest: "sha256:" + strings.Repeat("4", 64),
-		Assignments:       []protocol.EmitAssignment{{MemberID: "accounts.user/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "generated/data/database.primary"}},
+		Assignments:       []protocol.EmitAssignment{{MemberID: "accounts.user/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "dataaccess/database.primary"}},
 	}
 	refreshEmitDigest(t, &request)
 	return request

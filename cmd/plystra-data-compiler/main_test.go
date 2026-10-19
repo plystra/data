@@ -77,7 +77,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 		Compiler: protocol.CompilerIdentity{ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestDigest: "sha256:" + strings.Repeat("2", 64), CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26"},
 		Build:    protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}, Analyze: protocol.AnalyzeOutput{Roots: roots, Digest: analyzeDigest, Valid: true}, AnalyzeDigest: analyzeDigest,
 		FrozenModelDigest: "sha256:" + strings.Repeat("3", 64),
-		Assignments:       []protocol.EmitAssignment{{MemberID: "accounts.user/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "generated/data/database.primary"}},
+		Assignments:       []protocol.EmitAssignment{{MemberID: "accounts.user/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "dataaccess/database.primary"}},
 	}
 	request.InputDigest, err = protocol.EmitInputDigest(request)
 	if err != nil {
@@ -193,8 +193,8 @@ func TestCompilerCommandRequiresCompleteSelectResults(t *testing.T) {
 		Analyze:           protocol.AnalyzeOutput{Roots: []analyzer.Root{{MemberID: "accounts.user/v1", Model: owner, MigrationOnly: true}, {MemberID: "geo.region/v1", Model: remote, MigrationOnly: true}}, Valid: true},
 		FrozenModelDigest: "sha256:" + strings.Repeat("3", 64),
 		Assignments: []protocol.EmitAssignment{
-			{MemberID: "accounts.user/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "generated/data/database.primary"},
-			{MemberID: "geo.region/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "generated/data/database.primary"},
+			{MemberID: "accounts.user/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "dataaccess/database.primary"},
+			{MemberID: "geo.region/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "dataaccess/database.primary"},
 		},
 	}
 	run := func(t *testing.T, request protocol.EmitRequest) protocol.EmitResponse {
@@ -242,7 +242,7 @@ func TestCompilerCommandRequiresCompleteSelectResults(t *testing.T) {
 		"queries/accounts.user/v1/imported-regions.sql": "SELECT \"t0\".\"id\", \"t1\".\"name\" AS \"region-name\" FROM \"accounts\".\"users\" AS \"t0\" LEFT JOIN \"geo\".\"regions\" AS \"t1\" ON \"t0\".\"region-id\" = \"t1\".\"id\";",
 	}
 	for _, artifact := range first.Output.Artifacts {
-		path := strings.TrimPrefix(artifact.Path, "generated/data/database.primary/")
+		path := strings.TrimPrefix(artifact.Path, "dataaccess/database.primary/")
 		sql, exists := wantSQL[path]
 		if !exists {
 			continue

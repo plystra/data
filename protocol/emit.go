@@ -324,7 +324,7 @@ func expectedSQLDigests(request EmitRequest) (map[string]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("Resource %s schema: %w", resource, err)
 		}
-		root := "generated/data/" + resource + "/"
+		root := "dataaccess/" + resource + "/"
 		expected[root+schema.Path] = schema.Digest
 		queries, err := postgres.CompileQueries(members)
 		if err != nil {
@@ -400,24 +400,24 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact, migratio
 		resource := assignment.Resource
 		if expected[resource] == nil {
 			expected[resource] = map[string]struct{}{
-				"generated/data/" + resource + "/manifest.json":     {},
-				"generated/data/" + resource + "/schema/schema.sql": {},
+				"dataaccess/" + resource + "/manifest.json":     {},
+				"dataaccess/" + resource + "/schema/schema.sql": {},
 			}
 		}
 		owners[resource] = append(owners[resource], assignment.MemberID)
 		for _, query := range roots[assignment.MemberID].Model.Queries {
-			queryPath := "generated/data/" + resource + "/queries/" + assignment.MemberID + "/" + query.ID + ".sql"
+			queryPath := "dataaccess/" + resource + "/queries/" + assignment.MemberID + "/" + query.ID + ".sql"
 			expected[resource][queryPath] = struct{}{}
 			queryOwners[queryPath] = assignment.MemberID
 			queryMetadata[queryPath] = metadataForQuery(query)
 		}
 		for _, plan := range roots[assignment.MemberID].Model.Plans {
-			planPath := "generated/data/" + resource + "/plans/" + assignment.MemberID + "/" + plan.ID + ".json"
+			planPath := "dataaccess/" + resource + "/plans/" + assignment.MemberID + "/" + plan.ID + ".json"
 			expected[resource][planPath] = struct{}{}
 			planOwners[planPath] = assignment.MemberID
 		}
 		for _, item := range roots[assignment.MemberID].Model.Migrations {
-			expected[resource]["generated/data/"+resource+"/migrations/"+assignment.MemberID+"/"+item.ID+".sql"] = struct{}{}
+			expected[resource]["dataaccess/"+resource+"/migrations/"+assignment.MemberID+"/"+item.ID+".sql"] = struct{}{}
 		}
 	}
 	for resource, instanceArtifacts := range byResource {
@@ -456,11 +456,11 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact, migratio
 			} else if artifact.Query != nil || artifact.Plan != nil {
 				return fmt.Errorf("Resource %s has unexpected query metadata", resource)
 			}
-			if artifact.Path == "generated/data/"+resource+"/manifest.json" {
+			if artifact.Path == "dataaccess/"+resource+"/manifest.json" {
 				manifestArtifact = artifact
 				continue
 			}
-			if artifact.Path == "generated/data/"+resource+"/schema/schema.sql" {
+			if artifact.Path == "dataaccess/"+resource+"/schema/schema.sql" {
 				schemaArtifact = artifact
 			}
 			entries = append(entries, manifestEntry{Path: artifact.Path, Mode: artifact.Mode, Digest: artifact.Digest, OwningMembers: artifact.OwningMembers, Query: artifact.Query, Plan: artifact.Plan, Migration: artifact.Migration})
@@ -522,7 +522,7 @@ func expectedMigrationDefinitions(request EmitRequest) (map[string]migration.Def
 			if !exists {
 				return nil, fmt.Errorf("migration %s has no active assignment", artifact.Definition.Identity)
 			}
-			path := "generated/data/" + assignment.Resource + "/migrations/" + artifact.Definition.Identity.Member + "/" + artifact.Definition.Identity.Name + ".sql"
+			path := "dataaccess/" + assignment.Resource + "/migrations/" + artifact.Definition.Identity.Member + "/" + artifact.Definition.Identity.Name + ".sql"
 			if _, duplicate := definitions[path]; duplicate {
 				return nil, fmt.Errorf("duplicate accepted migration path %s", path)
 			}
@@ -568,7 +568,7 @@ func expectedPlanMetadata(request EmitRequest) (map[string]PlanMetadata, error) 
 			if err != nil {
 				return nil, err
 			}
-			path := "generated/data/" + assignment.Resource + "/" + artifact.Path
+			path := "dataaccess/" + assignment.Resource + "/" + artifact.Path
 			if _, duplicate := definitions[path]; duplicate {
 				return nil, fmt.Errorf("duplicate accepted plan path %s", path)
 			}
@@ -652,7 +652,7 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 		if !safeInstance(assignment.Resource) || assignment.ResourceContract != "data.database/v1" || assignment.Provider == "" || assignment.Backend != postgresBackend {
 			return nil, analyzer.CodeEmitBackend, fmt.Errorf("invalid selected backend")
 		}
-		if assignment.AllowedRoot != "generated/data/"+assignment.Resource || !safePath(assignment.AllowedRoot) {
+		if assignment.AllowedRoot != "dataaccess/"+assignment.Resource || !safePath(assignment.AllowedRoot) {
 			return nil, analyzer.CodeEmitPath, fmt.Errorf("invalid allowed root")
 		}
 		byMember[assignment.MemberID] = assignment
@@ -778,7 +778,7 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Path < artifacts[j].Path })
 	seen := map[string]struct{}{}
 	for _, artifact := range artifacts {
-		if !safePath(artifact.Path) || len(artifact.Path) > MaxArtifactPathBytes || !strings.HasPrefix(artifact.Path, "generated/data/"+artifact.Resource+"/") {
+		if !safePath(artifact.Path) || len(artifact.Path) > MaxArtifactPathBytes || !strings.HasPrefix(artifact.Path, "dataaccess/"+artifact.Resource+"/") {
 			return nil, analyzer.CodeEmitPath, fmt.Errorf("artifact escapes allowed root")
 		}
 		key := strings.ToLower(artifact.Path)

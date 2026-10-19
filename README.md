@@ -206,7 +206,7 @@ member assignments to selected `data.database/v1` Resource instances and
 `postgres/v1` backends. The input digest binds these facts to the exact compiler
 identity and Go build context. For each selected instance, the compiler returns
 in-memory staged `schema/schema.sql`, query SQL, immutable migration SQL, and a
-`manifest.json` under its allowed `generated/data/<instance>/` root. Every
+`manifest.json` under its allowed `dataaccess/<instance>/` root. Every
 artifact includes mode, bytes, SHA-256 digest, owning members, Resource,
 provider, backend, compiler, and frozen-model provenance. Each migration SQL
 artifact also carries its immutable Definition: member-local identity, version,
