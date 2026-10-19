@@ -41,8 +41,9 @@ type SourceOptions struct {
 }
 
 type SourceInventory struct {
-	Packages []SourcePackage
-	Build    protocol.BuildContext
+	Packages         []SourcePackage
+	StandardPackages []string
+	Build            protocol.BuildContext
 }
 
 type ModuleSource struct {
@@ -104,9 +105,13 @@ func DiscoverDataRoots(ctx context.Context, projectRoot string, options SourceOp
 	}
 	applicationPath := parsedMod.Module.Mod.Path
 	env := sourceGoEnvironment(options.Offline)
+	flagsOutput, err := sourceGoOutput(ctx, root, env, "env", "GOFLAGS")
+	if err != nil || unsupportedSourceGoFlags(strings.TrimSpace(string(flagsOutput))) {
+		return SourceInventory{}, ErrSourceInventory
+	}
 	selectedTags := options.BuildTags
 	if len(selectedTags) == 0 {
-		selectedTags = goFlagsBuildTags(os.Getenv("GOFLAGS"))
+		selectedTags = goFlagsBuildTags(string(flagsOutput))
 	}
 	build, err := selectedBuildContext(ctx, root, env, selectedTags)
 	if err != nil {
@@ -607,7 +612,7 @@ func sameSourceDirectory(left, right string) bool {
 }
 
 func sourceGoEnvironment(offline bool) []string {
-	overrides := map[string]string{"GOTOOLCHAIN": "local"}
+	overrides := map[string]string{}
 	if offline {
 		overrides["GOPROXY"] = "off"
 		overrides["GOSUMDB"] = "off"
@@ -628,11 +633,24 @@ func sourceGoEnvironment(offline bool) []string {
 func goFlagsBuildTags(flags string) []string {
 	var tags []string
 	for _, field := range strings.Fields(flags) {
-		if value, ok := strings.CutPrefix(field, "-tags="); ok {
+		flag := strings.TrimLeft(strings.Trim(field, `"'`), "-")
+		if value, ok := strings.CutPrefix(flag, "tags="); ok {
 			tags = strings.Split(value, ",")
 		}
 	}
 	return tags
+}
+
+func unsupportedSourceGoFlags(flags string) bool {
+	for _, field := range strings.Fields(flags) {
+		flag := strings.TrimLeft(strings.Trim(field, `"'`), "-")
+		if flag == "overlay" || strings.HasPrefix(flag, "overlay=") ||
+			flag == "modfile" || strings.HasPrefix(flag, "modfile=") ||
+			flag == "toolexec" || strings.HasPrefix(flag, "toolexec=") {
+			return true
+		}
+	}
+	return false
 }
 
 type sourceOutput struct {

@@ -179,8 +179,11 @@ from verified staged exports, handles `unsafe` intrinsically, applies target
 architecture sizes, and rejects reached cgo packages without a supported type
 input. It never uses ambient package type lookup.
 Responses contain normalized member models with their roots, provenance,
-diagnostics, and output digests. Data-owned discovery of the current Project's
-compiler-ready input and private compiler invocation remain unfinished.
+diagnostics, and output digests. `project.StageAnalyzeInput` obtains the
+Go-selected source closure and standard-library `gc` exports for the selected
+Project toolchain, target build context, and tags, then verifies their private
+snapshot without compiling authored packages. Private invocation of the
+Project-selected compiler remains unfinished.
 The command writes no generated files and emits no non-protocol stdout. The
 distribution contract is recorded in `plystra-data-compiler.json`.
 
@@ -219,7 +222,7 @@ the exact `github.com/plystra/data` version from the Project's Go module graph
 with `GOWORK=off`. It rejects Data module replacements, verifies the selected
 module source against the full `h1:` checksum recorded in the Project's
 `go.sum`, validates the distribution manifest, and reports the raw manifest
-digest and local Go toolchain. `--format json`
+digest and Project-selected Go toolchain. `--format json`
 emits `plystra.data-compiler-inspection/v1`; `--offline` requires a warm module
 cache and never uses the network. A Project without the selected version's
 full-module `go.sum` entry must first acquire that checksum through Go's module
@@ -246,6 +249,8 @@ nested-module trees;
 the selected package files follow ordinary build constraints without requiring
 a successful build or a prior generated provider. Applicable `go.work`
 selection and `GOFLAGS` build tags are honored; `--tags` overrides the latter.
+Go source overlays, alternate module files, and `-toolexec` supplied through
+`GOFLAGS` are rejected because they would bypass the recorded source snapshot.
 The command checks every versioned Project module source against a complete
 `h1:` entry in Project `go.sum` or applicable `go.work.sum` before inspecting
 it. Local replacements and workspace modules retain their source origin.
@@ -264,6 +269,17 @@ and versioned module identities are checked under the combined source-snapshot
 bounds. The output is a read-only source inventory, not yet a compiler-ready
 analyze request: selected-toolchain standard-library type data, cgo input, and
 compiler invocation are not supplied by this command.
+
+`plystra-data inspect inputs --project DIR` obtains the selected source closure
+and its standard-library exports, stages and verifies a private snapshot, and
+removes that temporary snapshot after inspection. `--tags` and `--offline`
+follow source inspection. Text and `plystra.data-input-inspection/v1` JSON
+report the selected Go toolchain, build context, source-package count, standard
+export identities, and root-independent snapshot digest without exposing
+source bytes, export bytes, private paths, or build-cache paths. An authored
+package need not build for this type-input acquisition to succeed. This
+inspection does not select or invoke the exact Data compiler, accept a member
+model, or install generated access.
 
 ## Module
 

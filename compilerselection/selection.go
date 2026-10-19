@@ -130,7 +130,7 @@ func Resolve(ctx context.Context, projectRoot string, options Options) (Selectio
 	if _, err := verifySource(moduleRoot, listed.Version, downloaded.Sum); err != nil {
 		return Selection{}, err
 	}
-	toolchain, err := goOutput(ctx, isolatedRoot, environment, "version")
+	toolchain, err := goOutput(ctx, root, environment, "version")
 	if err != nil {
 		return Selection{}, ErrUnavailable
 	}
@@ -360,7 +360,7 @@ func goOutput(ctx context.Context, directory string, environment []string, args 
 }
 
 func goEnvironment(offline bool) []string {
-	overrides := map[string]string{"GOWORK": "off", "GOFLAGS": "", "GOTOOLCHAIN": "local"}
+	overrides := map[string]string{"GOWORK": "off", "GOFLAGS": ""}
 	if offline {
 		overrides["GOPROXY"] = "off"
 		overrides["GOSUMDB"] = "off"

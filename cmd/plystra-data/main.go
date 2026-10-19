@@ -29,7 +29,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stdout)
 		return 0
 	}
-	if len(args) < 2 || args[0] != "inspect" || (args[1] != "assignments" && args[1] != "compiler" && args[1] != "sources") {
+	if len(args) < 2 || args[0] != "inspect" || (args[1] != "assignments" && args[1] != "compiler" && args[1] != "sources" && args[1] != "inputs") {
 		usage(stderr)
 		return 2
 	}
@@ -41,12 +41,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	var offline *bool
 	var tags *string
 	var closure *bool
-	if kind == "compiler" || kind == "sources" {
+	if kind == "compiler" || kind == "sources" || kind == "inputs" {
 		offline = flags.Bool("offline", false, "use only verified cached modules")
 	}
-	if kind == "sources" {
+	if kind == "sources" || kind == "inputs" {
 		tags = flags.String("tags", "", "comma-separated Go build tags")
-		closure = flags.Bool("closure", false, "include type-only support packages")
+		if kind == "sources" {
+			closure = flags.Bool("closure", false, "include type-only support packages")
+		}
 	}
 	if err := flags.Parse(args[2:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -81,7 +83,59 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return inspectSources(root, *format, *offline, selectedTags, *closure, stdout, stderr)
 	}
+	if kind == "inputs" {
+		var selectedTags []string
+		if *tags != "" {
+			selectedTags = strings.Split(*tags, ",")
+		}
+		return inspectInputs(root, *format, *offline, selectedTags, stdout, stderr)
+	}
 	return inspectAssignments(root, *format, stdout, stderr)
+}
+
+func inspectInputs(root, format string, offline bool, tags []string, stdout, stderr io.Writer) int {
+	private, err := os.MkdirTemp("", "plystra-data-inputs-")
+	if err != nil {
+		fmt.Fprintln(stderr, "plystra-data: cannot create a private input snapshot")
+		return 2
+	}
+	defer os.RemoveAll(private)
+	staged, err := project.StageAnalyzeInput(context.Background(), root, filepath.Join(private, "snapshot"), project.SourceOptions{Offline: offline, BuildTags: tags})
+	if err != nil {
+		fmt.Fprintln(stderr, "plystra-data: cannot obtain the selected source and standard-library type inputs")
+		return 2
+	}
+	digest, err := protocol.SnapshotManifestDigest(staged.Manifest)
+	if err != nil {
+		fmt.Fprintln(stderr, "plystra-data: cannot validate the private input snapshot")
+		return 2
+	}
+	if err := os.RemoveAll(private); err != nil {
+		fmt.Fprintln(stderr, "plystra-data: cannot remove the private input snapshot")
+		return 2
+	}
+	if format == "json" {
+		if err := json.NewEncoder(stdout).Encode(struct {
+			Schema          string                            `json:"schema"`
+			Build           protocol.BuildContext             `json:"build"`
+			GoToolchain     string                            `json:"go_toolchain"`
+			SnapshotDigest  string                            `json:"snapshot_digest"`
+			SourcePackages  int                               `json:"source_packages"`
+			StandardExports []protocol.SnapshotStandardExport `json:"standard_exports"`
+		}{
+			Schema: "plystra.data-input-inspection/v1", Build: staged.Build, GoToolchain: staged.GoToolchain,
+			SnapshotDigest: digest, SourcePackages: len(staged.Manifest.Packages), StandardExports: staged.Manifest.StandardExports,
+		}); err != nil {
+			fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
+			return 1
+		}
+		return 0
+	}
+	if _, err := fmt.Fprintf(stdout, "%s  %s  %d source packages  %d standard exports\n", staged.GoToolchain, digest, len(staged.Manifest.Packages), len(staged.Manifest.StandardExports)); err != nil {
+		fmt.Fprintln(stderr, "plystra-data: cannot write inspection output")
+		return 1
+	}
+	return 0
 }
 
 func inspectAssignments(root, format string, stdout, stderr io.Writer) int {
@@ -259,4 +313,5 @@ func usage(output io.Writer) {
 	fmt.Fprintln(output, "usage: plystra-data inspect assignments [--project DIR] [--format text|json]")
 	fmt.Fprintln(output, "       plystra-data inspect compiler [--project DIR] [--format text|json] [--offline]")
 	fmt.Fprintln(output, "       plystra-data inspect sources [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline] [--closure]")
+	fmt.Fprintln(output, "       plystra-data inspect inputs [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline]")
 }

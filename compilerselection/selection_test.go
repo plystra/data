@@ -44,6 +44,11 @@ func TestResolveSelectsGraphVersionAndPreservesProject(t *testing.T) {
 	if _, err := compilerselection.Resolve(context.Background(), projectRoot, compilerselection.Options{Offline: true}); err != nil {
 		t.Fatalf("warm offline selection = %v", err)
 	}
+	t.Setenv("GOTOOLCHAIN", "go1.99.0")
+	if _, err := compilerselection.Resolve(context.Background(), projectRoot, compilerselection.Options{Offline: true}); !errors.Is(err, compilerselection.ErrUnavailable) {
+		t.Fatalf("unavailable selected toolchain error = %v", err)
+	}
+	t.Setenv("GOTOOLCHAIN", "local")
 	afterMod, _ := os.ReadFile(filepath.Join(projectRoot, "go.mod"))
 	afterSum, _ := os.ReadFile(filepath.Join(projectRoot, "go.sum"))
 	if !bytes.Equal(beforeMod, afterMod) || !bytes.Equal(beforeSum, afterSum) {

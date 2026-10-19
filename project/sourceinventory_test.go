@@ -3,6 +3,7 @@ package project_test
 import (
 	"archive/zip"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/url"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/plystra/data/project"
+	"github.com/plystra/data/protocol"
 )
 
 func TestDiscoverDataRootsSelectsAuthoredGoFiles(t *testing.T) {
@@ -74,6 +76,54 @@ func TestDiscoverDataRootsUsesGoFlagsTagsAndBareDirective(t *testing.T) {
 	result, err := project.DiscoverDataRoots(context.Background(), root, project.SourceOptions{Offline: true})
 	if err != nil || len(result.Packages) != 1 || len(result.Build.BuildTags) != 1 || result.Build.BuildTags[0] != "customdata" {
 		t.Fatalf("environment tags inventory = %#v, %v", result, err)
+	}
+}
+
+func TestDiscoverDataRootsRejectsGoSourceRedirection(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "go.mod", "module example.com/app\ngo 1.26\n")
+	writeProjectFile(t, root, "plystra.yaml", "project: app\n")
+	writeProjectFile(t, root, "model/member.go", "package model\n//plystra:data accounts.user/v1\nvar Member = 1\n")
+	replacement := filepath.Join(t.TempDir(), "replacement.go")
+	if err := os.WriteFile(replacement, []byte("package model\n//plystra:data accounts.user/v1\nvar Member = 2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := json.Marshal(struct {
+		Replace map[string]string `json:"Replace"`
+	}{Replace: map[string]string{filepath.Join(root, "model", "member.go"): replacement}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlayPath := filepath.Join(t.TempDir(), "overlay.json")
+	if err := os.WriteFile(overlayPath, overlay, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"-overlay=" + overlayPath, "--overlay=" + overlayPath, "-modfile=alternate.mod", "--modfile=alternate.mod", "-toolexec=wrapper", "--toolexec=wrapper"} {
+		t.Run(flag[:strings.IndexByte(flag, '=')], func(t *testing.T) {
+			t.Setenv("GOFLAGS", flag)
+			if _, err := project.DiscoverDataRoots(context.Background(), root, project.SourceOptions{Offline: true}); !errors.Is(err, project.ErrSourceInventory) {
+				t.Fatalf("redirected Go input error = %v", err)
+			}
+		})
+	}
+	goenv := filepath.Join(t.TempDir(), "goenv")
+	if err := os.WriteFile(goenv, []byte("GOFLAGS=-overlay="+overlayPath+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", goenv)
+	previous, hadPrevious := os.LookupEnv("GOFLAGS")
+	if err := os.Unsetenv("GOFLAGS"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadPrevious {
+			_ = os.Setenv("GOFLAGS", previous)
+		} else {
+			_ = os.Unsetenv("GOFLAGS")
+		}
+	})
+	if _, err := project.DiscoverDataRoots(context.Background(), root, project.SourceOptions{Offline: true}); !errors.Is(err, project.ErrSourceInventory) {
+		t.Fatalf("persistent redirected Go input error = %v", err)
 	}
 }
 
@@ -193,6 +243,66 @@ func TestDiscoverSourceClosureMarksSelectedImportsAsSupport(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing packages = %v", want)
+	}
+}
+
+func TestStageAnalyzeInputAcquiresSelectedStandardExports(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "go.mod", "module example.com/app\ngo 1.26\n")
+	writeProjectFile(t, root, "plystra.yaml", "project: app\n")
+	writeProjectFile(t, root, "model/member.go", "package model\nimport \"fmt\"\n//plystra:data example.member/v1\nvar Member = fmt.Sprint(missingAuthoredName)\n")
+	writeProjectFile(t, root, "model/tagged.go", "//go:build customdata\n\npackage model\nimport _ \"encoding/json\"\n")
+	staged, err := project.StageAnalyzeInput(context.Background(), root, filepath.Join(t.TempDir(), "snapshot"), project.SourceOptions{Offline: true})
+	if err != nil || staged.GoToolchain == "" || staged.Build.GOOS != runtime.GOOS || staged.Build.GOARCH != runtime.GOARCH || len(staged.Manifest.Packages) != 1 || len(staged.Manifest.StandardExports) == 0 {
+		t.Fatalf("staged analyze input = %#v, %v", staged, err)
+	}
+	loaded, err := protocol.LoadSnapshot(staged.Manifest)
+	if err != nil || len(loaded.Packages) != 1 || len(loaded.StandardExports) == 0 {
+		t.Fatalf("loaded analyze input = %#v, %v", loaded, err)
+	}
+	foundFmt := false
+	for _, item := range loaded.StandardExports {
+		if item.ImportPath == "fmt" {
+			foundFmt = true
+			if len(item.Content) == 0 {
+				t.Fatal("empty fmt export")
+			}
+		}
+	}
+	if !foundFmt {
+		t.Fatal("selected fmt export is missing")
+	}
+	if _, err := os.Stat(filepath.Join(root, "go.sum")); !os.IsNotExist(err) {
+		t.Fatalf("Project go.sum changed: %v", err)
+	}
+	t.Setenv("GOOS", "linux")
+	t.Setenv("GOARCH", "amd64")
+	t.Setenv("CGO_ENABLED", "0")
+	tagged, err := project.StageAnalyzeInput(context.Background(), root, filepath.Join(t.TempDir(), "tagged-snapshot"), project.SourceOptions{Offline: true, BuildTags: []string{"customdata"}})
+	if err != nil || tagged.Build.GOOS != "linux" || tagged.Build.GOARCH != "amd64" || len(tagged.Build.BuildTags) != 1 || tagged.Build.BuildTags[0] != "customdata" || len(tagged.Manifest.Packages) != 1 || len(tagged.Manifest.Packages[0].Files) != 2 {
+		t.Fatalf("tagged target input = %#v, %v", tagged, err)
+	}
+	foundJSON := false
+	for _, item := range tagged.Manifest.StandardExports {
+		foundJSON = foundJSON || item.ImportPath == "encoding/json"
+	}
+	if !foundJSON {
+		t.Fatal("tag-selected standard export is missing")
+	}
+	staged.Manifest.StandardExports[0].Digest = "sha256:" + strings.Repeat("0", 64)
+	if _, err := protocol.LoadSnapshot(staged.Manifest); !errors.Is(err, protocol.ErrInvalidSnapshotManifest) {
+		t.Fatalf("tampered standard export accepted: %v", err)
+	}
+}
+
+func TestStageAnalyzeInputDoesNotReplaceSelectedToolchain(t *testing.T) {
+	root := t.TempDir()
+	writeProjectFile(t, root, "go.mod", "module example.com/app\ngo 1.26\n")
+	writeProjectFile(t, root, "plystra.yaml", "project: app\n")
+	writeProjectFile(t, root, "model/member.go", "package model\n//plystra:data example.member/v1\nvar Member = 1\n")
+	t.Setenv("GOTOOLCHAIN", "go1.99.0")
+	if _, err := project.StageAnalyzeInput(context.Background(), root, filepath.Join(t.TempDir(), "snapshot"), project.SourceOptions{Offline: true}); !errors.Is(err, project.ErrSourceInventory) {
+		t.Fatalf("unavailable selected toolchain error = %v", err)
 	}
 }
 

@@ -19,8 +19,10 @@ import (
 
 type listedClosurePackage struct {
 	listedPackage
-	Standard bool          `json:"Standard"`
-	Module   *listedModule `json:"Module"`
+	Standard   bool          `json:"Standard"`
+	Incomplete bool          `json:"Incomplete"`
+	Error      any           `json:"Error"`
+	Module     *listedModule `json:"Module"`
 }
 
 // DiscoverSourceClosure adds the Go-selected type-only import closure to
@@ -50,6 +52,7 @@ func DiscoverSourceClosure(ctx context.Context, projectRoot string, options Sour
 		selected[pkg.ImportPath] = pkg
 	}
 	listed := make(map[string]listedClosurePackage)
+	standard := make(map[string]struct{})
 	for _, pkg := range inventory.Packages {
 		args := []string{"list", "-deps", "-e", "-json", "-mod=readonly"}
 		if len(options.BuildTags) != 0 {
@@ -69,6 +72,12 @@ func DiscoverSourceClosure(ctx context.Context, projectRoot string, options Sour
 				return SourceInventory{}, ErrSourceInventory
 			}
 			if dep.Standard {
+				if dep.Error != nil || dep.Incomplete {
+					return SourceInventory{}, fmt.Errorf("%w: standard package %s is unavailable", ErrSourceInventory, dep.ImportPath)
+				}
+				if dep.ImportPath != "unsafe" {
+					standard[dep.ImportPath] = struct{}{}
+				}
 				continue
 			}
 			if prior, exists := listed[dep.ImportPath]; exists {
@@ -79,6 +88,13 @@ func DiscoverSourceClosure(ctx context.Context, projectRoot string, options Sour
 			}
 			listed[dep.ImportPath] = dep
 		}
+	}
+	for importPath := range standard {
+		inventory.StandardPackages = append(inventory.StandardPackages, importPath)
+	}
+	sort.Strings(inventory.StandardPackages)
+	if len(inventory.StandardPackages) > protocol.MaxStandardExports {
+		return SourceInventory{}, ErrSourceInventory
 	}
 	paths := make([]string, 0, len(listed))
 	for importPath := range listed {
