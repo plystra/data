@@ -177,7 +177,12 @@ var Audit = declaration.Member[declaration.NoAccess]{Namespace: "audit"}
 import "context"
 
 //plystra:resource accounts.access/v1
-type Resource interface { Read(context.Context, Request) ([]Row, error) }
+type Resource interface {
+	Create(context.Context, CreateRequest) (CreateRow, error)
+	Read(context.Context, Request) ([]Row, error)
+}
+type CreateRequest struct{ ID int64 }
+type CreateRow struct{ ID int64 }
 type Request struct{}
 type Row struct { ID int64 }
 `))
@@ -196,6 +201,12 @@ var Reader = declaration.Member[access.Resource]{
 	Namespace: "accounts",
 	Tables: []declaration.Table{{ID: "entries", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}},
 	Queries: []declaration.Query{{
+		ID: "create", Method: "Create", Cardinality: "exactly_one", Operation: "insert", Table: declaration.Ref{Symbol: "entries"},
+		Parameters: []declaration.Parameter{{ID: "id", GoField: "ID", Type: "int64"}},
+		Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: "int64", Set: true, Parameter: "id"}}},
+		Returning: []declaration.Projection{{Column: "id"}},
+		Results: []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: "int64"}},
+	}, {
 		ID: "read", Method: "Read", Cardinality: "many", Operation: "select", Table: declaration.Ref{Symbol: "entries"},
 		Projection: []declaration.Projection{{Column: "id"}},
 		Results: []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: "int64"}},
@@ -220,9 +231,11 @@ var Reader = declaration.Member[access.Resource]{
 		case "accounts.reader/v1":
 			foundAccess = true
 			if root.AccessPackage != "example.com/app/access" || root.AccessType != "Resource" ||
-				root.AccessID != "accounts.access/v1" || root.MigrationOnly || len(root.QueryMethods) != 1 ||
-				root.QueryMethods[0].Name != "Read" || root.QueryMethods[0].RequestType != "Request" ||
-				root.QueryMethods[0].RowType != "Row" || root.QueryMethods[0].Cardinality != "many" {
+				root.AccessID != "accounts.access/v1" || root.MigrationOnly || len(root.QueryMethods) != 2 ||
+				root.QueryMethods[0].Name != "Create" || root.QueryMethods[0].RequestType != "CreateRequest" ||
+				root.QueryMethods[0].RowType != "CreateRow" || root.QueryMethods[0].Cardinality != "exactly_one" ||
+				root.QueryMethods[1].Name != "Read" || root.QueryMethods[1].RequestType != "Request" ||
+				root.QueryMethods[1].RowType != "Row" || root.QueryMethods[1].Cardinality != "many" {
 				t.Fatalf("access root = %#v", root)
 			}
 		case "audit.log/v1":

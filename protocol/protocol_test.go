@@ -141,6 +141,56 @@ func TestValidateAnalyzeResponseBindsTypedQueryMethods(t *testing.T) {
 	}
 }
 
+func TestValidateAnalyzeResponseBindsReturningMutationMethod(t *testing.T) {
+	request := validRequest(t)
+	snapshot := typedAccessSnapshot()
+	snapshot.Packages[1].Files[0].Content = []byte(`package declaration
+type Ref struct{Symbol string}
+type ScalarType string
+type Cardinality string
+type OperationKind string
+type Member[A any] struct{Namespace string;Tables []Table;Queries []Query;Access A}
+type Table struct{ID string;Columns []Column}
+type Column struct{ID string;Type ScalarType}
+type Query struct{ID string;Method string;Cardinality Cardinality;Operation OperationKind;Table Ref;Assignments []Assignment;Returning []Projection;Results []ResultField}
+type Assignment struct{Column string;Value Value}
+type Value struct{Kind ScalarType;Set bool;Int64 int64}
+type Projection struct{Column string}
+type ResultField struct{ID string;GoField string;Source string;Type ScalarType}
+`)
+	snapshot.Packages[2].Files[0].Content = []byte(`package access
+import "context"
+//plystra:resource accounts.access/v1
+type Resource interface{Create(context.Context, Request)(Row,error)}
+type Request struct{}
+type Row struct{ID int64}
+`)
+	snapshot.Packages[3].Files[0].Content = []byte(`package model
+import("example.com/access";"github.com/plystra/data/declaration")
+//plystra:data accounts.user/v1
+var Accounts=declaration.Member[access.Resource]{Namespace:"accounts",Tables:[]declaration.Table{{ID:"users",Columns:[]declaration.Column{{ID:"id",Type:"int64"}}}},Queries:[]declaration.Query{{ID:"create",Method:"Create",Cardinality:"exactly_one",Operation:"insert",Table:declaration.Ref{Symbol:"users"},Assignments:[]declaration.Assignment{{Column:"id",Value:declaration.Value{Kind:"int64",Set:true,Int64:1}}},Returning:[]declaration.Projection{{Column:"id"}},Results:[]declaration.ResultField{{ID:"id",GoField:"ID",Source:"id",Type:"int64"}}}}}
+`)
+	replaceRequestSnapshot(t, &request, snapshot)
+	response := protocol.HandleAnalyze(request)
+	if response.Status != protocol.StatusSucceeded || len(response.Output.Roots) != 1 || len(response.Output.Roots[0].QueryMethods) != 1 ||
+		response.Output.Roots[0].QueryMethods[0].Cardinality != "exactly_one" {
+		t.Fatalf("returning mutation response = %#v", response)
+	}
+	if err := protocol.ValidateAnalyzeResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+	response.Output.Roots[0].QueryMethods[0].Cardinality = "many"
+	var err error
+	response.OutputDigest, err = analyzer.ResultDigest(response.Output.Roots, response.Diagnostics, response.Truncated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Output.Digest = response.OutputDigest
+	if err := protocol.ValidateAnalyzeResponse(request, response); err == nil {
+		t.Fatal("rehashed mismatched mutation cardinality was accepted")
+	}
+}
+
 func TestValidateAnalyzeRequestRejectsDigestMismatch(t *testing.T) {
 	request := validRequest(t)
 	request.InputDigest = "sha256:" + strings.Repeat("0", 64)

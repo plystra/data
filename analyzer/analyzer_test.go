@@ -294,6 +294,62 @@ var Reader = declaration.Member[database.Resource]{
 	})
 }
 
+func TestAnalyzeMatchesReturningMutationMethods(t *testing.T) {
+	resource := analyzer.ResourceContract{ImportPath: "github.com/plystra/data/database", TypeName: "Resource", ID: resourceID}
+	for _, test := range []struct {
+		name, operation, cardinality, result, body string
+	}{
+		{name: "insert", operation: "insert", cardinality: "exactly_one", result: "Row", body: `Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: "int64", Set: true, Parameter: "id"}}},`},
+		{name: "update", operation: "update", cardinality: "zero_or_one", result: "*Row", body: `Assignments: []declaration.Assignment{{Column: "id", Value: declaration.Value{Kind: "int64", Set: true, Parameter: "id"}}}, Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Parameter: "id"}},`},
+		{name: "delete", operation: "delete", cardinality: "many", result: "[]Row", body: `Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Parameter: "id"}},`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := `package model
+import (
+	"github.com/plystra/data/database"
+	"github.com/plystra/data/declaration"
+)
+//plystra:data accounts.writer/v1
+var Writer = declaration.Member[database.Resource]{
+	Namespace: "accounts",
+	Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}},
+	Queries: []declaration.Query{{
+		ID: "write", Method: "Write", Cardinality: "` + test.cardinality + `", Operation: "` + test.operation + `",
+		Table: declaration.Ref{Symbol: "users"},
+		Parameters: []declaration.Parameter{{ID: "id", GoField: "ID", Type: "int64"}},
+		` + test.body + `
+		Returning: []declaration.Projection{{Column: "id"}},
+		Results: []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: "int64"}},
+	}},
+}`
+			resourceSource := "package database\nimport \"context\"\ntype Request struct{ID int64}\ntype Row struct{ID int64}\ntype Resource interface { Write(context.Context, Request) (" + test.result + ", error) }\n"
+			analyze := func(source, contract string) analyzer.Result {
+				t.Helper()
+				snapshot := sourceSnapshot(source, resource)
+				snapshot.Packages[1].Files[0].Content = []byte(contract)
+				result, err := analyzer.Analyze(snapshot)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return result
+			}
+			result := analyze(body, resourceSource)
+			if !result.Valid || len(result.Roots) != 1 || len(result.Roots[0].QueryMethods) != 1 ||
+				result.Roots[0].QueryMethods[0].Cardinality != declaration.Cardinality(test.cardinality) {
+				t.Fatalf("returning mutation = %#v", result)
+			}
+			badRow := analyze(body, strings.Replace(resourceSource, "Row struct{ID int64}", "Row struct{ID string}", 1))
+			if badRow.Valid || !hasCode(badRow, analyzer.CodeAccessContractMismatch) {
+				t.Fatalf("wrong mutation row = %#v", badRow)
+			}
+			badRequest := analyze(body, strings.Replace(resourceSource, "Request struct{ID int64}", "Request struct{ID string}", 1))
+			if badRequest.Valid || !hasCode(badRequest, analyzer.CodeAccessContractMismatch) {
+				t.Fatalf("wrong mutation request = %#v", badRequest)
+			}
+		})
+	}
+}
+
 func TestAnalyzeDecodesAndNormalizesModel(t *testing.T) {
 	result, err := analyzer.Analyze(sourceSnapshot(`package model
 

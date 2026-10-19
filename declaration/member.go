@@ -649,9 +649,13 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 		return fmt.Errorf("%w: query %q", ErrInvalidSchema, query.ID)
 	}
 	if query.Method != "" {
-		if query.Operation != OperationSelect || len(query.Projection) == 0 ||
+		outputs := query.Projection
+		if query.Operation != OperationSelect {
+			outputs = query.Returning
+		}
+		if len(outputs) == 0 ||
 			(query.Cardinality != CardinalityExactlyOne && query.Cardinality != CardinalityZeroOrOne && query.Cardinality != CardinalityMany) {
-			return fmt.Errorf("%w: directly callable query %q requires typed SELECT cardinality", ErrUnsupported, query.ID)
+			return fmt.Errorf("%w: directly callable query %q requires typed results and cardinality", ErrUnsupported, query.ID)
 		}
 	} else if query.Cardinality != "" {
 		return fmt.Errorf("%w: query %q has cardinality without an access method", ErrInvalidSchema, query.ID)

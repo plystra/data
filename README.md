@@ -29,20 +29,25 @@ closed model and returns a stable sorted copy; `Digest` binds that normalized
 logical model without including the access Resource value or runtime secrets.
 Queries and plans may name an explicit exported Go access `Method`. The
 normalized model and digest preserve that mapping, and duplicate or invalid
-method names fail declaration analysis. This is method identity only: Data
-requires exact name coverage against a type-checked authored access Resource
-before accepting its analysis result, including embedded methods; unmatched,
-unexported, and lifecycle methods are rejected. A directly callable SELECT
-query additionally declares `Cardinality` (`exactly_one`, `zero_or_one`, or
-`many`) and maps each parameter and typed result through an exported `GoField`.
+method names fail declaration analysis. The `Method` field alone supplies
+identity: Data requires exact name coverage against a type-checked authored
+access Resource before accepting its analysis result, including embedded
+methods; unmatched, unexported, and lifecycle methods are rejected. A directly
+callable SELECT query additionally declares `Cardinality` (`exactly_one`,
+`zero_or_one`, or `many`) and maps each parameter and typed result through an
+exported `GoField`.
 Its authored method has the shape
 `Method(context.Context, Request) (Row, error)`, `(*Row, error)`, or
 `([]Row, error)` respectively. `Request` and `Row` are exported named structs
 whose fields exactly match the explicit mappings; nullable result fields are
-`*T`. The initial validated access scalar subset is `bool`, `[]byte`,
-`float64`, `int64`, and `string`. Unsupported signatures, mapped mutations, and
-callable plans fail analysis. Accepted method types and cardinality are bound to the
-analyze result, but provider generation and installation are not yet present.
+`*T`. The same cardinality and typed request/row shapes are accepted for
+directly callable `INSERT`, `UPDATE`, and `DELETE` only with explicit
+`RETURNING` projections and complete typed result mappings. The method's
+cardinality constrains returned rows. The initial validated access scalar
+subset is `bool`, `[]byte`, `float64`, `int64`, and `string`. Unsupported
+signatures, direct mutations without `RETURNING`, and callable plans fail
+analysis. Accepted method types and cardinality are bound to the analyze
+result, but provider generation and installation are not yet present.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it

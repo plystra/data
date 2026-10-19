@@ -42,14 +42,14 @@ func validateQueryMethodShapes(access types.Type, model declaration.Model) ([]Qu
 }
 
 func validateQueryMethodShape(method *types.Func, query declaration.Query) (QueryMethod, error) {
-	if query.Operation != declaration.OperationSelect {
-		return QueryMethod{}, fmt.Errorf("only typed SELECT methods are supported")
+	if query.Operation != declaration.OperationSelect && len(query.Returning) == 0 {
+		return QueryMethod{}, fmt.Errorf("direct mutation methods require RETURNING")
 	}
 	signature, ok := method.Type().(*types.Signature)
 	if !ok || signature.Variadic() || signature.Params().Len() != 2 || signature.Results().Len() != 2 ||
 		!isContextType(signature.Params().At(0).Type()) ||
 		!types.Identical(types.Unalias(signature.Results().At(1).Type()), types.Universe.Lookup("error").Type()) {
-		return QueryMethod{}, fmt.Errorf("expected (context.Context, Request) (Row, error) shape")
+		return QueryMethod{}, fmt.Errorf("expected (context.Context, Request) (Result, error) shape")
 	}
 	request, err := exportedStruct(signature.Params().At(1).Type())
 	if err != nil {
@@ -70,17 +70,17 @@ func validateQueryMethodShape(method *types.Func, query declaration.Query) (Quer
 	case declaration.CardinalityZeroOrOne:
 		pointer, ok := result.(*types.Pointer)
 		if !ok {
-			return QueryMethod{}, fmt.Errorf("zero-or-one SELECT must return *Row")
+			return QueryMethod{}, fmt.Errorf("zero-or-one query must return *Row")
 		}
 		rowType = pointer.Elem()
 	case declaration.CardinalityMany:
 		slice, ok := result.(*types.Slice)
 		if !ok {
-			return QueryMethod{}, fmt.Errorf("many SELECT must return []Row")
+			return QueryMethod{}, fmt.Errorf("many query must return []Row")
 		}
 		rowType = slice.Elem()
 	default:
-		return QueryMethod{}, fmt.Errorf("unsupported SELECT cardinality")
+		return QueryMethod{}, fmt.Errorf("unsupported query cardinality")
 	}
 	row, err := exportedStruct(rowType)
 	if err != nil {

@@ -134,7 +134,7 @@ type Root struct {
 }
 
 // QueryMethod records the authored types needed to implement one validated
-// directly callable query without reopening Project source during emission.
+// directly callable query or returning mutation without reopening Project source.
 type QueryMethod struct {
 	Name           string                  `json:"name"`
 	Cardinality    declaration.Cardinality `json:"cardinality"`
@@ -672,7 +672,7 @@ func (a *analysis) inspectRoot(pkg *parsedPackage, file *ast.File, spec *ast.Val
 		}
 		queryMethods, err = validateQueryMethodShapes(accessType, model)
 		if err != nil {
-			a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeAccessContractMismatch, err.Error(), "Use a supported typed SELECT method and map every request and row field explicitly.", memberID, name.Name)
+			a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeAccessContractMismatch, err.Error(), "Use a supported typed query method and map every request and row field explicitly.", memberID, name.Name)
 			return
 		}
 	}

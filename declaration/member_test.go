@@ -148,7 +148,7 @@ func TestNormalizeDirectQueryMethodFields(t *testing.T) {
 			q.Projection = append(q.Projection, declaration.Projection{Column: "name"})
 			q.Results = append(q.Results, declaration.ResultField{ID: "name", GoField: "ID", Source: "name", Type: declaration.TypeString})
 		}, want: declaration.ErrDuplicate},
-		{name: "mutation method", edit: func(q *declaration.Query) { q.Operation = declaration.OperationDelete }, want: declaration.ErrUnsupported},
+		{name: "mutation without returning", edit: func(q *declaration.Query) { q.Operation = declaration.OperationDelete }, want: declaration.ErrUnsupported},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			query := base
@@ -158,6 +158,43 @@ func TestNormalizeDirectQueryMethodFields(t *testing.T) {
 			test.edit(&query)
 			if err := check(query); !errors.Is(err, test.want) {
 				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeDirectReturningMutationMethods(t *testing.T) {
+	for _, operation := range []declaration.OperationKind{
+		declaration.OperationInsert, declaration.OperationUpdate, declaration.OperationDelete,
+	} {
+		t.Run(string(operation), func(t *testing.T) {
+			query := declaration.Query{
+				ID: "write-user", Method: "WriteUser", Cardinality: declaration.CardinalityZeroOrOne,
+				Operation: operation, Table: declaration.Ref{Symbol: "users"},
+				Returning: []declaration.Projection{{Column: "id"}},
+				Results:   []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: declaration.TypeInt64}},
+			}
+			if operation != declaration.OperationDelete {
+				query.Assignments = []declaration.Assignment{{Column: "id", Value: declaration.Int64(1)}}
+			}
+			if operation != declaration.OperationInsert {
+				query.Predicate = declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(1)}
+			}
+			check := func() error {
+				_, err := (declaration.Member[access]{
+					Namespace: "accounts",
+					Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+					Queries:   []declaration.Query{query},
+				}).Normalize()
+				return err
+			}
+			if err := check(); err != nil {
+				t.Fatal(err)
+			}
+			query.Returning = nil
+			query.Results = nil
+			if err := check(); !errors.Is(err, declaration.ErrUnsupported) {
+				t.Fatalf("mutation without RETURNING = %v", err)
 			}
 		})
 	}
