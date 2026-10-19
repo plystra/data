@@ -37,6 +37,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) >= 2 && args[0] == "check" && args[1] == "assignments" {
 		return runCheckAssignments(args[2:], stdout, stderr)
 	}
+	if len(args) >= 2 && args[0] == "check" && args[1] == "resources" {
+		return runCheckResources(args[2:], stdout, stderr)
+	}
 	if len(args) < 2 || args[0] != "inspect" || (args[1] != "assignments" && args[1] != "compiler" && args[1] != "sources" && args[1] != "inputs") {
 		usage(stderr)
 		return 2
@@ -510,6 +513,7 @@ func inspectSources(root, format string, offline bool, tags []string, closure bo
 func usage(output io.Writer) {
 	fmt.Fprintln(output, "usage: plystra-data analyze [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline]")
 	fmt.Fprintln(output, "       plystra-data check assignments [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline]")
+	fmt.Fprintln(output, "       plystra-data check resources [--project DIR] [--format text|json] [--offline]")
 	fmt.Fprintln(output, "usage: plystra-data inspect assignments [--project DIR] [--format text|json]")
 	fmt.Fprintln(output, "       plystra-data inspect compiler [--project DIR] [--format text|json] [--offline]")
 	fmt.Fprintln(output, "       plystra-data inspect sources [--project DIR] [--format text|json] [--tags TAG[,TAG...]] [--offline] [--closure]")

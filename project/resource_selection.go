@@ -51,7 +51,8 @@ func ValidateDatabaseSelections(active []ActiveMember, expectedModule string, co
 		if !validInstanceName(instance.Name) || instance.Name <= previous || instance.Provider == "" || len(instance.Provider) > 1024 ||
 			instance.SourcePath == "" || path.IsAbs(instance.SourcePath) || path.Clean(instance.SourcePath) != instance.SourcePath ||
 			instance.SourcePath == ".." || strings.HasPrefix(instance.SourcePath, "../") || strings.ContainsAny(instance.SourcePath, "\\:") ||
-			instance.SourceLine < 1 || instance.SourceColumn < 1 || instance.ProviderVisible == (instance.ResourceID == "") {
+			instance.SourceLine < 1 || instance.SourceColumn < 1 ||
+			(instance.ProviderVisible && instance.ResourceID == "") || (!instance.ProviderVisible && instance.ResourceID != "") {
 			return nil, fmt.Errorf("%w: malformed configured Resource fact", ErrDatabaseSelection)
 		}
 		byName[instance.Name] = instance

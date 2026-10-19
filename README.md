@@ -320,6 +320,18 @@ assigned database instance to have a visible `data.database/v1` provider at
 generated access provider remains permitted. This API does not invoke the CLI,
 validate the complete application graph, or install files.
 
+`plystra-data check resources --project DIR` runs the selected Data analyzer,
+validates explicit member activation, and invokes the installed `plystra`
+command's generic configured-Resource inspection. Every assigned database must
+select the visible `github.com/plystra/data/postgres.New` provider for
+`data.database/v1`; absent generated access providers do not block this check.
+The command uses the default Core configuration selection and current Go build
+environment, with `--offline` restricting both processes to cached inputs.
+`--format json` emits `plystra.data-resource-check/v1` with active members and
+name-sorted database selections. It is read-only and does not validate full
+access method shapes, generate access, or install output. Install a compatible
+Core CLI as `plystra` on `PATH` before using this command.
+
 ## Module
 
 The module path is `github.com/plystra/data`.

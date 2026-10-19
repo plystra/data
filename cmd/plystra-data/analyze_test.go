@@ -256,6 +256,52 @@ var Reader = declaration.Member[access.Resource]{Namespace: "accounts"}
 		checked.Members[1].Access != "" || !reflect.DeepEqual(assignedBefore, snapshotAnalyzeProject(t, projectRoot)) {
 		t.Fatalf("assignment check = %#v, %v", checked, err)
 	}
+	stubDir := t.TempDir()
+	stubSource := filepath.Join(stubDir, "main.go")
+	writeAnalyzeFixture(t, stubSource, []byte("package main\nimport (\"fmt\"; \"os\")\nfunc main() { if os.Getenv(\"GOPROXY\") != \"off\" || os.Getenv(\"GOSUMDB\") != \"off\" || os.Getenv(\"PLYSTRA_ENV\") != \"\" || os.Getenv(\"PLYSTRA_CONFIG\") != \"\" { os.Exit(3) }; fmt.Print(os.Getenv(\"CORE_RESULT\")) }\n"))
+	stubPath := filepath.Join(stubDir, "plystra")
+	if runtime.GOOS == "windows" {
+		stubPath += ".exe"
+	}
+	runAnalyzeGo(t, moduleRoot, 90*time.Second, "build", "-o", stubPath, stubSource)
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	selectedResources := strings.ReplaceAll(coreResourceFixture, "access.generated", "accounts.reader")
+	t.Setenv("CORE_RESULT", selectedResources)
+	t.Setenv("PLYSTRA_ENV", "production")
+	t.Setenv("PLYSTRA_CONFIG", "deploy/other.yaml")
+	writeAnalyzeFixture(t, filepath.Join(projectRoot, "plystra.yaml"), []byte("resources:\n  instances:\n    database.primary:\n      use: github.com/plystra/data/postgres.New\n    accounts.reader:\n      use: example.com/app/dataaccess.New\n"))
+	resourcesBefore := snapshotAnalyzeProject(t, projectRoot)
+	stdout.Reset()
+	stderr.Reset()
+	command = exec.CommandContext(ctx, commandPath, "check", "resources", "--project", projectRoot, "--format", "json", "--offline")
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil || stderr.Len() != 0 {
+		t.Fatalf("public Resource check = %v, stdout = %q, stderr = %q", err, stdout.String(), stderr.String())
+	}
+	var resourceCheck struct {
+		Schema    string                      `json:"schema"`
+		Members   []struct{ MemberID string } `json:"members"`
+		Databases []struct {
+			Resource string `json:"resource"`
+			Provider string `json:"provider"`
+			Backend  string `json:"backend"`
+		} `json:"databases"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &resourceCheck); err != nil || resourceCheck.Schema != "plystra.data-resource-check/v1" ||
+		len(resourceCheck.Members) != 2 || len(resourceCheck.Databases) != 1 ||
+		resourceCheck.Databases[0].Resource != "database.primary" || resourceCheck.Databases[0].Provider != "github.com/plystra/data/postgres.New" || resourceCheck.Databases[0].Backend != "postgres/v1" ||
+		!reflect.DeepEqual(resourcesBefore, snapshotAnalyzeProject(t, projectRoot)) {
+		t.Fatalf("Resource check = %#v, %v", resourceCheck, err)
+	}
+	t.Setenv("CORE_RESULT", strings.Replace(selectedResources, `"configured_only"`, `"resolved"`, 1))
+	stdout.Reset()
+	stderr.Reset()
+	command = exec.CommandContext(ctx, commandPath, "check", "resources", "--project", projectRoot, "--offline")
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err == nil || stdout.Len() != 0 || !strings.Contains(stderr.String(), "compatible Core CLI Resource inspection is unavailable") ||
+		!reflect.DeepEqual(resourcesBefore, snapshotAnalyzeProject(t, projectRoot)) {
+		t.Fatalf("invalid Core result = %v, stdout = %q, stderr = %q", err, stdout.String(), stderr.String())
+	}
 	writeAnalyzeFixture(t, assignmentPath, []byte("data:\n  members:\n    audit.log/v1: {resource: database.primary}\n"))
 	dormantBefore := snapshotAnalyzeProject(t, projectRoot)
 	stdout.Reset()

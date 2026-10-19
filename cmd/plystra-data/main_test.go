@@ -104,6 +104,27 @@ func TestCheckAssignmentsRejectsInvalidProjectInput(t *testing.T) {
 	}
 }
 
+func TestCheckResourcesRejectsInvalidProjectInput(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"invalid format", []string{"check", "resources", "--project", root, "--format", "yaml"}, "expected --format"},
+		{"positional argument", []string{"check", "resources", "extra"}, "no positional arguments"},
+		{"missing file", []string{"check", "resources", "--project", root}, "cannot read plystra.data.yaml"},
+		{"missing directory", []string{"check", "resources", "--project", filepath.Join(root, "missing")}, "Project directory is unavailable"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(test.args, &stdout, &stderr); code != 2 || stdout.Len() != 0 || !strings.Contains(stderr.String(), test.want) {
+				t.Fatalf("check resources = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestPublicInspectAssignmentsCommand(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, configName), []byte("data:\n  members:\n    authn.persistence/v1: {resource: database.primary, access: authn.persistence}\n"), 0o600); err != nil {
