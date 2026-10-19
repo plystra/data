@@ -68,6 +68,44 @@ func TestNormalizeSortsAndDigestsTheLogicalModel(t *testing.T) {
 	}
 }
 
+func TestNormalizePreservesExplicitAccessMethods(t *testing.T) {
+	member := declaration.Member[access]{
+		Namespace: "accounts",
+		Tables:    []declaration.Table{{ID: "users"}},
+		Queries:   []declaration.Query{{ID: "read-users", Method: "ReadUsers", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"}}},
+		Plans:     []declaration.Plan{{ID: "read-plan", Method: "ReadPlan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: declaration.CardinalityMany}}}},
+	}
+	model, err := member.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.Queries[0].Method != "ReadUsers" || model.Plans[0].Method != "ReadPlan" {
+		t.Fatalf("normalized methods = %q, %q", model.Queries[0].Method, model.Plans[0].Method)
+	}
+	digest, err := member.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	member.Plans[0].Method = "ReadTransaction"
+	changed, err := member.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed == digest {
+		t.Fatal("method mapping did not change logical digest")
+	}
+	member.Plans[0].Method = "ReadUsers"
+	if _, err := member.Normalize(); !errors.Is(err, declaration.ErrDuplicate) {
+		t.Fatalf("duplicate query/plan method error = %v", err)
+	}
+	for _, method := range []string{"readUsers", "Read-Users", "1Read", "_Read"} {
+		member.Plans[0].Method = method
+		if _, err := member.Normalize(); !errors.Is(err, declaration.ErrInvalidID) {
+			t.Fatalf("invalid method %q error = %v", method, err)
+		}
+	}
+}
+
 func TestNormalizeRejectsInvalidAndHiddenReferences(t *testing.T) {
 	tests := []struct {
 		name   string

@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/token"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -181,6 +183,7 @@ const (
 // Query is deterministic typed query intent. SQL text is deliberately absent.
 type Query struct {
 	ID          string        `json:"id"`
+	Method      string        `json:"method,omitempty"`
 	Operation   OperationKind `json:"operation"`
 	Table       Ref           `json:"table"`
 	Joins       []Join        `json:"joins,omitempty"`
@@ -300,6 +303,7 @@ type Ordering struct {
 // Plan is one ordered atomic statement plan.
 type Plan struct {
 	ID         string          `json:"id"`
+	Method     string          `json:"method,omitempty"`
 	Statements []PlanStatement `json:"statements"`
 }
 
@@ -524,8 +528,12 @@ func validateModel(model *Model) error {
 		}
 	}
 	queries := make(map[string]Query, len(model.Queries))
+	methods := make(map[string]string)
 	for _, query := range model.Queries {
 		if err := addSymbol(symbols, query.ID, "query"); err != nil {
+			return err
+		}
+		if err := addAccessMethod(methods, query.Method, "query "+query.ID); err != nil {
 			return err
 		}
 		queries[query.ID] = query
@@ -535,6 +543,9 @@ func validateModel(model *Model) error {
 	}
 	for _, plan := range model.Plans {
 		if err := addSymbol(symbols, plan.ID, "plan"); err != nil {
+			return err
+		}
+		if err := addAccessMethod(methods, plan.Method, "plan "+plan.ID); err != nil {
 			return err
 		}
 		if err := validatePlan(plan, imports, queries); err != nil {
@@ -1358,6 +1369,21 @@ func validSymbol(value string) bool {
 		}
 	}
 	return true
+}
+
+func addAccessMethod(methods map[string]string, method, owner string) error {
+	if method == "" {
+		return nil
+	}
+	first, _ := utf8.DecodeRuneInString(method)
+	if len(method) > MaximumSymbolBytes || !token.IsIdentifier(method) || !unicode.IsUpper(first) {
+		return fmt.Errorf("%w: access method %q", ErrInvalidID, method)
+	}
+	if previous, exists := methods[method]; exists {
+		return fmt.Errorf("%w: access method %q belongs to both %s and %s", ErrDuplicate, method, previous, owner)
+	}
+	methods[method] = owner
+	return nil
 }
 
 func validSegment(value string) bool {

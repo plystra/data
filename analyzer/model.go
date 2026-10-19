@@ -512,6 +512,12 @@ func (d modelDecoder) queries(value ast.Expr) ([]declaration.Query, error) {
 				return nil, err
 			}
 		}
+		if field, ok := fields["Method"]; ok {
+			query.Method, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if field, ok := fields["Operation"]; ok {
 			value, valueErr := d.string(field)
 			if valueErr != nil {
@@ -927,6 +933,12 @@ func (d modelDecoder) plans(value ast.Expr) ([]declaration.Plan, error) {
 		plan := declaration.Plan{}
 		if field, ok := fields["ID"]; ok {
 			plan.ID, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Method"]; ok {
+			plan.Method, err = d.string(field)
 			if err != nil {
 				return nil, err
 			}

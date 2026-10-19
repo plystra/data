@@ -154,6 +154,7 @@ import "github.com/plystra/data/declaration"
 	},
 	Queries: []declaration.Query{{
 		ID: "list-users",
+		Method: "ListUsers",
 		Operation: "select",
 		Table: declaration.Ref{Symbol: "a-users"},
 		Projection: []declaration.Projection{{Column: "id", Alias: "user-id"}},
@@ -161,6 +162,7 @@ import "github.com/plystra/data/declaration"
 	}},
 	Plans: []declaration.Plan{{
 		ID: "list-plan",
+		Method: "ListPlan",
 		Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "list-users"}, Cardinality: "many"}},
 	}},
 	Migrations: []declaration.Migration{{
@@ -185,10 +187,10 @@ import "github.com/plystra/data/declaration"
 	if len(model.Tables[1].Columns) != 2 || model.Tables[1].Columns[0].ID != "email" || model.Tables[1].Columns[1].ID != "id" {
 		t.Fatalf("normalized columns = %#v", model.Tables[1].Columns)
 	}
-	if len(model.Queries) != 1 || model.Queries[0].Operation != "select" || model.Queries[0].Table.Symbol != "a-users" || model.Queries[0].Projection[0].Alias != "user-id" {
+	if len(model.Queries) != 1 || model.Queries[0].Method != "ListUsers" || model.Queries[0].Operation != "select" || model.Queries[0].Table.Symbol != "a-users" || model.Queries[0].Projection[0].Alias != "user-id" {
 		t.Fatalf("decoded query = %#v", model.Queries)
 	}
-	if len(model.Plans) != 1 || model.Plans[0].Statements[0].Query.Symbol != "list-users" {
+	if len(model.Plans) != 1 || model.Plans[0].Method != "ListPlan" || model.Plans[0].Statements[0].Query.Symbol != "list-users" {
 		t.Fatalf("decoded plan = %#v", model.Plans)
 	}
 	if len(model.Migrations) != 1 || model.Migrations[0].Version != 1 || model.Migrations[0].Operations[0].Table.Symbol != "a-users" {
@@ -1167,14 +1169,14 @@ type JoinCondition struct { Left ColumnRef; Right ColumnRef }
 type Join struct { Kind JoinKind; Table Ref; On JoinCondition }
 type ConflictAction string
 type Conflict struct { Constraint string; Action ConflictAction; UpdateColumns []string }
-type Query struct { ID string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; GroupBy []ColumnRef; Having Predicate; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
+type Query struct { ID string; Method string; Operation OperationKind; Table Ref; Joins []Join; Parameters []Parameter; Assignments []Assignment; Conflict Conflict; Projection []Projection; GroupBy []ColumnRef; Having Predicate; Returning []Projection; Results []ResultField; Predicate Predicate; Ordering []Ordering; Limit uint64; HasLimit bool; Offset uint64; HasOffset bool }
 type Projection struct { Table Ref; Column string; Alias string; Aggregate string }
 type ResultField struct { ID string; Source string; Type ScalarType; Nullable bool }
 type PredicateKind string
 type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }
 type OrderingDirection string
 type Ordering struct { Table Ref; Column string; Direction OrderingDirection }
-type Plan struct { ID string; Statements []PlanStatement }
+type Plan struct { ID string; Method string; Statements []PlanStatement }
 type PlanStatement struct { ID string; Query Ref; Cardinality Cardinality; Affected AffectedRows }
 type Cardinality string
 type AffectedRows struct { Set bool; Min uint64; Max uint64; Unbounded bool }
