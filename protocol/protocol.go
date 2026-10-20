@@ -343,12 +343,12 @@ func validateAnalyzeRoots(snapshot SnapshotManifest, roots []analyzer.Root) erro
 			return fmt.Errorf("analyze root source is not in the snapshot")
 		}
 		if root.MigrationOnly {
-			if root.AccessPackage != "github.com/plystra/data/declaration" || root.AccessType != "NoAccess" || root.AccessID != "" || len(root.QueryMethods) != 0 {
+			if root.AccessPackage != "github.com/plystra/data/declaration" || root.AccessType != "NoAccess" || root.AccessID != "" || len(root.QueryMethods) != 0 || len(root.PlanMethods) != 0 {
 				return fmt.Errorf("analyze migration-only access identity is invalid")
 			}
 		} else if root.AccessPackage == "" || root.AccessType == "" || root.AccessID == "" || resources[root.AccessPackage+"\x00"+root.AccessType] != root.AccessID {
 			return fmt.Errorf("analyze root access identity is not in the snapshot")
-		} else if err := validateQueryMethods(packages, root); err != nil {
+		} else if err := validateAccessMethods(packages, root); err != nil {
 			return err
 		}
 		model, err := (declaration.Member[struct{}]{
@@ -363,20 +363,21 @@ func validateAnalyzeRoots(snapshot SnapshotManifest, roots []analyzer.Root) erro
 	return nil
 }
 
-func validateQueryMethods(packages map[string]SnapshotPackage, root analyzer.Root) error {
+func validateAccessMethods(packages map[string]SnapshotPackage, root analyzer.Root) error {
 	queries := make(map[string]declaration.Query)
 	for _, query := range root.Model.Queries {
 		if query.Method != "" {
 			queries[query.Method] = query
 		}
 	}
+	plans := make(map[string]declaration.Plan)
 	for _, plan := range root.Model.Plans {
 		if plan.Method != "" {
-			return fmt.Errorf("analyze root has an unsupported access plan method")
+			plans[plan.Method] = plan
 		}
 	}
-	if len(queries) == 0 || len(root.QueryMethods) != len(queries) {
-		return fmt.Errorf("analyze root query method inventory is incomplete")
+	if len(queries)+len(plans) == 0 || len(root.QueryMethods) != len(queries) || len(root.PlanMethods) != len(plans) {
+		return fmt.Errorf("analyze root access method inventory is incomplete")
 	}
 	previous := ""
 	for _, method := range root.QueryMethods {
@@ -391,6 +392,16 @@ func validateQueryMethods(packages map[string]SnapshotPackage, root analyzer.Roo
 			}
 		} else if !validAccessTypeName(method.RowType) || packages[method.RowPackage].ImportPath == "" {
 			return fmt.Errorf("analyze root query row type is invalid")
+		}
+		previous = method.Name
+	}
+	previous = ""
+	for _, method := range root.PlanMethods {
+		_, exists := plans[method.Name]
+		if !exists || method.Name <= previous ||
+			!validAccessTypeName(method.RequestType) || packages[method.RequestPackage].ImportPath == "" ||
+			!validAccessTypeName(method.ResultType) || packages[method.ResultPackage].ImportPath == "" {
+			return fmt.Errorf("analyze root plan method shape is invalid")
 		}
 		previous = method.Name
 	}

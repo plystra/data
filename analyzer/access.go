@@ -8,37 +8,91 @@ import (
 	"github.com/plystra/data/declaration"
 )
 
-func validateQueryMethodShapes(access types.Type, model declaration.Model) ([]QueryMethod, error) {
+func validateAccessMethodShapes(access types.Type, model declaration.Model) ([]QueryMethod, []PlanMethod, error) {
 	queries := make(map[string]declaration.Query)
 	for _, query := range model.Queries {
 		if query.Method != "" {
 			queries[query.Method] = query
 		}
 	}
+	plans := make(map[string]declaration.Plan)
 	for _, plan := range model.Plans {
 		if plan.Method != "" {
-			return nil, fmt.Errorf("access plan method %q is not yet executable", plan.Method)
+			plans[plan.Method] = plan
 		}
 	}
 	iface := types.Unalias(access).(*types.Named).Underlying().(*types.Interface).Complete()
 	if iface.NumMethods() == 0 {
-		return nil, fmt.Errorf("access Resource has no callable query methods")
+		return nil, nil, fmt.Errorf("access Resource has no callable methods")
 	}
-	methods := make([]QueryMethod, 0, iface.NumMethods())
+	queryMethods := make([]QueryMethod, 0, len(queries))
+	planMethods := make([]PlanMethod, 0, len(plans))
 	for index := 0; index < iface.NumMethods(); index++ {
 		method := iface.Method(index)
-		query, ok := queries[method.Name()]
+		if query, ok := queries[method.Name()]; ok {
+			fact, err := validateQueryMethodShape(method, query)
+			if err != nil {
+				return nil, nil, fmt.Errorf("access method %q: %w", method.Name(), err)
+			}
+			queryMethods = append(queryMethods, fact)
+			continue
+		}
+		plan, ok := plans[method.Name()]
 		if !ok {
-			return nil, fmt.Errorf("access method %q has no supported query", method.Name())
+			return nil, nil, fmt.Errorf("access method %q has no supported query or plan", method.Name())
 		}
-		fact, err := validateQueryMethodShape(method, query)
+		fact, err := validatePlanMethodShape(method, plan, model.Queries)
 		if err != nil {
-			return nil, fmt.Errorf("access method %q: %w", method.Name(), err)
+			return nil, nil, fmt.Errorf("access method %q: %w", method.Name(), err)
 		}
-		methods = append(methods, fact)
+		planMethods = append(planMethods, fact)
 	}
-	sort.Slice(methods, func(i, j int) bool { return methods[i].Name < methods[j].Name })
-	return methods, nil
+	sort.Slice(queryMethods, func(i, j int) bool { return queryMethods[i].Name < queryMethods[j].Name })
+	sort.Slice(planMethods, func(i, j int) bool { return planMethods[i].Name < planMethods[j].Name })
+	return queryMethods, planMethods, nil
+}
+
+func validatePlanMethodShape(method *types.Func, plan declaration.Plan, queries []declaration.Query) (PlanMethod, error) {
+	signature, ok := method.Type().(*types.Signature)
+	if !ok || signature.Variadic() || signature.Params().Len() != 2 || signature.Results().Len() != 2 ||
+		!isContextType(signature.Params().At(0).Type()) ||
+		!types.Identical(types.Unalias(signature.Results().At(1).Type()), types.Universe.Lookup("error").Type()) {
+		return PlanMethod{}, fmt.Errorf("expected (context.Context, Request) (Result, error) shape")
+	}
+	request, err := exportedStruct(signature.Params().At(1).Type())
+	if err != nil {
+		return PlanMethod{}, fmt.Errorf("request: %w", err)
+	}
+	if err := matchAccessFields(request, nil); err != nil {
+		return PlanMethod{}, fmt.Errorf("request: %w", err)
+	}
+	result, err := exportedStruct(signature.Results().At(0).Type())
+	if err != nil {
+		return PlanMethod{}, fmt.Errorf("result: %w", err)
+	}
+	var selected declaration.Query
+	for _, query := range queries {
+		if query.ID == plan.Statements[0].Query.Symbol {
+			selected = query
+			break
+		}
+	}
+	results := make(map[string]declaration.ResultField, len(selected.Results))
+	for _, item := range selected.Results {
+		results[item.ID] = item
+	}
+	fields := make(map[string]accessField, len(plan.Outputs))
+	for _, output := range plan.Outputs {
+		item := results[output.Result]
+		fields[output.GoField] = accessField{kind: item.Type, nullable: item.Nullable}
+	}
+	if err := matchAccessFields(result, fields); err != nil {
+		return PlanMethod{}, fmt.Errorf("result: %w", err)
+	}
+	return PlanMethod{
+		Name: method.Name(), RequestPackage: request.Obj().Pkg().Path(), RequestType: request.Obj().Name(),
+		ResultPackage: result.Obj().Pkg().Path(), ResultType: result.Obj().Name(),
+	}, nil
 }
 
 func validateQueryMethodShape(method *types.Func, query declaration.Query) (QueryMethod, error) {

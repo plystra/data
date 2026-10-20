@@ -968,7 +968,46 @@ func (d modelDecoder) plans(value ast.Expr) ([]declaration.Plan, error) {
 				return nil, err
 			}
 		}
+		if field, ok := fields["Outputs"]; ok {
+			plan.Outputs, err = d.planOutputs(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		result[index] = plan
+	}
+	return result, nil
+}
+
+func (d modelDecoder) planOutputs(value ast.Expr) ([]declaration.PlanOutput, error) {
+	elements, err := d.slice(value)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]declaration.PlanOutput, len(elements))
+	for index, element := range elements {
+		fields, fieldErr := d.fieldsExpr(element)
+		if fieldErr != nil {
+			return nil, fieldErr
+		}
+		if field, ok := fields["Statement"]; ok {
+			result[index].Statement, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Result"]; ok {
+			result[index].Result, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["GoField"]; ok {
+			result[index].GoField, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	return result, nil
 }

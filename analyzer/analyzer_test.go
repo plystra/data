@@ -282,14 +282,46 @@ var Reader = declaration.Member[database.Resource]{
 			t.Fatalf("unsupported access scalar = %#v, %v", result, err)
 		}
 	})
-	t.Run("callable plan is not yet executable", func(t *testing.T) {
+	t.Run("typed callable plan", func(t *testing.T) {
+		selected := strings.Replace(body, "\n}", `
+	Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan",
+		Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: "exactly_one"}},
+		Outputs: []declaration.PlanOutput{{Statement: "read", Result: "id", GoField: "ID"}},
+	}},
+}`, 1)
+		snapshot := sourceSnapshot(selected, resource)
+		snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID int64}\ntype PlanRequest struct{}\ntype PlanResult struct{ID int64}\ntype Resource interface { Read(context.Context, Request) ([]Row, error); ReadPlan(context.Context, PlanRequest) (PlanResult, error) }\n")
+		result, err := analyzer.Analyze(snapshot)
+		if err != nil || !result.Valid || len(result.Roots) != 1 || len(result.Roots[0].PlanMethods) != 1 ||
+			result.Roots[0].PlanMethods[0].Name != "ReadPlan" || result.Roots[0].PlanMethods[0].ResultType != "PlanResult" {
+			t.Fatalf("typed callable plan = %#v, %v", result, err)
+		}
+		planOnly := strings.Replace(selected, `Method: "Read", Cardinality: "many", `, "", 1)
+		planSnapshot := sourceSnapshot(planOnly, resource)
+		planSnapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype PlanRequest struct{}\ntype PlanResult struct{ID int64}\ntype Resource interface { ReadPlan(context.Context, PlanRequest) (PlanResult, error) }\n")
+		planResult, err := analyzer.Analyze(planSnapshot)
+		if err != nil || !planResult.Valid || len(planResult.Roots) != 1 || len(planResult.Roots[0].QueryMethods) != 0 || len(planResult.Roots[0].PlanMethods) != 1 {
+			t.Fatalf("plan-only access = %#v, %v", planResult, err)
+		}
+		snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID int64}\ntype PlanRequest struct{Unused int64}\ntype PlanResult struct{ID int64}\ntype Resource interface { Read(context.Context, Request) ([]Row, error); ReadPlan(context.Context, PlanRequest) (PlanResult, error) }\n")
+		invalid, err := analyzer.Analyze(snapshot)
+		if err != nil || invalid.Valid || !hasCode(invalid, analyzer.CodeAccessContractMismatch) {
+			t.Fatalf("plan request field mismatch = %#v, %v", invalid, err)
+		}
+		snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID int64}\ntype PlanRequest struct{}\ntype PlanResult struct{ID string}\ntype Resource interface { Read(context.Context, Request) ([]Row, error); ReadPlan(context.Context, PlanRequest) (PlanResult, error) }\n")
+		invalid, err = analyzer.Analyze(snapshot)
+		if err != nil || invalid.Valid || !hasCode(invalid, analyzer.CodeAccessContractMismatch) {
+			t.Fatalf("plan result field mismatch = %#v, %v", invalid, err)
+		}
+	})
+	t.Run("unsupported callable plan cardinality", func(t *testing.T) {
 		selected := strings.Replace(body, "\n}", `
 	Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: "many"}}}},
 }`, 1)
 		snapshot := sourceSnapshot(selected, resource)
 		snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID int64}\ntype Resource interface { Read(context.Context, Request) ([]Row, error); ReadPlan() error }\n")
 		result, err := analyzer.Analyze(snapshot)
-		if err != nil || result.Valid || !hasCode(result, analyzer.CodeAccessContractMismatch) {
+		if err != nil || result.Valid || !hasCode(result, analyzer.CodeInvalidRootShape) {
 			t.Fatalf("callable plan = %#v, %v", result, err)
 		}
 	})
@@ -1401,8 +1433,9 @@ type PredicateKind string
 type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }
 type OrderingDirection string
 type Ordering struct { Table Ref; Column string; Direction OrderingDirection }
-type Plan struct { ID string; Method string; Statements []PlanStatement }
+type Plan struct { ID string; Method string; Statements []PlanStatement; Outputs []PlanOutput }
 type PlanStatement struct { ID string; Query Ref; Cardinality Cardinality; Affected AffectedRows }
+type PlanOutput struct { Statement string; Result string; GoField string }
 type Cardinality string
 type AffectedRows struct { Set bool; Min uint64; Max uint64; Unbounded bool }
 type Migration struct { ID string; Version uint64; Predecessors []Ref; Operations []MigrationOperation }

@@ -308,6 +308,14 @@ type Plan struct {
 	ID         string          `json:"id"`
 	Method     string          `json:"method,omitempty"`
 	Statements []PlanStatement `json:"statements"`
+	Outputs    []PlanOutput    `json:"outputs,omitempty"`
+}
+
+// PlanOutput maps one retained statement result to an authored result field.
+type PlanOutput struct {
+	Statement string `json:"statement"`
+	Result    string `json:"result"`
+	GoField   string `json:"go_field"`
 }
 
 type PlanStatement struct {
@@ -480,6 +488,7 @@ func clonePlans(plans []Plan) []Plan {
 	for i, plan := range plans {
 		result[i] = plan
 		result[i].Statements = append([]PlanStatement(nil), plan.Statements...)
+		result[i].Outputs = append([]PlanOutput(nil), plan.Outputs...)
 	}
 	return result
 }
@@ -1129,6 +1138,46 @@ func validatePlan(plan Plan, imports map[string]struct{}, queries map[string]Que
 			return fmt.Errorf("%w: affected row range", ErrInvalidSchema)
 		}
 	}
+	if plan.Method == "" {
+		if len(plan.Outputs) != 0 {
+			return fmt.Errorf("%w: plan %q has outputs without a method", ErrInvalidSchema, plan.ID)
+		}
+		return nil
+	}
+	if len(plan.Statements) != 1 || plan.Statements[0].Query.Member != "" ||
+		plan.Statements[0].Cardinality != CardinalityExactlyOne || plan.Statements[0].Affected.Set {
+		return fmt.Errorf("%w: callable plan %q requires one local exactly-one SELECT", ErrUnsupported, plan.ID)
+	}
+	query := queries[plan.Statements[0].Query.Symbol]
+	if query.Operation != OperationSelect || len(query.Parameters) != 0 || len(query.Joins) != 0 ||
+		query.Table.Member != "" || len(query.Projection) == 0 || len(query.Results) == 0 {
+		return fmt.Errorf("%w: callable plan %q query shape", ErrUnsupported, plan.ID)
+	}
+	if len(plan.Outputs) != len(query.Results) {
+		return fmt.Errorf("%w: callable plan %q output count", ErrInvalidSchema, plan.ID)
+	}
+	results := make(map[string]struct{}, len(query.Results))
+	for _, result := range query.Results {
+		results[result.ID] = struct{}{}
+	}
+	fields := make(map[string]struct{}, len(plan.Outputs))
+	seenResults := make(map[string]struct{}, len(plan.Outputs))
+	for _, output := range plan.Outputs {
+		if output.Statement != plan.Statements[0].ID || !validExportedGoName(output.GoField) {
+			return fmt.Errorf("%w: callable plan %q output field", ErrInvalidID, plan.ID)
+		}
+		if _, exists := results[output.Result]; !exists {
+			return fmt.Errorf("%w: callable plan %q output result %q", ErrReference, plan.ID, output.Result)
+		}
+		if _, exists := fields[output.GoField]; exists {
+			return fmt.Errorf("%w: callable plan %q output field %q", ErrDuplicate, plan.ID, output.GoField)
+		}
+		if _, exists := seenResults[output.Result]; exists {
+			return fmt.Errorf("%w: callable plan %q output result %q", ErrDuplicate, plan.ID, output.Result)
+		}
+		fields[output.GoField] = struct{}{}
+		seenResults[output.Result] = struct{}{}
+	}
 	return nil
 }
 
@@ -1359,7 +1408,7 @@ func nodeCount(model Model) int {
 		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + conflictNodes + len(query.Conflict.UpdateColumns) + len(query.Projection) + len(query.GroupBy) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate) + predicateCount(query.Having)
 	}
 	for _, plan := range model.Plans {
-		count += len(plan.Statements)
+		count += len(plan.Statements) + len(plan.Outputs)
 	}
 	for _, migration := range model.Migrations {
 		count += len(migration.Predecessors) + len(migration.Operations)

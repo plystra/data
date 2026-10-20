@@ -141,6 +141,42 @@ func TestValidateAnalyzeResponseBindsTypedQueryMethods(t *testing.T) {
 	}
 }
 
+func TestValidateAnalyzeResponseBindsCallablePlanMethod(t *testing.T) {
+	request := validRequest(t)
+	replaceRequestSnapshot(t, &request, callablePlanSnapshot())
+	base := protocol.HandleAnalyze(request)
+	if base.Status != protocol.StatusSucceeded || len(base.Output.Roots) != 1 || len(base.Output.Roots[0].PlanMethods) != 1 {
+		t.Fatalf("callable plan response = %#v", base)
+	}
+	if err := protocol.ValidateAnalyzeResponse(request, base); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		edit func(*analyzer.Root)
+	}{
+		{name: "missing", edit: func(root *analyzer.Root) { root.PlanMethods = nil }},
+		{name: "unknown request package", edit: func(root *analyzer.Root) { root.PlanMethods[0].RequestPackage = "example.com/other" }},
+		{name: "unexported result", edit: func(root *analyzer.Root) { root.PlanMethods[0].ResultType = "result" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := base
+			changed.Output.Roots = append([]analyzer.Root(nil), base.Output.Roots...)
+			changed.Output.Roots[0].PlanMethods = append([]analyzer.PlanMethod(nil), base.Output.Roots[0].PlanMethods...)
+			test.edit(&changed.Output.Roots[0])
+			var err error
+			changed.OutputDigest, err = analyzer.ResultDigest(changed.Output.Roots, changed.Diagnostics, changed.Truncated)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed.Output.Digest = changed.OutputDigest
+			if err := protocol.ValidateAnalyzeResponse(request, changed); err == nil {
+				t.Fatal("rehashed invalid plan method inventory was accepted")
+			}
+		})
+	}
+}
+
 func TestValidateAnalyzeResponseBindsReturningMutationMethod(t *testing.T) {
 	request := validRequest(t)
 	replaceRequestSnapshot(t, &request, returningMutationSnapshot())
@@ -496,6 +532,31 @@ var Accounts=declaration.Member[access.Resource]{Namespace:"accounts",Tables:[]d
 		},
 		Resources: []analyzer.ResourceContract{{ImportPath: "example.com/access", TypeName: "Resource", ID: "accounts.access/v1"}},
 	}
+}
+
+func callablePlanSnapshot() analyzer.Snapshot {
+	snapshot := typedAccessSnapshot()
+	stub := string(snapshot.Packages[1].Files[0].Content)
+	stub = strings.Replace(stub, "Queries []Query;Access A", "Queries []Query;Plans []Plan;Access A", 1)
+	stub += "type Plan struct{ID string;Method string;Statements []PlanStatement;Outputs []PlanOutput}\n"
+	stub += "type PlanStatement struct{ID string;Query Ref;Cardinality Cardinality}\n"
+	stub += "type PlanOutput struct{Statement string;Result string;GoField string}\n"
+	snapshot.Packages[1].Files[0].Content = []byte(stub)
+	snapshot.Packages[2].Files[0].Content = []byte(`package access
+import "context"
+//plystra:resource accounts.access/v1
+type Resource interface{Read(context.Context, Request)([]Row,error);ReadPlan(context.Context, PlanRequest)(PlanResult,error)}
+type Request struct{}
+type Row struct{ID int64}
+type PlanRequest struct{}
+type PlanResult struct{ID int64}
+`)
+	snapshot.Packages[3].Files[0].Content = []byte(`package model
+import("example.com/access";"github.com/plystra/data/declaration")
+//plystra:data accounts.user/v1
+var Accounts=declaration.Member[access.Resource]{Namespace:"accounts",Tables:[]declaration.Table{{ID:"users",Columns:[]declaration.Column{{ID:"id",Type:"int64"}}}},Queries:[]declaration.Query{{ID:"read",Method:"Read",Cardinality:"many",Operation:"select",Table:declaration.Ref{Symbol:"users"},Projection:[]declaration.Projection{{Column:"id"}},Results:[]declaration.ResultField{{ID:"id",GoField:"ID",Source:"id",Type:"int64"}}}},Plans:[]declaration.Plan{{ID:"read-plan",Method:"ReadPlan",Statements:[]declaration.PlanStatement{{ID:"read",Query:declaration.Ref{Symbol:"read"},Cardinality:"exactly_one"}},Outputs:[]declaration.PlanOutput{{Statement:"read",Result:"id",GoField:"ID"}}}}}
+`)
+	return snapshot
 }
 
 func replaceRequestSnapshot(t *testing.T, request *protocol.AnalyzeRequest, source analyzer.Snapshot) {

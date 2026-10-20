@@ -50,9 +50,14 @@ affected-row count, and there is no typed row mapping. The initial validated
 access scalar subset is `bool`, `[]byte`, `float64`, `int64`, and `string`.
 Every parameter of a directly callable query must be used by an assignment,
 predicate, or grouped `HAVING` expression; unused request fields fail analysis.
-Unsupported signatures and callable plans fail analysis. Accepted method types
-and cardinality are bound to the analyze result, but provider generation and
-installation are not yet present.
+The first callable atomic plan method accepts one local, parameter-free,
+`exactly_one` SELECT statement with complete `PlanOutput` mappings to an
+exported result struct. Its signature is
+`Method(context.Context, EmptyRequest) (Result, error)`, where `EmptyRequest`
+is an exported named empty struct. Unsupported signatures and other callable
+plan shapes fail analysis. Accepted query and plan method type identities are
+bound to the analyze result, but provider generation and installation are not
+yet present.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
@@ -139,8 +144,8 @@ subset: local, parameter-free `SELECT` statements with explicit cardinality
 and typed projected results become ordered `database.Plan` statements. The
 database contract carries result width, scalar kind, and nullability into the
 PostgreSQL transaction, which validates those facts before commit. Joins,
-parameters, imported queries, mutation plans, generated access methods, and
-Data-owned artifact installation remain separate integration boundaries.
+parameters, imported queries, mutation plans, generated access method bodies,
+and Data-owned artifact installation remain separate integration boundaries.
 Mutation queries may additionally declare explicit `Returning` projections and
 typed `Results` mappings. Data analysis validates returned columns and result
 scalar types and nullability, including imported tables. The lowerer emits

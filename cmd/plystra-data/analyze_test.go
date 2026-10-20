@@ -190,12 +190,15 @@ type Resource interface {
 	Create(context.Context, CreateRequest) (CreateRow, error)
 	Delete(context.Context, DeleteRequest) (uint64, error)
 	Read(context.Context, Request) ([]Row, error)
+	ReadPlan(context.Context, PlanRequest) (PlanResult, error)
 }
 type CreateRequest struct{ ID int64 }
 type CreateRow struct{ ID int64 }
 type DeleteRequest struct{ ID int64 }
 type Request struct{}
 type Row struct { ID int64 }
+type PlanRequest struct{}
+type PlanResult struct{ ID int64 }
 `))
 	writeAnalyzeFixture(t, filepath.Join(projectRoot, "model", "member.go"), []byte(`package model
 
@@ -226,6 +229,10 @@ var Reader = declaration.Member[access.Resource]{
 		Projection: []declaration.Projection{{Column: "id"}},
 		Results: []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: "int64"}},
 	}},
+	Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan",
+		Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read"}, Cardinality: "exactly_one"}},
+		Outputs: []declaration.PlanOutput{{Statement: "read", Result: "id", GoField: "ID"}},
+	}},
 }
 `))
 	accessBefore := snapshotAnalyzeProject(t, projectRoot)
@@ -246,13 +253,15 @@ var Reader = declaration.Member[access.Resource]{
 		case "accounts.reader/v1":
 			foundAccess = true
 			if root.AccessPackage != "example.com/app/access" || root.AccessType != "Resource" ||
-				root.AccessID != "accounts.access/v1" || root.MigrationOnly || len(root.QueryMethods) != 3 ||
+				root.AccessID != "accounts.access/v1" || root.MigrationOnly || len(root.QueryMethods) != 3 || len(root.PlanMethods) != 1 ||
 				root.QueryMethods[0].Name != "Create" || root.QueryMethods[0].RequestType != "CreateRequest" ||
 				root.QueryMethods[0].RowType != "CreateRow" || root.QueryMethods[0].Cardinality != "exactly_one" ||
 				root.QueryMethods[1].Name != "Delete" || root.QueryMethods[1].RequestType != "DeleteRequest" ||
 				root.QueryMethods[1].RowPackage != "" || root.QueryMethods[1].RowType != "" || root.QueryMethods[1].Cardinality != "none" ||
 				root.QueryMethods[2].Name != "Read" || root.QueryMethods[2].RequestType != "Request" ||
-				root.QueryMethods[2].RowType != "Row" || root.QueryMethods[2].Cardinality != "many" {
+				root.QueryMethods[2].RowType != "Row" || root.QueryMethods[2].Cardinality != "many" ||
+				root.PlanMethods[0].Name != "ReadPlan" || root.PlanMethods[0].RequestType != "PlanRequest" ||
+				root.PlanMethods[0].ResultType != "PlanResult" {
 				t.Fatalf("access root = %#v", root)
 			}
 		case "audit.log/v1":

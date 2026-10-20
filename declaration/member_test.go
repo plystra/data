@@ -78,7 +78,10 @@ func TestNormalizePreservesExplicitAccessMethods(t *testing.T) {
 			Projection: []declaration.Projection{{Column: "id"}},
 			Results:    []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: declaration.TypeInt64}},
 		}},
-		Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: declaration.CardinalityMany}}}},
+		Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan",
+			Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: declaration.CardinalityExactlyOne}},
+			Outputs:    []declaration.PlanOutput{{Statement: "read", Result: "id", GoField: "ID"}},
+		}},
 	}
 	model, err := member.Normalize()
 	if err != nil {
@@ -108,6 +111,64 @@ func TestNormalizePreservesExplicitAccessMethods(t *testing.T) {
 		if _, err := member.Normalize(); !errors.Is(err, declaration.ErrInvalidID) {
 			t.Fatalf("invalid method %q error = %v", method, err)
 		}
+	}
+}
+
+func TestNormalizeCallablePlanOutputs(t *testing.T) {
+	base := declaration.Member[access]{
+		Namespace: "accounts",
+		Tables:    []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}},
+		Queries: []declaration.Query{{
+			ID: "read", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "users"},
+			Projection: []declaration.Projection{{Column: "id"}},
+			Results:    []declaration.ResultField{{ID: "id", Source: "id", Type: declaration.TypeInt64}},
+		}},
+		Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan",
+			Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read"}, Cardinality: declaration.CardinalityExactlyOne}},
+			Outputs:    []declaration.PlanOutput{{Statement: "read", Result: "id", GoField: "ID"}},
+		}},
+	}
+	model, err := base.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := base.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.Plans[0].Outputs[0].GoField = "Changed"
+	if model.Plans[0].Outputs[0].GoField != "ID" {
+		t.Fatal("normalized plan output aliases authored memory")
+	}
+	changed, err := base.Digest()
+	if err != nil || changed == digest {
+		t.Fatalf("plan output mapping digest = %q, %v", changed, err)
+	}
+	base.Plans[0].Outputs[0].GoField = "ID"
+	for _, test := range []struct {
+		name string
+		edit func(*declaration.Member[access])
+		want error
+	}{
+		{name: "missing output", edit: func(m *declaration.Member[access]) { m.Plans[0].Outputs = nil }, want: declaration.ErrInvalidSchema},
+		{name: "wrong result", edit: func(m *declaration.Member[access]) { m.Plans[0].Outputs[0].Result = "missing" }, want: declaration.ErrReference},
+		{name: "wrong statement", edit: func(m *declaration.Member[access]) { m.Plans[0].Outputs[0].Statement = "missing" }, want: declaration.ErrInvalidID},
+		{name: "private field", edit: func(m *declaration.Member[access]) { m.Plans[0].Outputs[0].GoField = "id" }, want: declaration.ErrInvalidID},
+		{name: "many rows", edit: func(m *declaration.Member[access]) {
+			m.Plans[0].Statements[0].Cardinality = declaration.CardinalityMany
+		}, want: declaration.ErrUnsupported},
+		{name: "outputs without method", edit: func(m *declaration.Member[access]) { m.Plans[0].Method = "" }, want: declaration.ErrInvalidSchema},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			member := base
+			member.Plans = append([]declaration.Plan(nil), base.Plans...)
+			member.Plans[0].Statements = append([]declaration.PlanStatement(nil), base.Plans[0].Statements...)
+			member.Plans[0].Outputs = append([]declaration.PlanOutput(nil), base.Plans[0].Outputs...)
+			test.edit(&member)
+			if _, err := member.Normalize(); !errors.Is(err, test.want) {
+				t.Fatalf("Normalize error = %v, want %v", err, test.want)
+			}
+		})
 	}
 }
 

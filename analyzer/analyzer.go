@@ -128,6 +128,7 @@ type Root struct {
 	AccessType     string            `json:"access_type,omitempty"`
 	AccessID       string            `json:"access_id,omitempty"`
 	QueryMethods   []QueryMethod     `json:"query_methods,omitempty"`
+	PlanMethods    []PlanMethod      `json:"plan_methods,omitempty"`
 	MigrationOnly  bool              `json:"migration_only"`
 	SourceDigest   string            `json:"source_digest"`
 	DeclarationPos Span              `json:"declaration_pos"`
@@ -142,6 +143,15 @@ type QueryMethod struct {
 	RequestType    string                  `json:"request_type"`
 	RowPackage     string                  `json:"row_package"`
 	RowType        string                  `json:"row_type"`
+}
+
+// PlanMethod records the authored types for one validated callable plan.
+type PlanMethod struct {
+	Name           string `json:"name"`
+	RequestPackage string `json:"request_package"`
+	RequestType    string `json:"request_type"`
+	ResultPackage  string `json:"result_package"`
+	ResultType     string `json:"result_type"`
 }
 
 // DiagnosticCode is a stable source-facing failure class.
@@ -665,14 +675,15 @@ func (a *analysis) inspectRoot(pkg *parsedPackage, file *ast.File, spec *ast.Val
 		return
 	}
 	var queryMethods []QueryMethod
+	var planMethods []PlanMethod
 	if !migrationOnly {
 		if err := validateAccessMethodNames(accessType, model); err != nil {
 			a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeAccessContractMismatch, err.Error(), "Match each exported access Resource method to exactly one query or plan Method.", memberID, name.Name)
 			return
 		}
-		queryMethods, err = validateQueryMethodShapes(accessType, model)
+		queryMethods, planMethods, err = validateAccessMethodShapes(accessType, model)
 		if err != nil {
-			a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeAccessContractMismatch, err.Error(), "Use a supported typed query method and map every request and row field explicitly.", memberID, name.Name)
+			a.addDiagnosticWithMember(pkg, fileName(pkg, file), initializer, CodeAccessContractMismatch, err.Error(), "Use a supported typed query or plan method and map every request and result field explicitly.", memberID, name.Name)
 			return
 		}
 	}
@@ -698,6 +709,7 @@ func (a *analysis) inspectRoot(pkg *parsedPackage, file *ast.File, spec *ast.Val
 		AccessType:     accessName,
 		AccessID:       accessID,
 		QueryMethods:   queryMethods,
+		PlanMethods:    planMethods,
 		MigrationOnly:  migrationOnly,
 		SourceDigest:   digestBytes(pkg.contents[fileName(pkg, file)]),
 		DeclarationPos: span(pkg.fset, initializer.Pos(), initializer.End()),
@@ -967,7 +979,7 @@ func allowedElementType(value types.Type) bool {
 
 func allowedDeclarationName(name string) bool {
 	switch name {
-	case "Member", "Table", "Column", "Constraint", "Index", "Query", "Conflict", "Join", "JoinCondition", "ColumnRef", "Parameter", "Assignment", "Projection", "ResultField", "Predicate", "Ordering", "Plan", "PlanStatement", "AffectedRows", "Migration", "MigrationOperation", "Ref", "Value", "AggregateKind", "ConflictAction":
+	case "Member", "Table", "Column", "Constraint", "Index", "Query", "Conflict", "Join", "JoinCondition", "ColumnRef", "Parameter", "Assignment", "Projection", "ResultField", "Predicate", "Ordering", "Plan", "PlanStatement", "PlanOutput", "AffectedRows", "Migration", "MigrationOperation", "Ref", "Value", "AggregateKind", "ConflictAction":
 		return true
 	default:
 		return false

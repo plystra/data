@@ -20,9 +20,9 @@ func TestCompilePlansBuildsDeterministicTypedSelectPlan(t *testing.T) {
 				Projection: []declaration.Projection{{Column: "id"}, {Column: "email", Alias: "address"}},
 				Results:    []declaration.ResultField{{ID: "email", Source: "address", Type: declaration.TypeString}, {ID: "id", Source: "id", Type: declaration.TypeInt64}},
 			}},
-			Plans: []declaration.Plan{{ID: "read-plan", Statements: []declaration.PlanStatement{{
+			Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan", Statements: []declaration.PlanStatement{{
 				ID: "read", Query: declaration.Ref{Symbol: "read-user"}, Cardinality: declaration.CardinalityExactlyOne,
-			}}}},
+			}}, Outputs: []declaration.PlanOutput{{Statement: "read", Result: "id", GoField: "ID"}, {Statement: "read", Result: "email", GoField: "Email"}}}},
 		},
 	}
 	first, err := postgres.CompilePlans([]postgres.SchemaMember{member})
