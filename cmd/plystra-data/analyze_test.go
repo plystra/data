@@ -79,12 +79,21 @@ var Broken = missingAuthoredName
 		proxyPath = "/" + proxyPath
 	}
 	proxyURL := (&url.URL{Scheme: "file", Path: proxyPath}).String()
+	cacheRoot, err := exec.Command("go", "env", "GOMODCACHE").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheProxyPath := filepath.ToSlash(filepath.Join(strings.TrimSpace(string(cacheRoot)), "cache", "download"))
+	if runtime.GOOS == "windows" {
+		cacheProxyPath = "/" + cacheProxyPath
+	}
+	cacheProxyURL := (&url.URL{Scheme: "file", Path: cacheProxyPath}).String()
 	t.Setenv("GOENV", "off")
 	t.Setenv("GOWORK", "off")
 	t.Setenv("GOTOOLCHAIN", "local")
 	t.Setenv("GOFLAGS", "")
 	t.Setenv("GOMODCACHE", filepath.Join(t.TempDir(), "module-cache"))
-	t.Setenv("GOPROXY", proxyURL+",https://proxy.golang.org")
+	t.Setenv("GOPROXY", proxyURL+","+cacheProxyURL+",https://proxy.golang.org")
 	t.Setenv("GOSUMDB", "off")
 	t.Setenv("GONOPROXY", "none")
 	runAnalyzeGo(t, projectRoot, 2*time.Minute, "mod", "download", "all")
@@ -261,6 +270,32 @@ var Reader = declaration.Member[access.Resource]{
 	if !reflect.DeepEqual(accessBefore, snapshotAnalyzeProject(t, projectRoot)) {
 		t.Fatal("access analyze changed Project files")
 	}
+	memberPath := filepath.Join(projectRoot, "model", "member.go")
+	memberSource, err := os.ReadFile(memberPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidSource := strings.Replace(string(memberSource),
+		`Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Parameter: "id"}},`,
+		`Predicate: declaration.Predicate{},`, 1)
+	if invalidSource == string(memberSource) {
+		t.Fatal("public fixture has no delete predicate")
+	}
+	writeAnalyzeFixture(t, memberPath, []byte(invalidSource))
+	unusedBefore := snapshotAnalyzeProject(t, projectRoot)
+	stdout.Reset()
+	stderr.Reset()
+	command = exec.CommandContext(ctx, commandPath, "analyze", "--project", projectRoot, "--format", "json", "--offline")
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err == nil || stderr.Len() != 0 {
+		t.Fatalf("unused parameter public analyze = %v, stderr = %q", err, stderr.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil || output.Response.Status != protocol.StatusRejected ||
+		len(output.Response.Diagnostics) != 1 || output.Response.Diagnostics[0].Code != analyzer.CodeInvalidRootShape ||
+		!reflect.DeepEqual(unusedBefore, snapshotAnalyzeProject(t, projectRoot)) {
+		t.Fatalf("unused parameter analysis: status = %q, diagnostics = %#v, decode = %v", output.Response.Status, output.Response.Diagnostics, err)
+	}
+	writeAnalyzeFixture(t, memberPath, memberSource)
 	assignmentPath := filepath.Join(projectRoot, configName)
 	writeAnalyzeFixture(t, assignmentPath, []byte("data:\n  members:\n    accounts.reader/v1: {resource: database.primary, access: accounts.reader}\n    audit.log/v1: {resource: database.primary}\n"))
 	assignedBefore := snapshotAnalyzeProject(t, projectRoot)

@@ -1050,6 +1050,37 @@ func validateQuery(query Query, imports map[string]struct{}, tables map[string]T
 			}
 		}
 	}
+	if query.Method != "" {
+		if err := validateQueryParameterCoverage(query); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateQueryParameterCoverage(query Query) error {
+	used := make(map[string]struct{}, len(query.Parameters))
+	for _, assignment := range query.Assignments {
+		if assignment.Value.Parameter != "" {
+			used[assignment.Value.Parameter] = struct{}{}
+		}
+	}
+	var visitPredicate func(Predicate)
+	visitPredicate = func(predicate Predicate) {
+		if predicate.Value.Parameter != "" {
+			used[predicate.Value.Parameter] = struct{}{}
+		}
+		for _, item := range predicate.Items {
+			visitPredicate(item)
+		}
+	}
+	visitPredicate(query.Predicate)
+	visitPredicate(query.Having)
+	for _, parameter := range query.Parameters {
+		if _, exists := used[parameter.ID]; !exists {
+			return fmt.Errorf("%w: query %q has unused parameter %q", ErrInvalidSchema, query.ID, parameter.ID)
+		}
+	}
 	return nil
 }
 

@@ -48,6 +48,8 @@ rows. Without `RETURNING`, a directly callable mutation declares
 `Method(context.Context, Request) (uint64, error)`; the `uint64` is the
 affected-row count, and there is no typed row mapping. The initial validated
 access scalar subset is `bool`, `[]byte`, `float64`, `int64`, and `string`.
+Every parameter of a directly callable query must be used by an assignment,
+predicate, or grouped `HAVING` expression; unused request fields fail analysis.
 Unsupported signatures and callable plans fail analysis. Accepted method types
 and cardinality are bound to the analyze result, but provider generation and
 installation are not yet present.

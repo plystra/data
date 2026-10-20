@@ -217,6 +217,7 @@ var Reader = declaration.Member[database.Resource]{
 	})
 	t.Run("request field mapping", func(t *testing.T) {
 		withParameter := strings.Replace(body, `Projection: []declaration.Projection`, `Parameters: []declaration.Parameter{{ID: "id", GoField: "ID", Type: "int64"}},
+		Predicate: declaration.Predicate{Kind: "equal", Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: "int64", Set: true, Parameter: "id"}},
 		Projection: []declaration.Projection`, 1)
 		for _, test := range []struct {
 			name, field string

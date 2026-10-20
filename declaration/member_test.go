@@ -118,6 +118,7 @@ func TestNormalizeDirectQueryMethodFields(t *testing.T) {
 		Parameters: []declaration.Parameter{{ID: "id", GoField: "ID", Type: declaration.TypeInt64}},
 		Projection: []declaration.Projection{{Column: "id"}},
 		Results:    []declaration.ResultField{{ID: "id", GoField: "ID", Source: "id", Type: declaration.TypeInt64}},
+		Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
 	}
 	check := func(query declaration.Query) error {
 		_, err := (declaration.Member[access]{
@@ -132,6 +133,14 @@ func TestNormalizeDirectQueryMethodFields(t *testing.T) {
 	if err := check(base); err != nil {
 		t.Fatal(err)
 	}
+	nested := base
+	nested.Predicate = declaration.Predicate{Kind: declaration.PredicateAnd, Items: []declaration.Predicate{
+		base.Predicate,
+		{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Int64(1)},
+	}}
+	if err := check(nested); err != nil {
+		t.Fatalf("nested predicate parameter = %v", err)
+	}
 	for _, test := range []struct {
 		name string
 		edit func(*declaration.Query)
@@ -139,6 +148,7 @@ func TestNormalizeDirectQueryMethodFields(t *testing.T) {
 	}{
 		{name: "missing cardinality", edit: func(q *declaration.Query) { q.Cardinality = "" }, want: declaration.ErrUnsupported},
 		{name: "cardinality without method", edit: func(q *declaration.Query) { q.Method = "" }, want: declaration.ErrInvalidSchema},
+		{name: "unused parameter", edit: func(q *declaration.Query) { q.Predicate = declaration.Predicate{} }, want: declaration.ErrInvalidSchema},
 		{name: "missing parameter field", edit: func(q *declaration.Query) { q.Parameters[0].GoField = "" }, want: declaration.ErrInvalidID},
 		{name: "duplicate parameter field", edit: func(q *declaration.Query) {
 			q.Parameters = append(q.Parameters, declaration.Parameter{ID: "name", GoField: "ID", Type: declaration.TypeString})
@@ -700,6 +710,19 @@ func TestNormalizeGroupedAggregate(t *testing.T) {
 	}
 	if model.Queries[0].Having.Left.Column != "total" {
 		t.Fatalf("normalized having = %#v", model.Queries[0].Having)
+	}
+	direct := member
+	direct.Queries = append([]declaration.Query(nil), member.Queries...)
+	direct.Queries[0].Method = "CountByRegion"
+	direct.Queries[0].Cardinality = declaration.CardinalityMany
+	direct.Queries[0].Parameters = []declaration.Parameter{{ID: "minimum", GoField: "Minimum", Type: declaration.TypeInt64}}
+	direct.Queries[0].Having.Value = declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "minimum"}
+	direct.Queries[0].Results = append([]declaration.ResultField(nil), member.Queries[0].Results...)
+	direct.Queries[0].Results[0].GoField = "Region"
+	direct.Queries[0].Results[1].GoField = "Tier"
+	direct.Queries[0].Results[2].GoField = "Total"
+	if _, err := direct.Normalize(); err != nil {
+		t.Fatalf("direct HAVING parameter = %v", err)
 	}
 	for _, test := range []struct {
 		name string
