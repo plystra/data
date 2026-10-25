@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	db "github.com/plystra/data/database"
 	"github.com/plystra/kernel/configuration"
+	"github.com/plystra/kernel/invocation"
 )
 
 var (
@@ -317,7 +318,12 @@ func (provider *Database) currentPool() (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func normalizeError(err error, commit bool) error {
+func normalizeError(err error, commit bool) (normalized error) {
+	defer func() {
+		if errors.Is(normalized, db.ErrResultUnknown) {
+			normalized = invocation.NewResultUnknown(normalized)
+		}
+	}()
 	if err == nil {
 		return nil
 	}
@@ -335,6 +341,15 @@ func normalizeError(err error, commit bool) error {
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.ErrNotFound
+	}
+	// Keep only the safe category, never a wrapper's backend details.
+	for _, category := range []error{db.ErrResultUnknown, db.ErrInvalidPlan, db.ErrNotFound, db.ErrConflict, db.ErrForeignKey, db.ErrConcurrent, db.ErrUnavailable, db.ErrTimeout, db.ErrResourceExhausted, db.ErrBackend} {
+		if errors.Is(err, category) {
+			return category
+		}
+	}
+	if errors.Is(err, pgx.ErrTxCommitRollback) {
+		return db.ErrBackend
 	}
 	var pgError *pgconn.PgError
 	if errors.As(err, &pgError) {

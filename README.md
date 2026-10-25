@@ -21,6 +21,11 @@ database connection. PostgreSQL also exposes explicit `MigrationPlan` and
 `ApplyMigrations` operations. Apply requires the exact plan digest, takes a
 target-scoped transaction lock, records append-only history, and never retries
 an indeterminate commit implicitly.
+Fresh history is detected through a read-only catalog check, so planning never
+creates schema and applying a fresh plan does not abort its transaction on a
+missing history table. The approved digest is rechecked under the target lock
+before creating history or running artifacts. Artifact and history writes
+commit together; a failed artifact leaves neither partial schema nor history.
 
 The `declaration` package provides the first compiler-facing logical model:
 typed `Member[Access]` roots, tables, columns, constraints, indexes, queries,
@@ -188,8 +193,16 @@ unavailability, timeout, resource exhaustion, indeterminate commit outcome,
 and internal backend failure. The PostgreSQL provider maps SQLSTATE and context
 failures to these categories without exposing SQL text, DSNs, driver messages,
 or backend payloads. A commit acknowledgement failure remains
-`ErrResultUnknown`; it is never silently converted into a confirmed rollback
-or retried by the provider.
+identifiable through `errors.Is(err, database.ErrResultUnknown)` and carries
+Kernel's `invocation.NewResultUnknown` runtime marker, including through
+`invocation.NewSemanticError`. It is never silently converted into a confirmed
+rollback or retried by the provider. An exactly-one lookup with no rows
+preserves `ErrNotFound`; a server-confirmed rollback is a known failure.
+
+`database.Plan.Validate` accepts only the closed query cardinalities and
+argument kinds (including explicit `ValueNull`). PostgreSQL validates these
+inputs before acquiring a connection or beginning a transaction; unknown or
+empty argument kinds cannot silently become SQL NULL.
 
 The `protocol` package and `cmd/plystra-data-compiler` provide the bounded
 `plystra.data-analyze/v1` phase. Requests carry an exact compiler identity,

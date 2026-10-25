@@ -15,6 +15,9 @@ func TestPlanValidateRequiresClosedAssertions(t *testing.T) {
 	}{
 		{name: "empty", plan: database.Plan{}},
 		{name: "query without cardinality", plan: database.Plan{Statements: []database.Statement{{ID: "read", SQL: "SELECT 1", ReturnsRows: true}}}},
+		{name: "unknown cardinality", plan: database.Plan{Statements: []database.Statement{{ID: "read", SQL: "SELECT 1", ReturnsRows: true, Cardinality: "other"}}}},
+		{name: "unknown query argument", plan: database.Plan{Statements: []database.Statement{{ID: "read", SQL: "SELECT $1", ReturnsRows: true, Cardinality: database.CardinalityMany, Args: []database.Argument{{Kind: "other"}}}}}},
+		{name: "empty mutation argument", plan: database.Plan{Statements: []database.Statement{{ID: "write", SQL: "INSERT INTO records VALUES ($1)", Affected: database.ExactAffectedRows(1), Args: []database.Argument{{}}}}}},
 		{name: "query with null result kind", plan: database.Plan{Statements: []database.Statement{{ID: "read", SQL: "SELECT 1", ReturnsRows: true, Cardinality: database.CardinalityMany, ResultColumns: []database.ResultColumn{{Kind: database.ValueNull}}}}}},
 		{name: "mutation without affected rows", plan: database.Plan{Statements: []database.Statement{{ID: "write", SQL: "UPDATE records SET value = $1", Affected: database.AffectedRows{}}}}},
 		{name: "mutation with result columns", plan: database.Plan{Statements: []database.Statement{{ID: "write", SQL: "UPDATE records SET value = $1", Affected: database.ExactAffectedRows(1), ResultColumns: []database.ResultColumn{{Kind: database.ValueInt64}}}}}},
@@ -42,5 +45,17 @@ func TestPlanValidateAcceptsQueryAndMutation(t *testing.T) {
 	}
 	if !database.AtLeastAffectedRows(2).Accepts(9) || database.AtLeastAffectedRows(2).Accepts(1) {
 		t.Fatal("unbounded affected-row assertion is incorrect")
+	}
+}
+
+func TestPlanValidateAcceptsClosedArgumentKinds(t *testing.T) {
+	for _, cardinality := range []database.Cardinality{database.CardinalityExactlyOne, database.CardinalityZeroOrOne, database.CardinalityMany} {
+		plan := database.Plan{Statements: []database.Statement{{
+			ID: "read", SQL: "SELECT $1", ReturnsRows: true, Cardinality: cardinality,
+			Args: []database.Argument{database.NullArgument(), database.StringArgument(""), database.Int64Argument(0), database.Float64Argument(0), database.BoolArgument(false), database.BytesArgument(nil)},
+		}}}
+		if err := plan.Validate(); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

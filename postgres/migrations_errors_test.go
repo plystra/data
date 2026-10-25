@@ -10,13 +10,13 @@ import (
 	db "github.com/plystra/data/database"
 )
 
-func TestReadMigrationHistoryRowsPreservesMissingTableAsEmptyHistory(t *testing.T) {
+func TestReadMigrationHistoryRowsRejectsDisappearedTable(t *testing.T) {
 	history, err := readMigrationHistoryRows(context.Background(), nil, &pgconn.PgError{
 		Code:    "42P01",
 		Message: "relation plystra_data_migrations does not exist",
 	})
-	if err != nil {
-		t.Fatalf("readMigrationHistoryRows() error = %v, want nil", err)
+	if !errors.Is(err, db.ErrBackend) {
+		t.Fatalf("readMigrationHistoryRows() error = %v, want ErrBackend", err)
 	}
 	if len(history) != 0 {
 		t.Fatalf("history length = %d, want 0", len(history))
