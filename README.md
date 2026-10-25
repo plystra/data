@@ -82,12 +82,10 @@ outputs use `*T`. Zero outputs require an empty named result struct. Unsupported
 signatures and field mappings fail analysis. Accepted query and plan method
 type identities are bound to the analyze result.
 
-This declaration/analyzer acceptance is broader than the current
-`postgres/compiler.CompilePlans` subset, which still accepts only local,
-parameter-free SELECT statements. Lowering parameterized or mutation plans
-remains incomplete. PostgreSQL provider generation supports the directly
-callable SELECT subset described below; callable mutation and plan providers
-and Project installation remain incomplete.
+`postgres/compiler.CompilePlans` lowers these bindings and assertions into
+typed atomic plan templates. PostgreSQL provider generation supports the
+directly callable SELECT subset described below; callable mutation and plan
+providers and Project installation remain incomplete.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
@@ -193,13 +191,20 @@ with that artifact's original compiler, and approval still binds the currently
 selected compiler. Callers must read the target's current history and supply
 the retained artifacts; filesystem history storage and command orchestration
 remain incomplete. The backend re-reads current history under its apply lock.
-`postgres/compiler.CompilePlans` currently lowers the initial executable-plan
-subset: local, parameter-free `SELECT` statements with explicit cardinality
-and typed projected results become ordered `database.Plan` statements. The
-database contract carries result width, scalar kind, and nullability into the
-PostgreSQL transaction, which validates those facts before commit. Joins,
-parameters, imported queries, mutation plans, generated plan access bodies,
-and Data-owned artifact installation remain separate integration boundaries.
+`postgres/compiler.CompilePlans` lowers ordered local SELECT and mutation
+queries into `PlanArtifact` values. Each artifact includes the normalized plan
+`Definition` and an unbound runtime `Plan`. Query parameters follow normalized
+PostgreSQL placeholder order; bindings become named input references or typed
+references to an earlier result's projected column, including `RETURNING`
+aliases. Mutations preserve their affected-row intervals independently of row
+cardinality. SELECT and RETURNING results retain width, scalar kind and
+nullability for validation inside the transaction. The five access scalars are
+supported; imported query references and other scalar codecs are rejected.
+The artifact digest binds the complete normalized declaration and runtime
+template, including request fields, output mappings, bindings and assertions.
+Compilation validates templates with temporary typed probes but returns no
+invented input values. Callers must bind every request input before execution.
+Generated plan methods and Data-owned artifact installation remain incomplete.
 
 The runtime `database.Plan` can bind an argument to a prior result with
 `database.ResultArgument(kind, statementID, zeroBasedColumn)`. Validation
@@ -211,8 +216,8 @@ SERIALIZABLE transaction. A row-producing mutation may also carry its explicit
 affected-row assertion; both returned-row cardinality and the backend command
 count must pass before commit. Any downstream statement, decode, assertion or
 cancellation failure rolls back all prior effects and publishes no result.
-This runtime capability does not add authored plan parameter/binding syntax,
-generated plan methods, cross-member composition or Project installation.
+This runtime capability does not supply generated plan methods, cross-member
+composition or Project installation.
 Named request values can be bound with `database.InputArgument(kind, inputID)`
 and `Plan.Inputs`. Every supplied input must be a closed, non-null scalar of the
 expected kind and be referenced; missing, unused, nested, mixed-source or excess

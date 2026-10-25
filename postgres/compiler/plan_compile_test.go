@@ -52,7 +52,7 @@ func TestCompilePlansBuildsDeterministicTypedSelectPlan(t *testing.T) {
 	}
 }
 
-func TestCompilePlansRejectsUnsupportedParameterAndMutationShapes(t *testing.T) {
+func TestCompilePlansRejectsMissingBindingsAndMutationAssertions(t *testing.T) {
 	base := postgres.SchemaMember{
 		MemberID: "accounts.user/v1", Resource: "database.primary",
 		Model: declaration.Model{

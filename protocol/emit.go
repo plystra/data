@@ -91,18 +91,24 @@ type QueryMetadata struct {
 // SQL remains in the plan artifact so a runtime access provider can submit the
 // exact statements without receiving a transaction handle or callback.
 type PlanMetadata struct {
-	ID         string                  `json:"id"`
-	Digest     string                  `json:"digest"`
-	Statements []PlanStatementMetadata `json:"statements"`
+	ID         string                   `json:"id"`
+	Digest     string                   `json:"digest"`
+	Method     string                   `json:"method,omitempty"`
+	Parameters []declaration.Parameter  `json:"parameters,omitempty"`
+	Outputs    []declaration.PlanOutput `json:"outputs,omitempty"`
+	Statements []PlanStatementMetadata  `json:"statements"`
 }
 
 type PlanStatementMetadata struct {
-	ID            string               `json:"id"`
-	Query         string               `json:"query"`
-	SQL           string               `json:"sql"`
-	SQLDigest     string               `json:"sql_digest"`
-	Cardinality   database.Cardinality `json:"cardinality"`
-	ResultColumns []PlanResultColumn   `json:"result_columns"`
+	ID            string                `json:"id"`
+	Query         string                `json:"query"`
+	SQL           string                `json:"sql"`
+	SQLDigest     string                `json:"sql_digest"`
+	Args          []database.Argument   `json:"args"`
+	ReturnsRows   bool                  `json:"returns_rows"`
+	Cardinality   database.Cardinality  `json:"cardinality"`
+	Affected      database.AffectedRows `json:"affected"`
+	ResultColumns []PlanResultColumn    `json:"result_columns"`
 }
 
 type PlanResultColumn struct {
@@ -930,7 +936,12 @@ func metadataForPlan(plan declaration.Plan, artifact postgres.PlanArtifact) (Pla
 	if plan.ID != artifact.ID || len(plan.Statements) != len(artifact.Plan.Statements) {
 		return PlanMetadata{}, fmt.Errorf("plan %s statement inventory mismatch", plan.ID)
 	}
-	metadata := PlanMetadata{ID: plan.ID, Digest: artifact.Digest, Statements: make([]PlanStatementMetadata, len(plan.Statements))}
+	metadata := PlanMetadata{
+		ID: plan.ID, Digest: artifact.Digest, Method: plan.Method,
+		Parameters: append([]declaration.Parameter(nil), plan.Parameters...),
+		Outputs:    append([]declaration.PlanOutput(nil), plan.Outputs...),
+		Statements: make([]PlanStatementMetadata, len(plan.Statements)),
+	}
 	for index, statement := range artifact.Plan.Statements {
 		declared := plan.Statements[index]
 		resultColumns := make([]PlanResultColumn, len(statement.ResultColumns))
@@ -940,6 +951,8 @@ func metadataForPlan(plan declaration.Plan, artifact postgres.PlanArtifact) (Pla
 		metadata.Statements[index] = PlanStatementMetadata{
 			ID: declared.ID, Query: declared.Query.Symbol, SQL: statement.SQL,
 			SQLDigest: postgres.DigestSQL(statement.SQL), Cardinality: statement.Cardinality,
+			Args: append([]database.Argument(nil), statement.Args...), ReturnsRows: statement.ReturnsRows,
+			Affected:      statement.Affected,
 			ResultColumns: resultColumns,
 		}
 	}
