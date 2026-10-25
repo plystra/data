@@ -63,27 +63,32 @@ func validatePlanMethodShape(method *types.Func, plan declaration.Plan, queries 
 	if err != nil {
 		return PlanMethod{}, fmt.Errorf("request: %w", err)
 	}
-	if err := matchAccessFields(request, nil); err != nil {
+	parameters := make(map[string]accessField, len(plan.Parameters))
+	for _, parameter := range plan.Parameters {
+		parameters[parameter.GoField] = accessField{kind: parameter.Type}
+	}
+	if err := matchAccessFields(request, parameters); err != nil {
 		return PlanMethod{}, fmt.Errorf("request: %w", err)
 	}
 	result, err := exportedStruct(signature.Results().At(0).Type())
 	if err != nil {
 		return PlanMethod{}, fmt.Errorf("result: %w", err)
 	}
-	var selected declaration.Query
+	byID := make(map[string]declaration.Query, len(queries))
 	for _, query := range queries {
-		if query.ID == plan.Statements[0].Query.Symbol {
-			selected = query
-			break
-		}
+		byID[query.ID] = query
 	}
-	results := make(map[string]declaration.ResultField, len(selected.Results))
-	for _, item := range selected.Results {
-		results[item.ID] = item
+	results := make(map[string]map[string]declaration.ResultField, len(plan.Statements))
+	for _, statement := range plan.Statements {
+		fields := make(map[string]declaration.ResultField)
+		for _, item := range byID[statement.Query.Symbol].Results {
+			fields[item.ID] = item
+		}
+		results[statement.ID] = fields
 	}
 	fields := make(map[string]accessField, len(plan.Outputs))
 	for _, output := range plan.Outputs {
-		item := results[output.Result]
+		item := results[output.Statement][output.Result]
 		fields[output.GoField] = accessField{kind: item.Type, nullable: item.Nullable}
 	}
 	if err := matchAccessFields(result, fields); err != nil {

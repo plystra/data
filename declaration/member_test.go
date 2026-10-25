@@ -150,9 +150,11 @@ func TestNormalizeCallablePlanOutputs(t *testing.T) {
 		edit func(*declaration.Member[access])
 		want error
 	}{
-		{name: "missing output", edit: func(m *declaration.Member[access]) { m.Plans[0].Outputs = nil }, want: declaration.ErrInvalidSchema},
+		{name: "duplicate output", edit: func(m *declaration.Member[access]) {
+			m.Plans[0].Outputs = append(m.Plans[0].Outputs, m.Plans[0].Outputs[0])
+		}, want: declaration.ErrDuplicate},
 		{name: "wrong result", edit: func(m *declaration.Member[access]) { m.Plans[0].Outputs[0].Result = "missing" }, want: declaration.ErrReference},
-		{name: "wrong statement", edit: func(m *declaration.Member[access]) { m.Plans[0].Outputs[0].Statement = "missing" }, want: declaration.ErrInvalidID},
+		{name: "wrong statement", edit: func(m *declaration.Member[access]) { m.Plans[0].Outputs[0].Statement = "missing" }, want: declaration.ErrReference},
 		{name: "private field", edit: func(m *declaration.Member[access]) { m.Plans[0].Outputs[0].GoField = "id" }, want: declaration.ErrInvalidID},
 		{name: "many rows", edit: func(m *declaration.Member[access]) {
 			m.Plans[0].Statements[0].Cardinality = declaration.CardinalityMany
