@@ -26,7 +26,7 @@ type AccessArtifact struct {
 }
 
 // CompileAccessProviders consumes accepted analyzer type identities alongside
-// the assigned models. It supports callable SELECT queries and atomic plans;
+// the assigned models. It supports callable queries and atomic plans;
 // any unsupported callable method rejects the entire output.
 func CompileAccessProviders(members []SchemaMember, roots []analyzer.Root) ([]AccessArtifact, error) {
 	normalized, _, err := normalizeQueryMembers(members)
@@ -115,15 +115,22 @@ func validateAccessRoot(root analyzer.Root) error {
 	for _, method := range root.QueryMethods {
 		query, ok := queries[method.Name]
 		if !ok || seen[method.Name] || !validAccessName(method.Name) || method.Cardinality != query.Cardinality ||
-			!validAccessName(method.RequestType) || !validAccessPackage(method.RequestPackage) || !validAccessName(method.RowType) || !validAccessPackage(method.RowPackage) {
+			!validAccessName(method.RequestType) || !validAccessPackage(method.RequestPackage) {
 			return fmt.Errorf("invalid query method inventory")
 		}
-		if !portableAccessPackage(method.RequestPackage) || !portableAccessPackage(method.RowPackage) {
-			return fmt.Errorf("method %s requires public request and row packages without internal or vendor segments", method.Name)
+		if !portableAccessPackage(method.RequestPackage) {
+			return fmt.Errorf("method %s requires a public request package without internal or vendor segments", method.Name)
 		}
 		seen[method.Name] = true
-		if query.Operation != declaration.OperationSelect || len(query.Projection) == 0 {
-			return fmt.Errorf("method %s requires a projected SELECT", method.Name)
+		if query.Operation != declaration.OperationSelect && len(query.Returning) == 0 {
+			if query.Cardinality != declaration.CardinalityNone || method.RowType != "" || method.RowPackage != "" {
+				return fmt.Errorf("method %s requires an affected-count contract", method.Name)
+			}
+		} else {
+			if len(queryProjections(query)) == 0 || query.Cardinality == declaration.CardinalityNone ||
+				!validAccessName(method.RowType) || !validAccessPackage(method.RowPackage) || !portableAccessPackage(method.RowPackage) {
+				return fmt.Errorf("method %s requires projected rows in a public package without internal or vendor segments", method.Name)
+			}
 		}
 		if _, err := planCardinality(query.Cardinality); err != nil {
 			return err
@@ -190,7 +197,9 @@ func compileAccessProvider(member SchemaMember, root analyzer.Root, byPath map[s
 	packages := map[string]string{root.AccessPackage: ""}
 	for _, method := range root.QueryMethods {
 		packages[method.RequestPackage] = ""
-		packages[method.RowPackage] = ""
+		if method.RowPackage != "" {
+			packages[method.RowPackage] = ""
+		}
 	}
 	for _, method := range root.PlanMethods {
 		packages[method.RequestPackage] = ""
@@ -258,26 +267,40 @@ func compileAccessProvider(member SchemaMember, root analyzer.Root, byPath map[s
 }
 
 func emitAccessMethod(source *strings.Builder, method analyzer.QueryMethod, query declaration.Query, sql string, packages map[string]string) {
+	projections := queryProjections(query)
+	returnsRows := len(projections) != 0
 	rowType := packages[method.RowPackage] + "." + method.RowType
-	returnType := rowType
+	returnType := "uint64"
 	switch query.Cardinality {
+	case declaration.CardinalityExactlyOne:
+		returnType = rowType
 	case declaration.CardinalityZeroOrOne:
 		returnType = "*" + rowType
 	case declaration.CardinalityMany:
 		returnType = "[]" + rowType
 	}
-	fmt.Fprintf(source, "\nfunc (provider *Provider) %s(ctx context.Context, request %s.%s) (%s, error) {\nvar zero %s\nif provider == nil || provider.database == nil { return zero, db.ErrUnavailable }\nresult, err := provider.database.Exec(ctx, db.Plan{Statements: []db.Statement{{ID: %q, SQL: %s, ReturnsRows: true, Cardinality: db.Cardinality(%q),\nArgs: []db.Argument{", method.Name, packages[method.RequestPackage], method.RequestType, returnType, returnType, query.ID, strconv.Quote(sql), query.Cardinality)
+	fmt.Fprintf(source, "\nfunc (provider *Provider) %s(ctx context.Context, request %s.%s) (%s, error) {\nvar zero %s\nif provider == nil || provider.database == nil { return zero, db.ErrUnavailable }\nresult, err := provider.database.Exec(ctx, db.Plan{Statements: []db.Statement{{ID: %q, SQL: %s, ReturnsRows: %t, Cardinality: db.Cardinality(%q),\n", method.Name, packages[method.RequestPackage], method.RequestType, returnType, returnType, query.ID, strconv.Quote(sql), returnsRows, query.Cardinality)
+	if !returnsRows {
+		// Direct count methods impose no affected-row restriction, including zero.
+		source.WriteString("Affected: db.AtLeastAffectedRows(0),\n")
+	}
+	source.WriteString("Args: []db.Argument{")
 	// CompileQueries numbers parameters in the normalized ID order.
 	for _, parameter := range query.Parameters {
 		fmt.Fprintf(source, "db.%sArgument(request.%s),", accessValueField(parameter.Type), parameter.GoField)
 	}
-	source.WriteString("}, ResultColumns: []db.ResultColumn{")
+	source.WriteString("},")
+	if !returnsRows {
+		source.WriteString("}}})\nif err != nil { return zero, err }\nif len(result.Statements) != 1 || len(result.Statements[0].Rows) != 0 { return zero, db.ErrBackend }\nreturn result.Statements[0].AffectedRows, nil\n}\n")
+		return
+	}
+	source.WriteString("ResultColumns: []db.ResultColumn{")
 	results := make(map[string]declaration.ResultField, len(query.Results))
 	for _, result := range query.Results {
 		results[result.Source] = result
 	}
-	ordered := make([]declaration.ResultField, len(query.Projection))
-	for index, projection := range query.Projection {
+	ordered := make([]declaration.ResultField, len(projections))
+	for index, projection := range projections {
 		name := projection.Column
 		if projection.Alias != "" {
 			name = projection.Alias

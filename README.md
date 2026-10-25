@@ -84,8 +84,8 @@ type identities are bound to the analyze result.
 
 `postgres/compiler.CompilePlans` lowers these bindings and assertions into
 typed atomic plan templates. PostgreSQL provider generation supports the
-directly callable SELECTs and callable atomic plans described below. Directly
-callable mutation queries and Project installation remain incomplete.
+directly callable SELECTs, INSERT/UPDATE/DELETE mutations, and callable atomic
+plans described below. Project installation remains incomplete.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
@@ -257,8 +257,7 @@ typed `Results` mappings. Data analysis validates returned columns and result
 scalar types and nullability, including imported tables. The lowerer emits
 deterministic PostgreSQL `RETURNING` clauses and rejects result sources whose
 scalar type or nullability does not match the selected table column. Result
-mappings are compiler metadata; mutation access providers and their codecs
-remain a later integration boundary.
+mappings also drive the typed mutation access providers described below.
 Staged query artifacts and their manifest entries include the declaring query
 operation, group-by, optional HAVING, and projection aggregate descriptors,
 parameters in PostgreSQL positional order, and typed result metadata.
@@ -342,17 +341,17 @@ Project module graph with
 rechecks compiler selection and source inputs before returning. It does not
 compile authored packages or install Project artifacts. Authored access
 Resource members can now be analyzed. The separate emit phase stages supported
-SELECT providers; Project orchestration and transactional installation remain
-incomplete.
+query and atomic plan providers. `project.PlanCurrentProject` orchestrates read-only
+analysis and emission; transactional installation remains incomplete.
 
 The compiler command writes no generated files and emits no non-protocol
 stdout. The distribution contract is recorded in
 `plystra-data-compiler.json`.
 
 The command also implements `plystra.data-emit/v1` for the currently supported
-PostgreSQL schema, query, and migration SQL and bounded typed SELECT access
+PostgreSQL schema, query, and migration SQL and bounded typed query/plan access
 providers. An emit request carries the accepted
-analyze-result digest, the frozen application-model digest, and explicit active
+analyze-result digest, the frozen Data generation-input digest, and explicit active
 member assignments to selected `data.database/v1` Resource instances and
 `postgres/v1` backends. Optional `migration_history` entries bind retained
 artifacts and observed history to one selected Resource. Their artifact
@@ -398,10 +397,15 @@ publishing typed results. Byte parameters and results are copied; zero-length
 `ValueBytes` is non-null bytea, while SQL NULL requires `ValueNull`.
 
 The supported generated methods are parameterized or parameter-free SELECTs
-with `exactly_one`, `zero_or_one`, or `many` cardinality and the five validated
-access scalars (`bool`, `[]byte`, `float64`, `int64`, `string`), including `*T`
-nullable results. Callable plan methods submit every ordered SELECT/mutation
-statement in one `Exec`, binding copied request inputs and earlier results.
+and INSERT/UPDATE/DELETE mutations. Explicit SELECT or `RETURNING` projections
+use `exactly_one`, `zero_or_one`, or `many` cardinality with typed `Row`, `*Row`,
+or `[]Row` returns and the five validated access scalars (`bool`, `[]byte`,
+`float64`, `int64`, `string`), including `*T` nullable fields. Mutations without
+`RETURNING` use `none` cardinality and return the actual `uint64` affected count;
+the generated statement accepts every count including zero and rejects backend
+row output. Direct mutations add no implicit restrictive affected-row assertion.
+Callable plan methods submit every ordered SELECT/mutation statement in one
+`Exec`, binding copied request inputs and earlier results.
 They preserve all cardinality, typed-column and independent affected-row
 assertions, decode named outputs across statements (including nullable and
 byte results), and support named empty result structs for no-output plans.
@@ -409,10 +413,10 @@ Backend failures, including indeterminate commits, propagate without partial
 typed output or retries. Provider-side validation rejects malformed result
 inventories; the PostgreSQL Resource enforces result/assertion contracts before
 commit. Named generated-public-contract tests run normal/race, and disposable
-PostgreSQL tests exercise generated plan commit and later-conflict rollback.
-A Resource containing an unsupported directly callable mutation query
-or incomplete accepted method metadata rejects the whole emit result;
-generation never silently omits a method. Emit validates generated source
+PostgreSQL tests exercise generated mutations, zero/multiple affected counts,
+RETURNING cardinality rollback, and plan commit and later-conflict rollback.
+A Resource containing incomplete accepted method metadata rejects the whole
+emit result; generation never silently omits a method. Emit validates generated source
 against accepted intent even when a changed artifact, manifest, and response
 are rehashed consistently.
 
@@ -425,8 +429,8 @@ public types to an ordinary public package; similarly spelled public segments
 such as `internalized` remain supported.
 
 Emit still does not install staged files in an application. Data-specific
-Project generation orchestration, transactional installation, and drift checks
-belong outside the generic Core CLI and remain separate unfinished work. This
+Project installation and drift checks belong outside the generic Core CLI and
+remain separate unfinished work. Read-only planning is described below. This
 bounded provider subset does not complete AuthN/AuthZ persistence or their
 cross-member atomic integration plans.
 
@@ -451,8 +455,8 @@ changing Project files and lists assignments in member-ID order. Use
 unknown fields, invalid names, duplicate access names, and access names that
 collide with an assigned database Resource are rejected. Assignment inspection
 does not analyze declarations, select a compiler, activate members, generate
-providers, or install artifacts; those Data-owned Project workflows remain
-incomplete.
+providers, or install artifacts; use the separate Data-owned analysis and
+planning commands for validated in-memory output. Installation remains incomplete.
 
 `plystra-data inspect sources --project DIR` reads the selected Go module graph
 and reports Go-selected authored files in packages with active `//plystra:data`
@@ -532,6 +536,35 @@ environment, with `--offline` restricting both processes to cached inputs.
 name-sorted database selections. It is read-only and does not validate full
 access method shapes, generate access, or install output. Install a compatible
 Core CLI as `plystra` on `PATH` before using this command.
+
+`plystra-data plan --project DIR [--format text|json] [--offline]` produces a
+validated in-memory Data artifact plan, including when `dataaccess/` is absent.
+It reads the same default Core configured-Resource facts, exact Project-selected
+compiler, authored declarations, and `plystra.data.yaml` assignments. It builds
+the verified compiler once and invokes its analyze and emit phases; it never
+uses a compiler from `PATH`, compiles authored packages, runs application tests,
+or executes authored initialization. `--offline` requires cached module and
+toolchain inputs for both Data and Core inspection. A compatible `plystra` must
+be on `PATH`.
+
+`project.PrepareEmitRequest` validates accepted analysis, active-member closure,
+and PostgreSQL database selections before building the emit request. The frozen
+generation-input digest binds the Project module, source/type snapshot, analyze
+result, exact compiler, Go build context, active access-instance assignments,
+and configured Resource provenance. Unassigned declarations remain dormant.
+`project.PlanCurrentProject` validates the complete compiler response and
+rechecks compiler, source/type, module, workspace, and assignment inputs. The
+command also rechecks Core configured-Resource facts before returning output;
+changed inputs or rejected analysis/emission return no artifact plan.
+
+JSON output has schema `plystra.data-emit-plan/v1` with the validated `request`
+and `response`, including artifact bytes and provenance; text lists artifact
+paths and digests. Planning changes no Project files, selects or binds no Core
+Resource, and installs nothing. It does not inspect a database, observe target
+migration history, supply retained historical artifacts, or approve/apply a
+migration. It is a generation artifact plan, separate from migration planning;
+retained-history orchestration, transactional installation, and drift checks
+remain incomplete.
 
 ## Module
 

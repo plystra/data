@@ -1,0 +1,218 @@
+//go:build integration
+
+package access_test
+
+import (
+	"context"
+	"crypto/rand"
+	_ "embed"
+	"encoding/hex"
+	"errors"
+	"net/url"
+	"os"
+	"testing"
+	"time"
+
+	"example.com/mutationfixture/contract"
+	access "example.com/mutationfixture/providers/accounts.user/v1"
+	"github.com/jackc/pgx/v5"
+	"github.com/plystra/data/database"
+	"github.com/plystra/data/postgres"
+	"github.com/plystra/kernel/configuration"
+)
+
+//go:embed schema.sql
+var schema string
+
+func TestGeneratedMutationProviderPostgres(t *testing.T) {
+	if os.Getenv("PLYSTRA_RUN_POSTGRES_INTEGRATION") != "1" {
+		t.Skip("requires disposable PostgreSQL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseURL := os.Getenv("PLYSTRA_TEST_DATABASE_URL")
+	if baseURL == "" {
+		t.Fatal("PLYSTRA_TEST_DATABASE_URL required")
+	}
+	admin, err := pgx.Connect(ctx, baseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(context.Background())
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		t.Fatal(err)
+	}
+	name := "plystra_mutation_" + hex.EncodeToString(random[:])
+	identifier := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+identifier); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := admin.Exec(cleanup, "DROP DATABASE "+identifier); err != nil {
+			t.Errorf("test database cleanup: %v", err)
+		}
+	}()
+	target, err := url.Parse(baseURL)
+	if err != nil {
+		t.Fatal("invalid test database URL")
+	}
+	target.Path = "/" + name
+	query := target.Query()
+	query.Del("dbname")
+	target.RawQuery = query.Encode()
+	t.Setenv("PLYSTRA_MUTATION_DATABASE_URL", target.String())
+	resolver, err := configuration.NewResolver(configuration.ResolverOptions{MaximumValueBytes: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reference, err := configuration.NewEnvironmentReference("PLYSTRA_MUTATION_DATABASE_URL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := resolver.Resolve(ctx, reference)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend, err := postgres.New(postgres.Config{URL: secret, MaxConnections: 2, HealthTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer backend.Stop(context.Background())
+	if _, err := backend.Exec(ctx, database.Plan{Statements: []database.Statement{{ID: "schema", SQL: schema, Affected: database.AtLeastAffectedRows(0)}}}); err != nil {
+		t.Fatal(err)
+	}
+	observer, err := pgx.Connect(ctx, target.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close(context.Background())
+	assertStored := func(text string, want int64) {
+		t.Helper()
+		var count int64
+		if err := observer.QueryRow(ctx, `SELECT count(*) FROM accounts.users WHERE text=$1`, text).Scan(&count); err != nil || count != want {
+			t.Fatalf("stored row count = %d, %v; want %d", count, err, want)
+		}
+	}
+	provider, err := access.New(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resource contract.Resource = provider
+	request := contract.Request{Key: 1, Text: "initial", Active: true, Token: []byte{}, Score: 1.5}
+	row, err := resource.InsertOne(ctx, request)
+	if err != nil || row.Key != 1 || row.Text != "initial" || !row.Active || row.Score != 1.5 || row.Token == nil || len(row.Token) != 0 || row.OptionalKey != nil || row.OptionalToken != nil {
+		t.Fatalf("INSERT RETURNING codecs = %#v, %v", row, err)
+	}
+	if row, err := resource.InsertOne(ctx, request); row.Key != 0 || !errors.Is(err, database.ErrConflict) {
+		t.Fatal("duplicate insert lost conflict or exposed output", err)
+	}
+	if count, err := resource.InsertCount(ctx, request); err != nil || count != 0 {
+		t.Fatal("DO NOTHING affected count", count, err)
+	}
+	if row, err := resource.InsertOptional(ctx, request); err != nil || row != nil {
+		t.Fatal("optional DO NOTHING", row, err)
+	}
+	if rows, err := resource.InsertMany(ctx, request); err != nil || len(rows) != 0 {
+		t.Fatal("many DO NOTHING", rows, err)
+	}
+	request.Key = 2
+	if count, err := resource.InsertCount(ctx, request); err != nil || count != 1 {
+		t.Fatal("INSERT affected count", count, err)
+	}
+	request.Key = 3
+	if rows, err := resource.InsertMany(ctx, request); err != nil || len(rows) != 1 || rows[0].Key != 3 {
+		t.Fatal("INSERT many", rows, err)
+	}
+	request.Key = 4
+	if row, err := resource.InsertOptional(ctx, request); err != nil || row == nil || row.Key != 4 {
+		t.Fatal("INSERT optional", row, err)
+	}
+	request.Key, request.Text = 3, "updated"
+	row, err = resource.UpdateOne(ctx, request)
+	if err != nil || row.Key != 4 || row.Text != "updated" || row.OptionalKey == nil || *row.OptionalKey != 3 || row.OptionalText == nil || *row.OptionalText != "updated" || row.OptionalActive == nil || !*row.OptionalActive || row.OptionalScore == nil || *row.OptionalScore != 1.5 || row.OptionalToken == nil || *row.OptionalToken == nil || len(*row.OptionalToken) != 0 {
+		t.Fatalf("UPDATE RETURNING codecs = %#v, %v", row, err)
+	}
+	request.Key = 4
+	if row, err := resource.UpdateOptional(ctx, request); err != nil || row != nil {
+		t.Fatal("UPDATE optional empty", row, err)
+	}
+	if row, err := resource.UpdateOne(ctx, request); row.Key != 0 || !errors.Is(err, database.ErrNotFound) {
+		t.Fatal("UPDATE required empty", row, err)
+	}
+	request.Key = 2
+	if row, err := resource.UpdateOptional(ctx, request); row != nil || !errors.Is(err, database.ErrBackend) {
+		t.Fatal("UPDATE optional accepted two rows", row, err)
+	}
+	assertStored("initial", 3)
+	request.Key = 0
+	if rows, err := resource.UpdateMany(ctx, request); err != nil || len(rows) != 4 {
+		t.Fatal("UPDATE many", rows, err)
+	}
+	request.Text = "must-roll-back"
+	if row, err := resource.UpdateOne(ctx, request); row.Key != 0 || !errors.Is(err, database.ErrBackend) {
+		t.Fatal("UPDATE required accepted extra rows", row, err)
+	}
+	assertStored("must-roll-back", 0)
+	assertStored("updated", 4)
+	if row, err := resource.DeleteOne(ctx, contract.Filter{}); row.Key != 0 || !errors.Is(err, database.ErrBackend) {
+		t.Fatal("DELETE required accepted extra rows", row, err)
+	}
+	if row, err := resource.DeleteOptional(ctx, contract.Filter{}); row != nil || !errors.Is(err, database.ErrBackend) {
+		t.Fatal("DELETE optional accepted extra rows", row, err)
+	}
+	assertStored("updated", 4)
+	request.Text = "counted"
+	if count, err := resource.UpdateCount(ctx, request); err != nil || count != 4 {
+		t.Fatal("UPDATE affected count", count, err)
+	}
+	request.Key = 99
+	if count, err := resource.UpdateCount(ctx, request); err != nil || count != 0 {
+		t.Fatal("UPDATE zero affected count", count, err)
+	}
+	canceled, stop := context.WithCancel(ctx)
+	stop()
+	if count, err := resource.Clear(canceled, contract.Empty{}); count != 0 || !errors.Is(err, context.Canceled) {
+		t.Fatal("canceled mutation", count, err)
+	}
+	assertStored("counted", 4)
+	if row, err := resource.DeleteOne(ctx, contract.Filter{Key: 3}); err != nil || row.Key != 4 || row.Text != "counted" {
+		t.Fatal("DELETE required", row, err)
+	}
+	if row, err := resource.DeleteOptional(ctx, contract.Filter{Key: 2}); err != nil || row == nil || row.Key != 3 {
+		t.Fatal("DELETE optional", row, err)
+	}
+	if rows, err := resource.DeleteMany(ctx, contract.Filter{}); err != nil || len(rows) != 2 {
+		t.Fatal("DELETE many", rows, err)
+	}
+	if row, err := resource.DeleteOptional(ctx, contract.Filter{}); err != nil || row != nil {
+		t.Fatal("DELETE optional empty", row, err)
+	}
+	if row, err := resource.DeleteOne(ctx, contract.Filter{}); row.Key != 0 || !errors.Is(err, database.ErrNotFound) {
+		t.Fatal("DELETE required empty", row, err)
+	}
+	if count, err := resource.DeleteCount(ctx, contract.Filter{}); err != nil || count != 0 {
+		t.Fatal("DELETE zero affected count", count, err)
+	}
+	for key := int64(1); key <= 2; key++ {
+		request.Key = key
+		if count, err := resource.InsertCount(ctx, request); err != nil || count != 1 {
+			t.Fatal("reinsert", count, err)
+		}
+	}
+	if count, err := resource.DeleteCount(ctx, contract.Filter{}); err != nil || count != 2 {
+		t.Fatal("DELETE affected count", count, err)
+	}
+	if _, err := resource.InsertOne(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := resource.Clear(ctx, contract.Empty{}); err != nil || count != 1 {
+		t.Fatal("parameter-free DELETE affected count", count, err)
+	}
+	assertStored("counted", 0)
+}

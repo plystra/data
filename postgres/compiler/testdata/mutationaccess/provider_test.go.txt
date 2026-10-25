@@ -1,0 +1,252 @@
+package access_test
+
+import (
+	"context"
+	"errors"
+	"math"
+	"reflect"
+	"strings"
+	"testing"
+
+	"example.com/mutationfixture/contract"
+	access "example.com/mutationfixture/providers/accounts.user/v1"
+	"github.com/plystra/data/database"
+)
+
+type recorder struct {
+	plan   database.Plan
+	ctx    context.Context
+	result database.Result
+	err    error
+	calls  int
+}
+
+func (r *recorder) Health(context.Context) error { return nil }
+func (r *recorder) Exec(ctx context.Context, plan database.Plan) (database.Result, error) {
+	r.ctx, r.plan = ctx, plan
+	r.calls++
+	return r.result, r.err
+}
+
+func values() []database.Value {
+	// RETURNING order deliberately differs from the sorted result IDs.
+	return []database.Value{
+		database.Float64Argument(2.5), database.BytesArgument([]byte("optional")), database.BoolArgument(false), database.StringArgument(""), database.Int64Argument(0),
+		database.Float64Argument(1.5), database.BytesArgument([]byte("token")), database.BoolArgument(true), database.StringArgument("text"), database.Int64Argument(7),
+	}
+}
+
+func TestGeneratedMutationProviderContract(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request := contract.Request{Key: 7, Text: "text", Active: true, Token: []byte("token"), Score: 1.5}
+	backend := &recorder{}
+	provider, err := access.New(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resource contract.Resource = provider
+	for _, method := range []struct {
+		name, operation string
+		cardinality     database.Cardinality
+		call            func() (any, error)
+	}{
+		{"InsertOne", "INSERT", database.CardinalityExactlyOne, func() (any, error) { return resource.InsertOne(ctx, request) }},
+		{"InsertOptional", "INSERT", database.CardinalityZeroOrOne, func() (any, error) { return resource.InsertOptional(ctx, request) }},
+		{"InsertMany", "INSERT", database.CardinalityMany, func() (any, error) { return resource.InsertMany(ctx, request) }},
+		{"UpdateOne", "UPDATE", database.CardinalityExactlyOne, func() (any, error) { return resource.UpdateOne(ctx, request) }},
+		{"UpdateOptional", "UPDATE", database.CardinalityZeroOrOne, func() (any, error) { return resource.UpdateOptional(ctx, request) }},
+		{"UpdateMany", "UPDATE", database.CardinalityMany, func() (any, error) { return resource.UpdateMany(ctx, request) }},
+		{"DeleteOne", "DELETE", database.CardinalityExactlyOne, func() (any, error) { return resource.DeleteOne(ctx, contract.Filter{Key: 7}) }},
+		{"DeleteOptional", "DELETE", database.CardinalityZeroOrOne, func() (any, error) { return resource.DeleteOptional(ctx, contract.Filter{Key: 7}) }},
+		{"DeleteMany", "DELETE", database.CardinalityMany, func() (any, error) { return resource.DeleteMany(ctx, contract.Filter{Key: 7}) }},
+	} {
+		t.Run(method.name, func(t *testing.T) {
+			backend.err = nil
+			backend.result = database.Result{Statements: []database.StatementResult{{Rows: [][]database.Value{values()}}}}
+			output, err := method.call()
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := asRow(t, output)
+			if row.Key != 7 || row.Text != "text" || !row.Active || row.Score != 1.5 || string(row.Token) != "token" || row.OptionalKey == nil || *row.OptionalKey != 0 || row.OptionalText == nil || *row.OptionalText != "" || row.OptionalActive == nil || *row.OptionalActive || row.OptionalToken == nil || string(*row.OptionalToken) != "optional" || row.OptionalScore == nil || *row.OptionalScore != 2.5 {
+				t.Fatalf("wrong RETURNING field mapping: %#v", row)
+			}
+			if backend.ctx != ctx || backend.plan.Validate() != nil || len(backend.plan.Statements) != 1 {
+				t.Fatal("lost context or invalid plan")
+			}
+			statement := backend.plan.Statements[0]
+			args := []database.Argument{database.Int64Argument(7)}
+			if method.operation != "DELETE" {
+				args = []database.Argument{database.StringArgument("text"), database.BoolArgument(true), database.BytesArgument([]byte("token")), database.Float64Argument(1.5), database.Int64Argument(7)}
+			}
+			if !reflect.DeepEqual(statement.Args, args) || statement.Cardinality != method.cardinality || !statement.ReturnsRows || statement.Affected != (database.AffectedRows{}) || len(statement.ResultColumns) != 10 || !statement.ResultColumns[0].Nullable || statement.ResultColumns[9].Kind != database.ValueInt64 || !strings.Contains(statement.SQL, method.operation+" ") || !strings.Contains(statement.SQL, "RETURNING") || !strings.Contains(statement.SQL, `"optional-score" AS "out-optional-score"`) {
+				t.Fatalf("wrong mutation plan: %#v", statement)
+			}
+			if method.operation != "DELETE" {
+				request.Token[0] = 'X'
+				if string(statement.Args[2].Bytes) != "token" {
+					t.Fatal("request bytes aliased")
+				}
+				request.Token[0] = 't'
+			}
+			backend.result.Statements[0].Rows[0][6].Bytes[0] = 'X'
+			backend.result.Statements[0].Rows[0][1].Bytes[0] = 'X'
+			if string(row.Token) != "token" || string(*row.OptionalToken) != "optional" {
+				t.Fatal("RETURNING bytes aliased backend storage")
+			}
+			nulls := values()
+			for index := range 5 {
+				nulls[index] = database.NullArgument()
+			}
+			backend.result.Statements[0].Rows = [][]database.Value{nulls}
+			output, err = method.call()
+			if err != nil {
+				t.Fatal(err)
+			}
+			row = asRow(t, output)
+			if row.OptionalKey != nil || row.OptionalText != nil || row.OptionalActive != nil || row.OptionalToken != nil || row.OptionalScore != nil {
+				t.Fatal("SQL NULL became a non-null pointer")
+			}
+			backend.result.Statements[0].Rows = nil
+			output, err = method.call()
+			if method.cardinality == database.CardinalityExactlyOne {
+				assertZeroError(t, output, err, database.ErrNotFound)
+			} else if err != nil || (method.cardinality == database.CardinalityZeroOrOne && !reflect.ValueOf(output).IsNil()) || (method.cardinality == database.CardinalityMany && len(output.([]contract.Row)) != 0) {
+				t.Fatal("empty RETURNING result changed", output, err)
+			}
+			backend.result.Statements[0].Rows = [][]database.Value{values(), values()}
+			output, err = method.call()
+			if method.cardinality == database.CardinalityMany {
+				if err != nil || len(output.([]contract.Row)) != 2 {
+					t.Fatal("many RETURNING rejected", err)
+				}
+				rows := output.([]contract.Row)
+				*rows[0].OptionalKey = 99
+				if *rows[1].OptionalKey != 0 {
+					t.Fatal("nullable fields alias across rows")
+				}
+			} else {
+				assertZeroError(t, output, err, database.ErrBackend)
+			}
+			malformed := []database.Result{{}, {Statements: []database.StatementResult{{}, {}}}, {Statements: []database.StatementResult{{Rows: [][]database.Value{values()}, AffectedRows: 1}}}, {Statements: []database.StatementResult{{Rows: [][]database.Value{{database.Int64Argument(1)}}}}}}
+			for index := range 10 {
+				bad := values()
+				bad[index] = database.Argument{Kind: "unknown"}
+				rows := [][]database.Value{bad}
+				if method.cardinality == database.CardinalityMany {
+					rows = append([][]database.Value{values()}, rows...)
+				}
+				malformed = append(malformed, database.Result{Statements: []database.StatementResult{{Rows: rows}}})
+				if index >= 5 {
+					nulls := append([]database.Value(nil), bad...)
+					nulls[index] = database.NullArgument()
+					rows = [][]database.Value{nulls}
+					if method.cardinality == database.CardinalityMany {
+						rows = append([][]database.Value{values()}, rows...)
+					}
+					malformed = append(malformed, database.Result{Statements: []database.StatementResult{{Rows: rows}}})
+				}
+			}
+			for _, result := range malformed {
+				backend.result = result
+				output, err := method.call()
+				assertZeroError(t, output, err, database.ErrBackend)
+			}
+			for _, cause := range []error{database.ErrConflict, database.ErrNotFound, database.ErrResultUnknown, context.Canceled, context.DeadlineExceeded} {
+				backend.result = database.Result{Statements: []database.StatementResult{{Rows: [][]database.Value{values()}}}}
+				backend.err = cause
+				calls := backend.calls
+				output, err := method.call()
+				assertZeroError(t, output, err, cause)
+				if err != cause || backend.calls != calls+1 {
+					t.Fatal("backend error changed or mutation retried")
+				}
+			}
+		})
+	}
+	for _, method := range []struct {
+		name string
+		call func() (uint64, error)
+	}{
+		{"InsertCount", func() (uint64, error) { return resource.InsertCount(ctx, request) }},
+		{"UpdateCount", func() (uint64, error) { return resource.UpdateCount(ctx, request) }},
+		{"DeleteCount", func() (uint64, error) { return resource.DeleteCount(ctx, contract.Filter{Key: 7}) }},
+		{"Clear", func() (uint64, error) { return resource.Clear(ctx, contract.Empty{}) }},
+	} {
+		t.Run(method.name, func(t *testing.T) {
+			backend.err = nil
+			for _, count := range []uint64{0, 1, 2, math.MaxUint64} {
+				backend.result = database.Result{Statements: []database.StatementResult{{AffectedRows: count}}}
+				got, err := method.call()
+				if err != nil || got != count || backend.ctx != ctx || backend.plan.Validate() != nil || len(backend.plan.Statements) != 1 {
+					t.Fatal("affected count lost", got, err)
+				}
+				statement := backend.plan.Statements[0]
+				if statement.ReturnsRows || statement.Cardinality != database.CardinalityNone || statement.Affected != database.AtLeastAffectedRows(0) || len(statement.ResultColumns) != 0 || strings.Contains(statement.SQL, "RETURNING") {
+					t.Fatal("count method added a restrictive assertion or row contract")
+				}
+				wantArgs := []database.Argument{database.Int64Argument(7)}
+				switch method.name {
+				case "InsertCount", "UpdateCount":
+					wantArgs = []database.Argument{database.StringArgument("text"), database.BoolArgument(true), database.BytesArgument([]byte("token")), database.Float64Argument(1.5), database.Int64Argument(7)}
+				case "Clear":
+					wantArgs = []database.Argument{}
+				}
+				if !reflect.DeepEqual(statement.Args, wantArgs) {
+					t.Fatal("count parameter order lost")
+				}
+			}
+			for _, malformed := range []database.Result{{}, {Statements: []database.StatementResult{{}, {}}}, {Statements: []database.StatementResult{{AffectedRows: 3, Rows: [][]database.Value{{database.Int64Argument(1)}}}}}} {
+				backend.result = malformed
+				count, err := method.call()
+				assertZeroError(t, count, err, database.ErrBackend)
+			}
+			for _, cause := range []error{database.ErrConflict, database.ErrResultUnknown, context.Canceled, context.DeadlineExceeded} {
+				backend.result = database.Result{Statements: []database.StatementResult{{AffectedRows: 3}}}
+				backend.err = cause
+				calls := backend.calls
+				count, err := method.call()
+				assertZeroError(t, count, err, cause)
+				if err != cause || backend.calls != calls+1 {
+					t.Fatal("backend error changed or count mutation retried")
+				}
+			}
+		})
+	}
+	if provider, err := access.New(nil); provider != nil || err != database.ErrUnavailable {
+		t.Fatal("nil dependency accepted")
+	}
+	var absent *access.Provider
+	if count, err := absent.InsertCount(ctx, request); count != 0 || err != database.ErrUnavailable {
+		t.Fatal("nil provider count did not fail safely")
+	}
+	if row, err := absent.DeleteOptional(ctx, contract.Filter{}); row != nil || err != database.ErrUnavailable {
+		t.Fatal("nil provider RETURNING did not fail safely")
+	}
+}
+
+func asRow(t *testing.T, value any) contract.Row {
+	t.Helper()
+	switch rows := value.(type) {
+	case contract.Row:
+		return rows
+	case *contract.Row:
+		if rows != nil {
+			return *rows
+		}
+	case []contract.Row:
+		if len(rows) == 1 {
+			return rows[0]
+		}
+	}
+	t.Fatal("expected one typed RETURNING row", value)
+	return contract.Row{}
+}
+
+func assertZeroError(t *testing.T, output any, err, want error) {
+	t.Helper()
+	if !reflect.ValueOf(output).IsZero() || !errors.Is(err, want) {
+		t.Fatalf("partial output or changed error: %#v, %v; want %v", output, err, want)
+	}
+}
