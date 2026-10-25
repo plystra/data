@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"go/token"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -154,6 +155,7 @@ const (
 	ConstraintPrimaryKey ConstraintKind = "primary-key"
 	ConstraintUnique     ConstraintKind = "unique"
 	ConstraintForeignKey ConstraintKind = "foreign-key"
+	ConstraintCheck      ConstraintKind = "check"
 )
 
 // Constraint describes one logical table constraint.
@@ -163,6 +165,20 @@ type Constraint struct {
 	Columns         []string       `json:"columns"`
 	ReferencedTable Ref            `json:"referenced_table,omitempty"`
 	ReferencedCols  []string       `json:"referenced_columns,omitempty"`
+	Check           Predicate      `json:"check,omitempty"`
+}
+
+// Omit an absent CHECK so existing immutable logical digests do not change.
+func (constraint Constraint) MarshalJSON() ([]byte, error) {
+	type plain Constraint
+	var check *Predicate
+	if hasHaving(constraint.Check) {
+		check = &constraint.Check
+	}
+	return json.Marshal(struct {
+		plain
+		Check *Predicate `json:"check,omitempty"`
+	}{plain(constraint), check})
 }
 
 // Index describes one logical index.
@@ -374,20 +390,37 @@ type MigrationSchema struct {
 type MigrationOperationKind string
 
 const (
-	MigrationCreateTable MigrationOperationKind = "create-table"
-	MigrationAddColumn   MigrationOperationKind = "add-column"
-	MigrationCreateIndex MigrationOperationKind = "create-index"
+	MigrationCreateTable   MigrationOperationKind = "create-table"
+	MigrationAddColumn     MigrationOperationKind = "add-column"
+	MigrationCreateIndex   MigrationOperationKind = "create-index"
+	MigrationAddConstraint MigrationOperationKind = "add-constraint"
 )
 
 type MigrationOperation struct {
-	Kind   MigrationOperationKind `json:"kind"`
-	Table  Ref                    `json:"table"`
-	Column Column                 `json:"column,omitempty"`
-	Index  Index                  `json:"index,omitempty"`
+	Kind       MigrationOperationKind `json:"kind"`
+	Table      Ref                    `json:"table"`
+	Column     Column                 `json:"column,omitempty"`
+	Index      Index                  `json:"index,omitempty"`
+	Constraint Constraint             `json:"constraint,omitempty"`
+}
+
+func (operation MigrationOperation) MarshalJSON() ([]byte, error) {
+	type plain MigrationOperation
+	var constraint *Constraint
+	if constraintSet(operation.Constraint) {
+		constraint = &operation.Constraint
+	}
+	return json.Marshal(struct {
+		plain
+		Constraint *Constraint `json:"constraint,omitempty"`
+	}{plain(operation), constraint})
 }
 
 // Normalize validates the closed model and returns a deterministic copy.
 func (m Member[Access]) Normalize() (Model, error) {
+	if err := checkExpressionBounds(m.Tables, m.Migrations); err != nil {
+		return Model{}, err
+	}
 	model := Model{
 		Namespace:  m.Namespace,
 		Imports:    append([]string(nil), m.Imports...),
@@ -474,9 +507,7 @@ func cloneTables(tables []Table) []Table {
 		}
 		result[i].Constraints = make([]Constraint, len(table.Constraints))
 		for constraint, value := range table.Constraints {
-			result[i].Constraints[constraint] = value
-			result[i].Constraints[constraint].Columns = append([]string(nil), value.Columns...)
-			result[i].Constraints[constraint].ReferencedCols = append([]string(nil), value.ReferencedCols...)
+			result[i].Constraints[constraint] = cloneConstraint(value)
 		}
 		result[i].Indexes = make([]Index, len(table.Indexes))
 		for index, value := range table.Indexes {
@@ -507,6 +538,13 @@ func cloneQueries(queries []Query) []Query {
 		result[i].Predicate = clonePredicate(query.Predicate)
 	}
 	return result
+}
+
+func cloneConstraint(constraint Constraint) Constraint {
+	constraint.Columns = append([]string(nil), constraint.Columns...)
+	constraint.ReferencedCols = append([]string(nil), constraint.ReferencedCols...)
+	constraint.Check = clonePredicate(constraint.Check)
+	return constraint
 }
 
 func clonePredicate(predicate Predicate) Predicate {
@@ -549,6 +587,7 @@ func cloneMigrations(migrations []Migration) []Migration {
 			result[i].Operations[operation] = value
 			result[i].Operations[operation].Column.Default.Bytes = value.Column.Default.Bytes
 			result[i].Operations[operation].Index.Columns = append([]string(nil), value.Index.Columns...)
+			result[i].Operations[operation].Constraint = cloneConstraint(value.Constraint)
 		}
 	}
 	return result
@@ -655,13 +694,25 @@ func validateTable(table Table) error {
 	}
 	constraints := map[string]struct{}{}
 	for _, constraint := range table.Constraints {
-		if !validSymbol(constraint.ID) || len(constraint.Columns) == 0 {
+		if !validSymbol(constraint.ID) {
 			return fmt.Errorf("%w: constraint %q", ErrInvalidSchema, constraint.ID)
 		}
 		if _, exists := constraints[constraint.ID]; exists {
 			return fmt.Errorf("%w: constraint %q", ErrDuplicate, constraint.ID)
 		}
 		constraints[constraint.ID] = struct{}{}
+		if constraint.Kind == ConstraintCheck {
+			if len(constraint.Columns) != 0 || constraint.ReferencedTable != (Ref{}) || len(constraint.ReferencedCols) != 0 {
+				return fmt.Errorf("%w: CHECK has non-CHECK fields", ErrInvalidSchema)
+			}
+			if err := validateCheck(table, constraint.Check); err != nil {
+				return err
+			}
+			continue
+		}
+		if hasHaving(constraint.Check) || len(constraint.Columns) == 0 {
+			return fmt.Errorf("%w: non-CHECK constraint fields", ErrInvalidSchema)
+		}
 		if constraint.Kind != ConstraintPrimaryKey && constraint.Kind != ConstraintUnique && constraint.Kind != ConstraintForeignKey {
 			return fmt.Errorf("%w: constraint %q", ErrUnsupported, constraint.Kind)
 		}
@@ -687,6 +738,125 @@ func validateTable(table Table) error {
 		}
 	}
 	return nil
+}
+
+func constraintSet(constraint Constraint) bool {
+	return constraint.ID != "" || constraint.Kind != "" || len(constraint.Columns) != 0 || constraint.ReferencedTable != (Ref{}) || len(constraint.ReferencedCols) != 0 || hasHaving(constraint.Check)
+}
+
+// Bound new expression trees before recursive copying, including cyclic slice
+// graphs passed directly through the public Go API rather than source literals.
+func checkExpressionBounds(tables []Table, migrations []Migration) error {
+	nodes := 0
+	var visit func(Predicate, int) error
+	visit = func(predicate Predicate, depth int) error {
+		nodes++
+		if nodes > MaximumNodes || depth > MaximumNesting {
+			return ErrLimit
+		}
+		for _, item := range predicate.Items {
+			if err := visit(item, depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	visitTables := func(tables []Table) error {
+		for _, table := range tables {
+			for _, constraint := range table.Constraints {
+				if err := visit(constraint.Check, 0); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := visitTables(tables); err != nil {
+		return err
+	}
+	for _, migration := range migrations {
+		for _, snapshot := range migration.Snapshot {
+			if err := visitTables(snapshot.Tables); err != nil {
+				return err
+			}
+		}
+		for _, operation := range migration.Operations {
+			if err := visit(operation.Constraint.Check, 0); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateCheck(table Table, predicate Predicate) error {
+	base := Ref{Symbol: table.ID}
+	if err := validatePredicate(predicate, nil, nil, map[string]struct{}{refKey(base): {}}, base, 0); err != nil {
+		return err
+	}
+	var visit func(Predicate) error
+	visit = func(item Predicate) error {
+		if item.Kind == "" {
+			return fmt.Errorf("%w: empty CHECK expression", ErrInvalidSchema)
+		}
+		if item.Kind == PredicateAnd || item.Kind == PredicateOr {
+			for _, child := range item.Items {
+				if err := visit(child); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		left, exists := tableColumn(table, item.Left.Column)
+		if !exists {
+			return fmt.Errorf("%w: CHECK column", ErrReference)
+		}
+		if item.Kind == PredicateIsNull || item.Kind == PredicateIsNotNull {
+			return nil
+		}
+		if predicateColumnSet(item.Right) {
+			right, exists := tableColumn(table, item.Right.Column)
+			if !exists || left.Type != right.Type {
+				return fmt.Errorf("%w: CHECK column types", ErrReference)
+			}
+			return nil
+		}
+		value := item.Value
+		if value.Parameter != "" || value.Kind != left.Type || !value.Set {
+			return fmt.Errorf("%w: CHECK requires a matching closed literal", ErrInvalidSchema)
+		}
+		closed := Value{Kind: value.Kind, Set: true}
+		switch value.Kind {
+		case TypeBool:
+			closed.Bool = value.Bool
+		case TypeBytes:
+			if _, err := hex.DecodeString(value.Bytes); err != nil {
+				return fmt.Errorf("%w: CHECK bytes literal", ErrInvalidSchema)
+			}
+			closed.Bytes = value.Bytes
+		case TypeFloat64:
+			if math.IsNaN(value.Float64) || math.IsInf(value.Float64, 0) {
+				return fmt.Errorf("%w: CHECK finite literal", ErrInvalidSchema)
+			}
+			closed.Float64 = value.Float64
+		case TypeInt64:
+			closed.Int64 = value.Int64
+		case TypeUint64:
+			closed.Uint64 = value.Uint64
+		case TypeString:
+			if strings.ContainsRune(value.String, 0) {
+				return fmt.Errorf("%w: CHECK text literal", ErrInvalidSchema)
+			}
+			closed.String = value.String
+		default:
+			return fmt.Errorf("%w: CHECK literal type", ErrUnsupported)
+		}
+		if value != closed {
+			return fmt.Errorf("%w: CHECK literal has ignored fields", ErrInvalidSchema)
+		}
+		return nil
+	}
+	return visit(predicate)
 }
 
 func validateQuery(query Query, imports map[string]struct{}, tables map[string]Table) error {
@@ -1347,6 +1517,9 @@ func nodeCount(model Model) int {
 	count := 1 + len(model.Imports) + len(model.Tables) + len(model.Queries) + len(model.Plans) + len(model.Migrations)
 	for _, table := range model.Tables {
 		count += len(table.Columns) + len(table.Constraints) + len(table.Indexes)
+		for _, constraint := range table.Constraints {
+			count += predicateCount(constraint.Check)
+		}
 	}
 	for _, query := range model.Queries {
 		conflictNodes := 0
@@ -1363,10 +1536,16 @@ func nodeCount(model Model) int {
 	}
 	for _, migration := range model.Migrations {
 		count += len(migration.Predecessors) + len(migration.Operations)
+		for _, operation := range migration.Operations {
+			count += predicateCount(operation.Constraint.Check)
+		}
 		for _, snapshot := range migration.Snapshot {
 			count += 1 + len(snapshot.Tables)
 			for _, table := range snapshot.Tables {
 				count += len(table.Columns) + len(table.Constraints) + len(table.Indexes)
+				for _, constraint := range table.Constraints {
+					count += predicateCount(constraint.Check)
+				}
 			}
 		}
 	}

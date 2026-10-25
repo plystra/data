@@ -228,6 +228,16 @@ func compileMigrationSQL(member SchemaMember, item declaration.Migration, byID m
 				return "", fmt.Errorf("%w: migration %s create index: %v", ErrSchemaCompilation, item.ID, err)
 			}
 			writeIndex(&sql, targetMember, table, operation.Index)
+		case declaration.MigrationAddConstraint:
+			targetMember, table, err := resolveSchemaTable(member, operation.Table, byID)
+			if err != nil {
+				return "", fmt.Errorf("%w: migration %s add constraint: %v", ErrSchemaCompilation, item.ID, err)
+			}
+			definition, err := checkConstraintSQL(table, operation.Constraint)
+			if err != nil {
+				return "", err
+			}
+			fmt.Fprintf(&sql, "ALTER TABLE %s.%s ADD %s;\n", quoteIdentifier(targetMember.Model.Namespace), quoteIdentifier(table.ID), definition)
 		default:
 			return "", fmt.Errorf("%w: migration %s operation %q", ErrSchemaCompilation, item.ID, operation.Kind)
 		}
