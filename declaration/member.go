@@ -307,6 +307,7 @@ type Ordering struct {
 type Plan struct {
 	ID         string          `json:"id"`
 	Method     string          `json:"method,omitempty"`
+	Parameters []Parameter     `json:"parameters,omitempty"`
 	Statements []PlanStatement `json:"statements"`
 	Outputs    []PlanOutput    `json:"outputs,omitempty"`
 }
@@ -319,10 +320,21 @@ type PlanOutput struct {
 }
 
 type PlanStatement struct {
-	ID          string       `json:"id"`
-	Query       Ref          `json:"query"`
-	Cardinality Cardinality  `json:"cardinality"`
-	Affected    AffectedRows `json:"affected,omitempty"`
+	ID          string        `json:"id"`
+	Query       Ref           `json:"query"`
+	Cardinality Cardinality   `json:"cardinality"`
+	Affected    AffectedRows  `json:"affected,omitempty"`
+	Bindings    []PlanBinding `json:"bindings,omitempty"`
+}
+
+// PlanBinding supplies one query parameter from a plan parameter or one named
+// non-null result of a strictly earlier exactly-one statement. The two source
+// forms are mutually exclusive; result references require both source fields.
+type PlanBinding struct {
+	Parameter     string `json:"parameter"`
+	FromParameter string `json:"from_parameter,omitempty"`
+	FromStatement string `json:"from_statement,omitempty"`
+	FromResult    string `json:"from_result,omitempty"`
 }
 
 type Cardinality string
@@ -408,6 +420,14 @@ func (m Member[Access]) Normalize() (Model, error) {
 			return model.Queries[i].Assignments[a].Column < model.Queries[i].Assignments[b].Column
 		})
 		sort.Strings(model.Queries[i].Conflict.UpdateColumns)
+	}
+	for i := range model.Plans {
+		plan := &model.Plans[i]
+		sort.Slice(plan.Parameters, func(a, b int) bool { return plan.Parameters[a].ID < plan.Parameters[b].ID })
+		for j := range plan.Statements {
+			bindings := plan.Statements[j].Bindings
+			sort.Slice(bindings, func(a, b int) bool { return bindings[a].Parameter < bindings[b].Parameter })
+		}
 	}
 	for i := range model.Migrations {
 		for j := range model.Migrations[i].Snapshot {
@@ -504,7 +524,11 @@ func clonePlans(plans []Plan) []Plan {
 	result := make([]Plan, len(plans))
 	for i, plan := range plans {
 		result[i] = plan
+		result[i].Parameters = append([]Parameter(nil), plan.Parameters...)
 		result[i].Statements = append([]PlanStatement(nil), plan.Statements...)
+		for j, statement := range plan.Statements {
+			result[i].Statements[j].Bindings = append([]PlanBinding(nil), statement.Bindings...)
+		}
 		result[i].Outputs = append([]PlanOutput(nil), plan.Outputs...)
 	}
 	return result
@@ -1105,94 +1129,6 @@ func validateQueryParameterCoverage(query Query) error {
 	return nil
 }
 
-func validatePlan(plan Plan, imports map[string]struct{}, queries map[string]Query) error {
-	if !validSymbol(plan.ID) || len(plan.Statements) == 0 || len(plan.Statements) > 64 {
-		return fmt.Errorf("%w: plan %q", ErrInvalidSchema, plan.ID)
-	}
-	seen := map[string]struct{}{}
-	for _, statement := range plan.Statements {
-		if !validSymbol(statement.ID) {
-			return fmt.Errorf("%w: plan statement %q", ErrInvalidID, statement.ID)
-		}
-		if _, exists := seen[statement.ID]; exists {
-			return fmt.Errorf("%w: plan statement %q", ErrDuplicate, statement.ID)
-		}
-		seen[statement.ID] = struct{}{}
-		if err := validateRef(statement.Query, imports); err != nil {
-			return err
-		}
-		if statement.Query.Member == "" {
-			query, exists := queries[statement.Query.Symbol]
-			if !exists {
-				return fmt.Errorf("%w: query %q", ErrReference, statement.Query.Symbol)
-			}
-			switch query.Operation {
-			case OperationSelect:
-				if statement.Cardinality == CardinalityNone || statement.Affected.Set {
-					return fmt.Errorf("%w: select plan statement %q assertion", ErrInvalidSchema, statement.ID)
-				}
-			case OperationInsert, OperationUpdate, OperationDelete:
-				if len(query.Returning) != 0 {
-					return fmt.Errorf("%w: mutation plan statement %q returning", ErrUnsupported, statement.ID)
-				}
-				if statement.Cardinality != CardinalityNone || !statement.Affected.Set {
-					return fmt.Errorf("%w: mutation plan statement %q assertion", ErrInvalidSchema, statement.ID)
-				}
-			}
-		}
-		if statement.Cardinality == "" {
-			return fmt.Errorf("%w: plan statement %q cardinality", ErrInvalidSchema, statement.ID)
-		}
-		if statement.Cardinality != CardinalityNone && statement.Cardinality != CardinalityExactlyOne && statement.Cardinality != CardinalityZeroOrOne && statement.Cardinality != CardinalityMany {
-			return fmt.Errorf("%w: cardinality %q", ErrUnsupported, statement.Cardinality)
-		}
-		if statement.Affected.Set && !statement.Affected.Unbounded && statement.Affected.Min > statement.Affected.Max {
-			return fmt.Errorf("%w: affected row range", ErrInvalidSchema)
-		}
-	}
-	if plan.Method == "" {
-		if len(plan.Outputs) != 0 {
-			return fmt.Errorf("%w: plan %q has outputs without a method", ErrInvalidSchema, plan.ID)
-		}
-		return nil
-	}
-	if len(plan.Statements) != 1 || plan.Statements[0].Query.Member != "" ||
-		plan.Statements[0].Cardinality != CardinalityExactlyOne || plan.Statements[0].Affected.Set {
-		return fmt.Errorf("%w: callable plan %q requires one local exactly-one SELECT", ErrUnsupported, plan.ID)
-	}
-	query := queries[plan.Statements[0].Query.Symbol]
-	if query.Operation != OperationSelect || len(query.Parameters) != 0 || len(query.Joins) != 0 ||
-		query.Table.Member != "" || len(query.Projection) == 0 || len(query.Results) == 0 {
-		return fmt.Errorf("%w: callable plan %q query shape", ErrUnsupported, plan.ID)
-	}
-	if len(plan.Outputs) != len(query.Results) {
-		return fmt.Errorf("%w: callable plan %q output count", ErrInvalidSchema, plan.ID)
-	}
-	results := make(map[string]struct{}, len(query.Results))
-	for _, result := range query.Results {
-		results[result.ID] = struct{}{}
-	}
-	fields := make(map[string]struct{}, len(plan.Outputs))
-	seenResults := make(map[string]struct{}, len(plan.Outputs))
-	for _, output := range plan.Outputs {
-		if output.Statement != plan.Statements[0].ID || !validExportedGoName(output.GoField) {
-			return fmt.Errorf("%w: callable plan %q output field", ErrInvalidID, plan.ID)
-		}
-		if _, exists := results[output.Result]; !exists {
-			return fmt.Errorf("%w: callable plan %q output result %q", ErrReference, plan.ID, output.Result)
-		}
-		if _, exists := fields[output.GoField]; exists {
-			return fmt.Errorf("%w: callable plan %q output field %q", ErrDuplicate, plan.ID, output.GoField)
-		}
-		if _, exists := seenResults[output.Result]; exists {
-			return fmt.Errorf("%w: callable plan %q output result %q", ErrDuplicate, plan.ID, output.Result)
-		}
-		fields[output.GoField] = struct{}{}
-		seenResults[output.Result] = struct{}{}
-	}
-	return nil
-}
-
 func validatePredicate(predicate Predicate, imports map[string]struct{}, parameters map[string]ScalarType, introduced map[string]struct{}, base Ref, depth int) error {
 	if predicate.Kind == "" {
 		if predicate.Left != (ColumnRef{}) || predicate.Right != (ColumnRef{}) || predicate.Value != (Value{}) || predicate.Items != nil {
@@ -1420,7 +1356,10 @@ func nodeCount(model Model) int {
 		count += len(query.Joins)*4 + len(query.Parameters) + len(query.Assignments) + conflictNodes + len(query.Conflict.UpdateColumns) + len(query.Projection) + len(query.GroupBy) + len(query.Returning) + len(query.Results) + len(query.Ordering) + predicateCount(query.Predicate) + predicateCount(query.Having)
 	}
 	for _, plan := range model.Plans {
-		count += len(plan.Statements) + len(plan.Outputs)
+		count += len(plan.Parameters) + len(plan.Statements) + len(plan.Outputs)
+		for _, statement := range plan.Statements {
+			count += len(statement.Bindings)
+		}
 	}
 	for _, migration := range model.Migrations {
 		count += len(migration.Predecessors) + len(migration.Operations)

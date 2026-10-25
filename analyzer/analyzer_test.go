@@ -314,9 +314,9 @@ var Reader = declaration.Member[database.Resource]{
 			t.Fatalf("plan result field mismatch = %#v, %v", invalid, err)
 		}
 	})
-	t.Run("unsupported callable plan cardinality", func(t *testing.T) {
+	t.Run("unsupported callable plan output cardinality", func(t *testing.T) {
 		selected := strings.Replace(body, "\n}", `
-	Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: "many"}}}},
+	Plans: []declaration.Plan{{ID: "read-plan", Method: "ReadPlan", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "read-users"}, Cardinality: "many"}}, Outputs: []declaration.PlanOutput{{Statement: "read", Result: "id", GoField: "ID"}}}},
 }`, 1)
 		snapshot := sourceSnapshot(selected, resource)
 		snapshot.Packages[1].Files[0].Content = []byte("package database\nimport \"context\"\ntype Request struct{}\ntype Row struct{ID int64}\ntype Resource interface { Read(context.Context, Request) ([]Row, error); ReadPlan() error }\n")
@@ -1455,8 +1455,9 @@ type PredicateKind string
 type Predicate struct { Kind PredicateKind; Left ColumnRef; Right ColumnRef; Value Value; Items []Predicate }
 type OrderingDirection string
 type Ordering struct { Table Ref; Column string; Direction OrderingDirection }
-type Plan struct { ID string; Method string; Statements []PlanStatement; Outputs []PlanOutput }
-type PlanStatement struct { ID string; Query Ref; Cardinality Cardinality; Affected AffectedRows }
+type Plan struct { ID string; Method string; Parameters []Parameter; Statements []PlanStatement; Outputs []PlanOutput }
+type PlanStatement struct { ID string; Query Ref; Cardinality Cardinality; Affected AffectedRows; Bindings []PlanBinding }
+type PlanBinding struct { Parameter string; FromParameter string; FromStatement string; FromResult string }
 type PlanOutput struct { Statement string; Result string; GoField string }
 type Cardinality string
 type AffectedRows struct { Set bool; Min uint64; Max uint64; Unbounded bool }
