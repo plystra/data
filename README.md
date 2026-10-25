@@ -90,6 +90,20 @@ The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned t
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
 rejects cross-Resource foreign keys before any backend operation.
+Table constraints also accept `Constraint{ID: "amount-positive", Kind:
+ConstraintCheck, Check: Predicate{Kind: PredicateGreater, Left:
+ColumnRef{Column: "amount"}, Value: Int64(0)}}`. CHECK reuses the existing typed
+predicate grammar: comparisons against a same-type column of the same table or
+a closed literal, nested AND/OR, and IS NULL/IS NOT NULL. It rejects parameters,
+cross-table/member references, empty expressions, ignored fields, and authored
+SQL before lowering. Literals support bool, bytes (hex), finite float64, int64,
+uint64, and UTF-8 text without NUL; UUID/timestamp literals remain unsupported.
+Expression depth and node counts are bounded, and normalized expressions are
+deep copies included in logical digests. This is a bounded CHECK subset:
+functions, arithmetic, regex, subqueries, and arbitrary SQL are not accepted.
+PostgreSQL CHECK accepts TRUE or UNKNOWN, so `amount > 0` allows NULL on a
+nullable column. Use `Nullable: false` for NOT NULL, or an explicit IS NOT NULL
+predicate when that is the intended CHECK rule.
 `postgres/compiler.CompileQueries` emits deterministic SQL for `SELECT`, `INSERT`,
 `UPDATE`, and `DELETE` intent. `INSERT` may target a named primary-key or unique
 table constraint on a local or explicitly imported same-Resource table. Its
@@ -178,6 +192,19 @@ uses a snapshot of the table before that addition; create-index validates its
 columns against that migration's snapshot. Operations execute in authored order.
 Snapshot tables, namespaces, imported references, and operation fields are
 validated and included in the immutable logical migration digest.
+
+`MigrationOperation{Kind: MigrationAddConstraint, Table: Ref{Symbol: "records"},
+Constraint: ...}` adds a named CHECK using that same typed constraint. This
+operation currently supports CHECK only and validates against the frozen table
+snapshot before the addition; columns introduced by another operation are not
+implicitly added to that snapshot. It emits immediate `ADD CONSTRAINT ... CHECK`
+validation, without `NOT VALID`. Existing violating rows abort the complete
+transactional apply, including earlier DDL and migration-history writes. Repair
+the rows and retry the unchanged artifact with a freshly verified plan approval.
+Existing snapshots and applied artifacts must never be edited to retrofit a
+CHECK: append a new migration (for example, migration 2 after an initial schema).
+Absent CHECK/add-constraint fields retain the previous JSON representation and
+therefore do not change earlier logical digests.
 
 `compiler.MigrationHistory` carries retained exact SQL artifacts and the observed
 applied prefix. Use an empty value only for a target with no observed history.

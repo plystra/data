@@ -424,45 +424,58 @@ func (d modelDecoder) constraints(value ast.Expr) ([]declaration.Constraint, err
 	}
 	result := make([]declaration.Constraint, len(elements))
 	for index, element := range elements {
-		fields, fieldErr := d.fieldsExpr(element)
-		if fieldErr != nil {
-			return nil, fieldErr
+		result[index], err = d.constraint(element)
+		if err != nil {
+			return nil, err
 		}
-		constraint := declaration.Constraint{}
-		if field, ok := fields["ID"]; ok {
-			constraint.ID, err = d.string(field)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if field, ok := fields["Kind"]; ok {
-			value, valueErr := d.string(field)
-			if valueErr != nil {
-				return nil, valueErr
-			}
-			constraint.Kind = declaration.ConstraintKind(value)
-		}
-		if field, ok := fields["Columns"]; ok {
-			constraint.Columns, err = d.stringSlice(field)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if field, ok := fields["ReferencedTable"]; ok {
-			constraint.ReferencedTable, err = d.ref(field)
-			if err != nil {
-				return nil, err
-			}
-		}
-		if field, ok := fields["ReferencedCols"]; ok {
-			constraint.ReferencedCols, err = d.stringSlice(field)
-			if err != nil {
-				return nil, err
-			}
-		}
-		result[index] = constraint
 	}
 	return result, nil
+}
+
+func (d modelDecoder) constraint(value ast.Expr) (declaration.Constraint, error) {
+	fields, err := d.fieldsExpr(value)
+	if err != nil {
+		return declaration.Constraint{}, err
+	}
+	constraint := declaration.Constraint{}
+	if field, ok := fields["ID"]; ok {
+		constraint.ID, err = d.string(field)
+		if err != nil {
+			return declaration.Constraint{}, err
+		}
+	}
+	if field, ok := fields["Kind"]; ok {
+		value, valueErr := d.string(field)
+		if valueErr != nil {
+			return declaration.Constraint{}, valueErr
+		}
+		constraint.Kind = declaration.ConstraintKind(value)
+	}
+	if field, ok := fields["Columns"]; ok {
+		constraint.Columns, err = d.stringSlice(field)
+		if err != nil {
+			return declaration.Constraint{}, err
+		}
+	}
+	if field, ok := fields["ReferencedTable"]; ok {
+		constraint.ReferencedTable, err = d.ref(field)
+		if err != nil {
+			return declaration.Constraint{}, err
+		}
+	}
+	if field, ok := fields["ReferencedCols"]; ok {
+		constraint.ReferencedCols, err = d.stringSlice(field)
+		if err != nil {
+			return declaration.Constraint{}, err
+		}
+	}
+	if field, ok := fields["Check"]; ok {
+		constraint.Check, err = d.predicate(field)
+		if err != nil {
+			return declaration.Constraint{}, err
+		}
+	}
+	return constraint, nil
 }
 
 func (d modelDecoder) indexes(value ast.Expr) ([]declaration.Index, error) {
@@ -1258,6 +1271,12 @@ func (d modelDecoder) migrationOperations(value ast.Expr) ([]declaration.Migrati
 		}
 		if field, ok := fields["Index"]; ok {
 			operation.Index, err = d.index(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Constraint"]; ok {
+			operation.Constraint, err = d.constraint(field)
 			if err != nil {
 				return nil, err
 			}

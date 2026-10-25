@@ -1436,7 +1436,7 @@ type Member[Access any] struct { Namespace string; Imports []string; Tables []Ta
 type Table struct { ID string; Columns []Column; Constraints []Constraint; Indexes []Index }
 type Column struct { ID string; Type ScalarType; Nullable bool; Default Value }
 type ConstraintKind string
-type Constraint struct { ID string; Kind ConstraintKind; Columns []string; ReferencedTable Ref; ReferencedCols []string }
+type Constraint struct { ID string; Kind ConstraintKind; Columns []string; ReferencedTable Ref; ReferencedCols []string; Check Predicate }
 type Index struct { ID string; Columns []string; Unique bool }
 type OperationKind string
 type Parameter struct { ID string; GoField string; Type ScalarType }
@@ -1464,7 +1464,7 @@ type AffectedRows struct { Set bool; Min uint64; Max uint64; Unbounded bool }
 type Migration struct { ID string; Version uint64; Predecessors []Ref; Snapshot []MigrationSchema; Operations []MigrationOperation }
 type MigrationSchema struct { Member string; Namespace string; Tables []Table }
 type MigrationOperationKind string
-type MigrationOperation struct { Kind MigrationOperationKind; Table Ref; Column Column; Index Index }
+type MigrationOperation struct { Kind MigrationOperationKind; Table Ref; Column Column; Index Index; Constraint Constraint }
 `)}}},
 			{ImportPath: "github.com/plystra/data/database", RootEligibility: analyzer.RootSupport, Files: []analyzer.SourceFile{{Path: "resource.go", Content: []byte(`package database
 import "context"

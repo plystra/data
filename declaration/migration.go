@@ -72,6 +72,7 @@ func validateMigrationSnapshot(migration Migration, imports map[string]struct{})
 			}
 		}
 	}
+	addedChecks := map[string]struct{}{}
 	for _, operation := range migration.Operations {
 		if err := validateRef(operation.Table, imports); err != nil {
 			return err
@@ -81,13 +82,14 @@ func validateMigrationSnapshot(migration Migration, imports map[string]struct{})
 			return fmt.Errorf("%w: migration snapshot table %s", ErrReference, operation.Table.Symbol)
 		}
 		emptyIndex := operation.Index.ID == "" && len(operation.Index.Columns) == 0 && !operation.Index.Unique
+		emptyConstraint := !constraintSet(operation.Constraint)
 		switch operation.Kind {
 		case MigrationCreateTable:
-			if operation.Column != (Column{}) || !emptyIndex {
+			if operation.Column != (Column{}) || !emptyIndex || !emptyConstraint {
 				return fmt.Errorf("%w: create-table fields", ErrInvalidSchema)
 			}
 		case MigrationAddColumn:
-			if !emptyIndex {
+			if !emptyIndex || !emptyConstraint {
 				return fmt.Errorf("%w: add-column fields", ErrInvalidSchema)
 			}
 			if _, exists := tableColumn(table, operation.Column.ID); exists {
@@ -97,12 +99,29 @@ func validateMigrationSnapshot(migration Migration, imports map[string]struct{})
 				return err
 			}
 		case MigrationCreateIndex:
-			if operation.Column != (Column{}) {
+			if operation.Column != (Column{}) || !emptyConstraint {
 				return fmt.Errorf("%w: create-index fields", ErrInvalidSchema)
 			}
 			if err := validateTable(Table{ID: table.ID, Columns: table.Columns, Indexes: []Index{operation.Index}}); err != nil {
 				return err
 			}
+		case MigrationAddConstraint:
+			if operation.Column != (Column{}) || !emptyIndex || operation.Constraint.Kind != ConstraintCheck {
+				return fmt.Errorf("%w: add-constraint supports only CHECK", ErrInvalidSchema)
+			}
+			key := refKey(operation.Table) + "/" + operation.Constraint.ID
+			if _, exists := addedChecks[key]; exists {
+				return fmt.Errorf("%w: added CHECK", ErrDuplicate)
+			}
+			for _, constraint := range table.Constraints {
+				if constraint.ID == operation.Constraint.ID {
+					return fmt.Errorf("%w: CHECK already in snapshot", ErrDuplicate)
+				}
+			}
+			if err := validateTable(Table{ID: table.ID, Columns: table.Columns, Constraints: []Constraint{operation.Constraint}}); err != nil {
+				return err
+			}
+			addedChecks[key] = struct{}{}
 		default:
 			return fmt.Errorf("%w: migration operation %s", ErrUnsupported, operation.Kind)
 		}

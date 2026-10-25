@@ -133,6 +133,14 @@ func writeTable(sql *strings.Builder, member SchemaMember, table declaration.Tab
 		if constraint.Kind == declaration.ConstraintForeignKey {
 			continue
 		}
+		if constraint.Kind == declaration.ConstraintCheck {
+			definition, err := checkConstraintSQL(table, constraint)
+			if err != nil {
+				return err
+			}
+			items = append(items, definition)
+			continue
+		}
 		kind, err := constraintSQLKind(constraint.Kind)
 		if err != nil {
 			return fmt.Errorf("%w: table %s constraint %s: %v", ErrSchemaCompilation, table.ID, constraint.ID, err)
@@ -144,6 +152,15 @@ func writeTable(sql *strings.Builder, member SchemaMember, table declaration.Tab
 	}
 	fmt.Fprintf(sql, "CREATE TABLE %s.%s (\n    %s\n);\n\n", quoteIdentifier(member.Model.Namespace), quoteIdentifier(table.ID), strings.Join(items, ",\n    "))
 	return nil
+}
+
+func checkConstraintSQL(table declaration.Table, constraint declaration.Constraint) (string, error) {
+	base := declaration.Ref{Symbol: table.ID}
+	expression, err := predicateSQL(constraint.Check, base, map[declaration.Ref]joinedTable{base: {table: table}}, nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: CHECK %s: %v", ErrSchemaCompilation, constraint.ID, err)
+	}
+	return fmt.Sprintf("CONSTRAINT %s CHECK (%s)", quoteIdentifier(constraint.ID), expression), nil
 }
 
 func writeForeignKey(sql *strings.Builder, member SchemaMember, table declaration.Table, constraint declaration.Constraint, byID map[string]SchemaMember) error {
