@@ -152,6 +152,19 @@ database contract carries result width, scalar kind, and nullability into the
 PostgreSQL transaction, which validates those facts before commit. Joins,
 parameters, imported queries, mutation plans, generated plan access bodies,
 and Data-owned artifact installation remain separate integration boundaries.
+
+The runtime `database.Plan` can bind an argument to a prior result with
+`database.ResultArgument(kind, statementID, zeroBasedColumn)`. Validation
+requires an earlier exactly-one row-producing statement, an explicit matching
+non-null result-column contract, and no simultaneous literal payload. Forward,
+self, missing, nullable, multi-row and type-mismatched references fail before
+pool acquisition. PostgreSQL resolves these values only within that one
+SERIALIZABLE transaction. A row-producing mutation may also carry its explicit
+affected-row assertion; both returned-row cardinality and the backend command
+count must pass before commit. Any downstream statement, decode, assertion or
+cancellation failure rolls back all prior effects and publishes no result.
+This runtime capability does not add authored plan parameter/binding syntax,
+generated plan methods, cross-member composition or Project installation.
 Mutation queries may additionally declare explicit `Returning` projections and
 typed `Results` mappings. Data analysis validates returned columns and result
 scalar types and nullability, including imported tables. The lowerer emits

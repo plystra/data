@@ -162,13 +162,20 @@ func (provider *Database) Exec(ctx context.Context, plan db.Plan) (db.Result, er
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	result := db.Result{Statements: make([]db.StatementResult, 0, len(plan.Statements))}
+	previous := make(map[string]db.StatementResult, len(plan.Statements))
 	for _, statement := range plan.Statements {
+		arguments, err := resolveArguments(statement.Args, previous)
+		if err != nil {
+			return db.Result{}, err
+		}
+		statement.Args = arguments
 		if statement.ReturnsRows {
 			statementResult, err := queryStatement(ctx, tx, statement)
 			if err != nil {
 				return db.Result{}, normalizeError(err, false)
 			}
 			result.Statements = append(result.Statements, statementResult)
+			previous[statement.ID] = statementResult
 			continue
 		}
 		tag, err := tx.Exec(ctx, statement.SQL, driverArguments(statement.Args)...)
@@ -217,7 +224,35 @@ func queryStatement(ctx context.Context, tx pgx.Tx, statement db.Statement) (db.
 	if err := validateResultColumns(statement.ResultColumns, values); err != nil {
 		return db.StatementResult{}, err
 	}
-	return db.StatementResult{Rows: values}, nil
+	result := db.StatementResult{Rows: values}
+	if statement.Affected.Set {
+		result.AffectedRows = uint64(rows.CommandTag().RowsAffected())
+		if !statement.Affected.Accepts(result.AffectedRows) {
+			return db.StatementResult{}, fmt.Errorf("%w: affected rows", db.ErrBackend)
+		}
+	}
+	return result, nil
+}
+
+func resolveArguments(arguments []db.Argument, previous map[string]db.StatementResult) ([]db.Argument, error) {
+	resolved := make([]db.Argument, len(arguments))
+	for index, argument := range arguments {
+		if argument.FromResult == nil {
+			resolved[index] = argument
+			continue
+		}
+		reference := argument.FromResult
+		result, exists := previous[reference.Statement]
+		if !exists || len(result.Rows) != 1 || uint64(reference.Column) >= uint64(len(result.Rows[0])) {
+			return nil, fmt.Errorf("%w: unavailable statement result", db.ErrBackend)
+		}
+		value := result.Rows[0][reference.Column]
+		if value.Kind != argument.Kind || value.FromResult != nil {
+			return nil, fmt.Errorf("%w: statement result type", db.ErrBackend)
+		}
+		resolved[index] = value
+	}
+	return resolved, nil
 }
 
 func validateResultColumns(columns []db.ResultColumn, rows [][]db.Value) error {
