@@ -191,6 +191,11 @@ or backend payloads. A commit acknowledgement failure remains
 `ErrResultUnknown`; it is never silently converted into a confirmed rollback
 or retried by the provider.
 
+`database.Plan.Validate` accepts only the closed query cardinalities and
+argument kinds (including explicit `ValueNull`). PostgreSQL validates these
+inputs before acquiring a connection or beginning a transaction; unknown or
+empty argument kinds cannot silently become SQL NULL.
+
 The `protocol` package and `cmd/plystra-data-compiler` provide the bounded
 `plystra.data-analyze/v1` phase. Requests carry an exact compiler identity,
 including the selected Go Module `h1:` checksum and raw distribution-manifest

@@ -146,8 +146,18 @@ func validateStatement(index int, statement Statement, seen map[string]struct{})
 	if statement.SQL == "" || len(statement.SQL) > MaximumStatementBytes || strings.IndexByte(statement.SQL, 0) >= 0 {
 		return fmt.Errorf("%w: statement %s SQL", ErrInvalidPlan, statement.ID)
 	}
+	for _, argument := range statement.Args {
+		if argument.Kind != ValueNull && !validValueKind(argument.Kind) {
+			return fmt.Errorf("%w: statement %s argument kind", ErrInvalidPlan, statement.ID)
+		}
+	}
 	if statement.ReturnsRows {
-		if cardinalityNone(statement.Cardinality) || statement.Affected != (AffectedRows{}) {
+		switch statement.Cardinality {
+		case CardinalityExactlyOne, CardinalityZeroOrOne, CardinalityMany:
+		default:
+			return fmt.Errorf("%w: statement %s query cardinality", ErrInvalidPlan, statement.ID)
+		}
+		if statement.Affected != (AffectedRows{}) {
 			return fmt.Errorf("%w: statement %s query assertion", ErrInvalidPlan, statement.ID)
 		}
 		for _, column := range statement.ResultColumns {
