@@ -189,6 +189,12 @@ count must pass before commit. Any downstream statement, decode, assertion or
 cancellation failure rolls back all prior effects and publishes no result.
 This runtime capability does not add authored plan parameter/binding syntax,
 generated plan methods, cross-member composition or Project installation.
+Named request values can be bound with `database.InputArgument(kind, inputID)`
+and `Plan.Inputs`. Every supplied input must be a closed, non-null scalar of the
+expected kind and be referenced; missing, unused, nested, mixed-source or excess
+inputs fail before pool acquisition. Inputs remain driver parameters and may
+be reused across statements. A parameterized template with no bound inputs is
+not executable. Compiled templates must never contain actual request secrets.
 Mutation queries may additionally declare explicit `Returning` projections and
 typed `Results` mappings. Data analysis validates returned columns and result
 scalar types and nullability, including imported tables. The lowerer emits
