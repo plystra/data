@@ -314,8 +314,8 @@ Project module graph with
 rechecks compiler selection and source inputs before returning. It does not
 compile authored packages or install Project artifacts. Authored access
 Resource members can now be analyzed. The separate emit phase stages supported
-query and atomic plan providers; Project orchestration and transactional
-installation remain incomplete.
+query and atomic plan providers. `project.PlanCurrentProject` orchestrates read-only
+analysis and emission; transactional installation remains incomplete.
 
 The compiler command writes no generated files and emits no non-protocol
 stdout. The distribution contract is recorded in
@@ -324,7 +324,7 @@ stdout. The distribution contract is recorded in
 The command also implements `plystra.data-emit/v1` for the currently supported
 PostgreSQL schema, query, and migration SQL and bounded typed query/plan access
 providers. An emit request carries the accepted
-analyze-result digest, the frozen application-model digest, and explicit active
+analyze-result digest, the frozen Data generation-input digest, and explicit active
 member assignments to selected `data.database/v1` Resource instances and
 `postgres/v1` backends. Optional `migration_history` entries bind retained
 artifacts and observed history to one selected Resource. Their artifact
@@ -402,8 +402,8 @@ public types to an ordinary public package; similarly spelled public segments
 such as `internalized` remain supported.
 
 Emit still does not install staged files in an application. Data-specific
-Project generation orchestration, transactional installation, and drift checks
-belong outside the generic Core CLI and remain separate unfinished work. This
+Project installation and drift checks belong outside the generic Core CLI and
+remain separate unfinished work. Read-only planning is described below. This
 bounded provider subset does not complete AuthN/AuthZ persistence or their
 cross-member atomic integration plans.
 
@@ -428,8 +428,8 @@ changing Project files and lists assignments in member-ID order. Use
 unknown fields, invalid names, duplicate access names, and access names that
 collide with an assigned database Resource are rejected. Assignment inspection
 does not analyze declarations, select a compiler, activate members, generate
-providers, or install artifacts; those Data-owned Project workflows remain
-incomplete.
+providers, or install artifacts; use the separate Data-owned analysis and
+planning commands for validated in-memory output. Installation remains incomplete.
 
 `plystra-data inspect sources --project DIR` reads the selected Go module graph
 and reports Go-selected authored files in packages with active `//plystra:data`
@@ -509,6 +509,35 @@ environment, with `--offline` restricting both processes to cached inputs.
 name-sorted database selections. It is read-only and does not validate full
 access method shapes, generate access, or install output. Install a compatible
 Core CLI as `plystra` on `PATH` before using this command.
+
+`plystra-data plan --project DIR [--format text|json] [--offline]` produces a
+validated in-memory Data artifact plan, including when `dataaccess/` is absent.
+It reads the same default Core configured-Resource facts, exact Project-selected
+compiler, authored declarations, and `plystra.data.yaml` assignments. It builds
+the verified compiler once and invokes its analyze and emit phases; it never
+uses a compiler from `PATH`, compiles authored packages, runs application tests,
+or executes authored initialization. `--offline` requires cached module and
+toolchain inputs for both Data and Core inspection. A compatible `plystra` must
+be on `PATH`.
+
+`project.PrepareEmitRequest` validates accepted analysis, active-member closure,
+and PostgreSQL database selections before building the emit request. The frozen
+generation-input digest binds the Project module, source/type snapshot, analyze
+result, exact compiler, Go build context, active access-instance assignments,
+and configured Resource provenance. Unassigned declarations remain dormant.
+`project.PlanCurrentProject` validates the complete compiler response and
+rechecks compiler, source/type, module, workspace, and assignment inputs. The
+command also rechecks Core configured-Resource facts before returning output;
+changed inputs or rejected analysis/emission return no artifact plan.
+
+JSON output has schema `plystra.data-emit-plan/v1` with the validated `request`
+and `response`, including artifact bytes and provenance; text lists artifact
+paths and digests. Planning changes no Project files, selects or binds no Core
+Resource, and installs nothing. It does not inspect a database, observe target
+migration history, supply retained historical artifacts, or approve/apply a
+migration. It is a generation artifact plan, separate from migration planning;
+retained-history orchestration, transactional installation, and drift checks
+remain incomplete.
 
 ## Module
 
