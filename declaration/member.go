@@ -346,7 +346,17 @@ type Migration struct {
 	ID           string               `json:"id"`
 	Version      uint64               `json:"version"`
 	Predecessors []Ref                `json:"predecessors,omitempty"`
+	Snapshot     []MigrationSchema    `json:"snapshot"`
 	Operations   []MigrationOperation `json:"operations"`
+}
+
+// MigrationSchema freezes the namespace and table definitions used by one
+// migration. An empty Member identifies the owning member; other members must
+// be explicit imports. It never resolves through the current schema inventory.
+type MigrationSchema struct {
+	Member    string  `json:"member,omitempty"`
+	Namespace string  `json:"namespace"`
+	Tables    []Table `json:"tables"`
 }
 
 type MigrationOperationKind string
@@ -400,6 +410,13 @@ func (m Member[Access]) Normalize() (Model, error) {
 		sort.Strings(model.Queries[i].Conflict.UpdateColumns)
 	}
 	for i := range model.Migrations {
+		for j := range model.Migrations[i].Snapshot {
+			snapshot := &model.Migrations[i].Snapshot[j]
+			normalizeTables(snapshot.Tables)
+		}
+		sort.Slice(model.Migrations[i].Snapshot, func(a, b int) bool {
+			return model.Migrations[i].Snapshot[a].Member < model.Migrations[i].Snapshot[b].Member
+		})
 		sort.Slice(model.Migrations[i].Predecessors, func(a, b int) bool {
 			return refKey(model.Migrations[i].Predecessors[a]) < refKey(model.Migrations[i].Predecessors[b])
 		})
@@ -498,6 +515,11 @@ func cloneMigrations(migrations []Migration) []Migration {
 	for i, migration := range migrations {
 		result[i] = migration
 		result[i].Predecessors = append([]Ref(nil), migration.Predecessors...)
+		result[i].Snapshot = make([]MigrationSchema, len(migration.Snapshot))
+		for j, snapshot := range migration.Snapshot {
+			result[i].Snapshot[j] = snapshot
+			result[i].Snapshot[j].Tables = cloneTables(snapshot.Tables)
+		}
 		result[i].Operations = make([]MigrationOperation, len(migration.Operations))
 		for operation, value := range migration.Operations {
 			result[i].Operations[operation] = value
@@ -583,18 +605,8 @@ func validateModel(model *Model) error {
 				}
 			}
 		}
-		for _, operation := range migration.Operations {
-			if operation.Kind != MigrationCreateTable && operation.Kind != MigrationAddColumn && operation.Kind != MigrationCreateIndex {
-				return fmt.Errorf("%w: migration operation %q", ErrUnsupported, operation.Kind)
-			}
-			if err := validateRef(operation.Table, imports); err != nil {
-				return err
-			}
-			if operation.Table.Member == "" {
-				if _, exists := tables[operation.Table.Symbol]; !exists {
-					return fmt.Errorf("%w: migration table %q", ErrReference, operation.Table.Symbol)
-				}
-			}
+		if err := validateMigrationSnapshot(migration, imports); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -1412,6 +1424,12 @@ func nodeCount(model Model) int {
 	}
 	for _, migration := range model.Migrations {
 		count += len(migration.Predecessors) + len(migration.Operations)
+		for _, snapshot := range migration.Snapshot {
+			count += 1 + len(snapshot.Tables)
+			for _, table := range snapshot.Tables {
+				count += len(table.Columns) + len(table.Constraints) + len(table.Indexes)
+			}
+		}
 	}
 	return count
 }

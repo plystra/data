@@ -424,6 +424,7 @@ import "github.com/plystra/data/declaration"
 	Migrations: []declaration.Migration{{
 		ID: "initial",
 		Version: 1,
+		Snapshot: []declaration.MigrationSchema{{Namespace: "accounts", Tables: []declaration.Table{{ID: "a-users", Columns: []declaration.Column{{ID: "id", Type: "uuid"}}}}}},
 		Operations: []declaration.MigrationOperation{{Kind: "create-table", Table: declaration.Ref{Symbol: "a-users"}}},
 	}},
 }`))
@@ -451,6 +452,27 @@ import "github.com/plystra/data/declaration"
 	}
 	if len(model.Migrations) != 1 || model.Migrations[0].Version != 1 || model.Migrations[0].Operations[0].Table.Symbol != "a-users" {
 		t.Fatalf("decoded migration = %#v", model.Migrations)
+	}
+}
+
+func TestAnalyzeMigrationSnapshotIsIndependentOfCurrentTables(t *testing.T) {
+	result, err := analyzer.Analyze(sourceSnapshot(`package model
+import "github.com/plystra/data/declaration"
+//plystra:data accounts.user/v1
+var Accounts = declaration.Member[declaration.NoAccess]{
+	Namespace: "today",
+	Migrations: []declaration.Migration{{
+		ID: "initial", Version: 1,
+		Snapshot: []declaration.MigrationSchema{{Namespace: "historical", Tables: []declaration.Table{{ID: "old", Columns: []declaration.Column{{ID: "id", Type: "int64"}}}}}},
+		Operations: []declaration.MigrationOperation{{Kind: "create-table", Table: declaration.Ref{Symbol: "old"}}},
+	}},
+}`))
+	if err != nil || !result.Valid || len(result.Roots) != 1 {
+		t.Fatalf("historical analysis = %#v, %v", result, err)
+	}
+	model := result.Roots[0].Model
+	if len(model.Tables) != 0 || model.Migrations[0].Snapshot[0].Namespace != "historical" || model.Migrations[0].Snapshot[0].Tables[0].ID != "old" {
+		t.Fatalf("snapshot decoded through current schema: %#v", model)
 	}
 }
 
@@ -1438,7 +1460,8 @@ type PlanStatement struct { ID string; Query Ref; Cardinality Cardinality; Affec
 type PlanOutput struct { Statement string; Result string; GoField string }
 type Cardinality string
 type AffectedRows struct { Set bool; Min uint64; Max uint64; Unbounded bool }
-type Migration struct { ID string; Version uint64; Predecessors []Ref; Operations []MigrationOperation }
+type Migration struct { ID string; Version uint64; Predecessors []Ref; Snapshot []MigrationSchema; Operations []MigrationOperation }
+type MigrationSchema struct { Member string; Namespace string; Tables []Table }
 type MigrationOperationKind string
 type MigrationOperation struct { Kind MigrationOperationKind; Table Ref; Column Column; Index Index }
 `)}}},

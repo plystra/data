@@ -90,7 +90,7 @@ func Build(request Request) (Plan, error) {
 	definitions := make(map[Identity]Definition, len(request.Definitions))
 	versions := make(map[string]map[uint64]Identity)
 	for _, definition := range request.Definitions {
-		if err := validateDefinition(definition, request.Backend, request.Compiler); err != nil {
+		if err := validateDefinition(definition, request.Backend); err != nil {
 			return Plan{}, err
 		}
 		if _, exists := definitions[definition.Identity]; exists {
@@ -122,7 +122,7 @@ func Build(request Request) (Plan, error) {
 		return Plan{}, err
 	}
 
-	applied, appliedSet, err := validateHistory(request.History, definitions, request.Backend, request.Compiler)
+	applied, appliedSet, err := validateHistory(request.History, definitions, request.Backend)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -142,12 +142,12 @@ func Build(request Request) (Plan, error) {
 	return plan, nil
 }
 
-func validateDefinition(definition Definition, backend, compiler string) error {
-	if !definition.Identity.valid() || definition.Version == 0 || definition.LogicalDigest == "" || definition.ArtifactDigest == "" || definition.Compiler == "" || definition.Backend == "" {
+func validateDefinition(definition Definition, backend string) error {
+	if !definition.Identity.valid() || definition.Version == 0 || definition.LogicalDigest == "" || definition.ArtifactDigest == "" || strings.TrimSpace(definition.Compiler) == "" || definition.Backend == "" {
 		return fmt.Errorf("%w: %s", ErrInvalidDefinition, definition.Identity)
 	}
-	if definition.Backend != backend || definition.Compiler != compiler {
-		return fmt.Errorf("%w: %s compiler or backend identity", ErrHistoryDrift, definition.Identity)
+	if definition.Backend != backend {
+		return fmt.Errorf("%w: %s backend identity", ErrHistoryDrift, definition.Identity)
 	}
 	seen := make(map[Identity]struct{}, len(definition.Predecessors))
 	for _, predecessor := range definition.Predecessors {
@@ -162,12 +162,12 @@ func validateDefinition(definition Definition, backend, compiler string) error {
 	return nil
 }
 
-func validateHistory(history []HistoryEntry, definitions map[Identity]Definition, backend, compiler string) ([]HistoryEntry, map[Identity]struct{}, error) {
+func validateHistory(history []HistoryEntry, definitions map[Identity]Definition, backend string) ([]HistoryEntry, map[Identity]struct{}, error) {
 	clone := cloneHistory(history)
 	applied := make(map[Identity]struct{}, len(history))
 	for index, entry := range clone {
 		definition, exists := definitions[entry.Identity]
-		if !exists || entry.Version != definition.Version || entry.LogicalDigest != definition.LogicalDigest || entry.ArtifactDigest != definition.ArtifactDigest || entry.Compiler != compiler || entry.Backend != backend {
+		if !exists || entry.Version != definition.Version || entry.LogicalDigest != definition.LogicalDigest || entry.ArtifactDigest != definition.ArtifactDigest || entry.Compiler != definition.Compiler || entry.Backend != backend {
 			return nil, nil, fmt.Errorf("%w: history entry %d", ErrHistoryDrift, index)
 		}
 		if _, duplicate := applied[entry.Identity]; duplicate {

@@ -9,11 +9,13 @@ import (
 	"errors"
 	neturl "net/url"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/plystra/data/database"
+	"github.com/plystra/data/declaration"
 	"github.com/plystra/data/migration"
 	"github.com/plystra/data/postgres"
 	"github.com/plystra/data/postgres/compiler"
@@ -107,6 +109,91 @@ func TestPostgresMigrationArtifactFailureRollsBackAndReplans(t *testing.T) {
 	final, err := provider.MigrationPlan(ctx, "compiler/v1", artifacts)
 	if err != nil || len(final.Applied) != 2 || len(final.Pending) != 0 {
 		t.Fatalf("final = %#v, %v", final, err)
+	}
+}
+
+func TestPostgresMigrationSnapshotUpgradeRetainsAppliedArtifacts(t *testing.T) {
+	ctx, provider, conn := migrationDatabase(t)
+	table := declaration.Table{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}},
+		Constraints: []declaration.Constraint{{ID: "pk-accounts", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}},
+		Indexes:     []declaration.Index{{ID: "by-id", Columns: []string{"id"}}},
+	}
+	member := compiler.SchemaMember{MemberID: "accounts.data/v1", Resource: "database.primary", Model: declaration.Model{
+		Namespace: "accounts", Tables: []declaration.Table{table},
+		Migrations: []declaration.Migration{{ID: "create", Version: 1,
+			Snapshot:   []declaration.MigrationSchema{{Namespace: "accounts", Tables: []declaration.Table{table}}},
+			Operations: []declaration.MigrationOperation{{Kind: declaration.MigrationCreateTable, Table: declaration.Ref{Symbol: "accounts"}}},
+		}},
+	}}
+	initial, err := compiler.CompileMigrations([]compiler.SchemaMember{member}, "compiler/old", compiler.MigrationHistory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial[0].SQL += "-- immutable old compiler artifact\n"
+	initial[0].Definition.ArtifactDigest = compiler.DigestSQL(initial[0].SQL)
+	plan, err := provider.MigrationPlan(ctx, "compiler/old", initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.ApplyMigrations(ctx, "compiler/old", plan.PlanDigest, initial); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `INSERT INTO accounts.accounts (id) VALUES (42)`); err != nil {
+		t.Fatal(err)
+	}
+	assertRelations(t, ctx, conn, true, "accounts.accounts", `accounts."by-id"`)
+	observed, err := provider.MigrationPlan(ctx, "compiler/old", initial)
+	if err != nil || len(observed.Applied) != 1 {
+		t.Fatalf("observed history = %#v, %v", observed, err)
+	}
+	email := declaration.Column{ID: "email", Type: declaration.TypeString, Nullable: true}
+	member.Model.Tables[0].Columns = append(member.Model.Tables[0].Columns, email)
+	member.Model.Migrations = append(member.Model.Migrations, declaration.Migration{ID: "email", Version: 2,
+		Predecessors: []declaration.Ref{{Symbol: "create"}},
+		Snapshot:     []declaration.MigrationSchema{{Namespace: "accounts", Tables: []declaration.Table{table}}},
+		Operations:   []declaration.MigrationOperation{{Kind: declaration.MigrationAddColumn, Table: declaration.Ref{Symbol: "accounts"}, Column: email}},
+	})
+	history := compiler.MigrationHistory{Artifacts: initial, Applied: observed.Applied}
+	upgraded, err := compiler.CompileMigrations([]compiler.SchemaMember{member}, "compiler/new", history)
+	if err != nil || !reflect.DeepEqual(upgraded[0], initial[0]) {
+		t.Fatalf("upgrade artifacts = %#v, %v", upgraded, err)
+	}
+	plan, err = provider.MigrationPlan(ctx, "compiler/new", upgraded)
+	if err != nil || len(plan.Pending) != 1 || plan.Pending[0].Identity.Name != "email" {
+		t.Fatalf("upgrade plan = %#v, %v", plan, err)
+	}
+	// Approval binds the selected compiler even when historical artifacts keep
+	// their old compiler identity.
+	if _, err := provider.ApplyMigrations(ctx, "compiler/other", plan.PlanDigest, upgraded); !errors.Is(err, postgres.ErrPlanChanged) {
+		t.Fatalf("compiler-changed approval = %v", err)
+	}
+	if _, err := provider.ApplyMigrations(ctx, "compiler/new", plan.PlanDigest, upgraded); err != nil {
+		t.Fatal(err)
+	}
+	final, err := provider.MigrationPlan(ctx, "compiler/new", upgraded)
+	if err != nil || len(final.Pending) != 0 || len(final.Applied) != 2 || final.Applied[0] != observed.Applied[0] || final.Applied[1].Compiler != "compiler/new" {
+		t.Fatalf("upgraded history = %#v, %v", final, err)
+	}
+	var id int64
+	var value *string
+	if err := conn.QueryRow(ctx, `SELECT id, email FROM accounts.accounts`).Scan(&id, &value); err != nil || id != 42 || value != nil {
+		t.Fatalf("pre-upgrade row = %d, %v, %v", id, value, err)
+	}
+	// Absence is a blocker even with the same selected compiler. Corrupt or
+	// reconstructed evidence must never authorize writes to this target.
+	if _, err := compiler.CompileMigrations([]compiler.SchemaMember{member}, "compiler/old", compiler.MigrationHistory{Applied: observed.Applied}); !errors.Is(err, migration.ErrHistoryDrift) {
+		t.Fatalf("missing retained evidence = %v", err)
+	}
+	rebuilt, err := compiler.CompileMigrations([]compiler.SchemaMember{member}, "compiler/new", compiler.MigrationHistory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.MigrationPlan(ctx, "compiler/new", rebuilt); !errors.Is(err, migration.ErrHistoryDrift) {
+		t.Fatalf("reconstructed applied evidence = %v", err)
+	}
+	upgraded[0].SQL += "changed"
+	if _, err := provider.ApplyMigrations(ctx, "compiler/new", final.PlanDigest, upgraded); !errors.Is(err, postgres.ErrMigrationArtifact) {
+		t.Fatalf("corrupt applied artifact = %v", err)
 	}
 }
 

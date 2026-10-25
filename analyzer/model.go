@@ -1123,7 +1123,46 @@ func (d modelDecoder) migrations(value ast.Expr) ([]declaration.Migration, error
 				return nil, err
 			}
 		}
+		if field, ok := fields["Snapshot"]; ok {
+			migration.Snapshot, err = d.migrationSchemas(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		result[index] = migration
+	}
+	return result, nil
+}
+
+func (d modelDecoder) migrationSchemas(value ast.Expr) ([]declaration.MigrationSchema, error) {
+	elements, err := d.slice(value)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]declaration.MigrationSchema, len(elements))
+	for index, element := range elements {
+		fields, err := d.fieldsExpr(element)
+		if err != nil {
+			return nil, err
+		}
+		if field, ok := fields["Member"]; ok {
+			result[index].Member, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Namespace"]; ok {
+			result[index].Namespace, err = d.string(field)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if field, ok := fields["Tables"]; ok {
+			result[index].Tables, err = d.tables(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	return result, nil
 }
