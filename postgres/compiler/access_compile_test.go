@@ -90,10 +90,11 @@ func TestCompileAccessProvidersRejectIncompleteResources(t *testing.T) {
 			root.PlanMethods = []analyzer.PlanMethod{{Name: "Snapshot", RequestPackage: root.AccessPackage, RequestType: "Request", ResultPackage: "example.com/accessfixture/internal/contract", ResultType: "Row"}}
 		}},
 		{"changed accepted model", func(member *postgres.SchemaMember, _ *analyzer.Root) { member.Model.Namespace = "changed" }},
-		{"unsupported returning mutation", func(member *postgres.SchemaMember, root *analyzer.Root) {
+		{"returning mutation without field mapping", func(member *postgres.SchemaMember, root *analyzer.Root) {
 			query := &member.Model.Queries[0]
 			query.Operation = declaration.OperationDelete
 			query.Returning, query.Projection = query.Projection, nil
+			query.Results[0].GoField = ""
 			root.Model = member.Model
 		}},
 	} {

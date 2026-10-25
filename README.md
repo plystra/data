@@ -84,8 +84,8 @@ type identities are bound to the analyze result.
 
 `postgres/compiler.CompilePlans` lowers these bindings and assertions into
 typed atomic plan templates. PostgreSQL provider generation supports the
-directly callable SELECTs and callable atomic plans described below. Directly
-callable mutation queries and Project installation remain incomplete.
+directly callable SELECTs, INSERT/UPDATE/DELETE mutations, and callable atomic
+plans described below. Project installation remains incomplete.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
@@ -230,8 +230,7 @@ typed `Results` mappings. Data analysis validates returned columns and result
 scalar types and nullability, including imported tables. The lowerer emits
 deterministic PostgreSQL `RETURNING` clauses and rejects result sources whose
 scalar type or nullability does not match the selected table column. Result
-mappings are compiler metadata; mutation access providers and their codecs
-remain a later integration boundary.
+mappings also drive the typed mutation access providers described below.
 Staged query artifacts and their manifest entries include the declaring query
 operation, group-by, optional HAVING, and projection aggregate descriptors,
 parameters in PostgreSQL positional order, and typed result metadata.
@@ -315,7 +314,7 @@ Project module graph with
 rechecks compiler selection and source inputs before returning. It does not
 compile authored packages or install Project artifacts. Authored access
 Resource members can now be analyzed. The separate emit phase stages supported
-SELECT and atomic plan providers. `project.PlanCurrentProject` orchestrates read-only
+query and atomic plan providers. `project.PlanCurrentProject` orchestrates read-only
 analysis and emission; transactional installation remains incomplete.
 
 The compiler command writes no generated files and emits no non-protocol
@@ -323,8 +322,8 @@ stdout. The distribution contract is recorded in
 `plystra-data-compiler.json`.
 
 The command also implements `plystra.data-emit/v1` for the currently supported
-PostgreSQL schema, query, and migration SQL and bounded typed SELECT and atomic
-plan access providers. An emit request carries the accepted
+PostgreSQL schema, query, and migration SQL and bounded typed query/plan access
+providers. An emit request carries the accepted
 analyze-result digest, the frozen Data generation-input digest, and explicit active
 member assignments to selected `data.database/v1` Resource instances and
 `postgres/v1` backends. Optional `migration_history` entries bind retained
@@ -371,10 +370,15 @@ publishing typed results. Byte parameters and results are copied; zero-length
 `ValueBytes` is non-null bytea, while SQL NULL requires `ValueNull`.
 
 The supported generated methods are parameterized or parameter-free SELECTs
-with `exactly_one`, `zero_or_one`, or `many` cardinality and the five validated
-access scalars (`bool`, `[]byte`, `float64`, `int64`, `string`), including `*T`
-nullable results. Callable plan methods submit every ordered SELECT/mutation
-statement in one `Exec`, binding copied request inputs and earlier results.
+and INSERT/UPDATE/DELETE mutations. Explicit SELECT or `RETURNING` projections
+use `exactly_one`, `zero_or_one`, or `many` cardinality with typed `Row`, `*Row`,
+or `[]Row` returns and the five validated access scalars (`bool`, `[]byte`,
+`float64`, `int64`, `string`), including `*T` nullable fields. Mutations without
+`RETURNING` use `none` cardinality and return the actual `uint64` affected count;
+the generated statement accepts every count including zero and rejects backend
+row output. Direct mutations add no implicit restrictive affected-row assertion.
+Callable plan methods submit every ordered SELECT/mutation statement in one
+`Exec`, binding copied request inputs and earlier results.
 They preserve all cardinality, typed-column and independent affected-row
 assertions, decode named outputs across statements (including nullable and
 byte results), and support named empty result structs for no-output plans.
@@ -382,10 +386,10 @@ Backend failures, including indeterminate commits, propagate without partial
 typed output or retries. Provider-side validation rejects malformed result
 inventories; the PostgreSQL Resource enforces result/assertion contracts before
 commit. Named generated-public-contract tests run normal/race, and disposable
-PostgreSQL tests exercise generated plan commit and later-conflict rollback.
-A Resource containing an unsupported directly callable mutation query
-or incomplete accepted method metadata rejects the whole emit result;
-generation never silently omits a method. Emit validates generated source
+PostgreSQL tests exercise generated mutations, zero/multiple affected counts,
+RETURNING cardinality rollback, and plan commit and later-conflict rollback.
+A Resource containing incomplete accepted method metadata rejects the whole
+emit result; generation never silently omits a method. Emit validates generated source
 against accepted intent even when a changed artifact, manifest, and response
 are rehashed consistently.
 
