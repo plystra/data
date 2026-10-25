@@ -21,6 +21,11 @@ database connection. PostgreSQL also exposes explicit `MigrationPlan` and
 `ApplyMigrations` operations. Apply requires the exact plan digest, takes a
 target-scoped transaction lock, records append-only history, and never retries
 an indeterminate commit implicitly.
+Fresh history is detected through a read-only catalog check, so planning never
+creates schema and applying a fresh plan does not abort its transaction on a
+missing history table. The approved digest is rechecked under the target lock
+before creating history or running artifacts. Artifact and history writes
+commit together; a failed artifact leaves neither partial schema nor history.
 
 The `declaration` package provides the first compiler-facing logical model:
 typed `Member[Access]` roots, tables, columns, constraints, indexes, queries,

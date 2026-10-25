@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/plystra/data/migration"
 	"github.com/plystra/data/postgres/compiler"
 )
@@ -193,12 +192,29 @@ func (provider *Database) readMigrationHistory(ctx context.Context) ([]migration
 	if err != nil {
 		return nil, err
 	}
-	rows, err := pool.Query(ctx, `SELECT member, name, version, logical_digest, artifact_digest, compiler, backend FROM plystra_data_migrations ORDER BY applied_order`)
-	return readMigrationHistoryRows(ctx, rows, err)
+	return readExistingMigrationHistory(ctx, pool)
 }
 
 func readMigrationHistoryTx(ctx context.Context, tx pgx.Tx) ([]migration.HistoryEntry, error) {
-	rows, err := tx.Query(ctx, `SELECT member, name, version, logical_digest, artifact_digest, compiler, backend FROM plystra_data_migrations ORDER BY applied_order`)
+	return readExistingMigrationHistory(ctx, tx)
+}
+
+type historyReader interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func readExistingMigrationHistory(ctx context.Context, reader historyReader) ([]migration.HistoryEntry, error) {
+	// An undefined-table query aborts an open transaction even if its error is
+	// caught. Inspect the catalog without changing schema before approval.
+	var exists bool
+	if err := reader.QueryRow(ctx, `SELECT to_regclass('plystra_data_migrations') IS NOT NULL`).Scan(&exists); err != nil {
+		return nil, normalizeError(err, false)
+	}
+	if !exists {
+		return nil, nil
+	}
+	rows, err := reader.Query(ctx, `SELECT member, name, version, logical_digest, artifact_digest, compiler, backend FROM plystra_data_migrations ORDER BY applied_order`)
 	return readMigrationHistoryRows(ctx, rows, err)
 }
 
@@ -211,10 +227,6 @@ type rowsScanner interface {
 
 func readMigrationHistoryRows(_ context.Context, rows rowsScanner, queryErr error) ([]migration.HistoryEntry, error) {
 	if queryErr != nil {
-		var pgError *pgconn.PgError
-		if errors.As(queryErr, &pgError) && pgError.Code == "42P01" {
-			return nil, nil
-		}
 		return nil, normalizeError(queryErr, false)
 	}
 	defer rows.Close()
