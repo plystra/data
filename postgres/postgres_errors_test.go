@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	db "github.com/plystra/data/database"
+	"github.com/plystra/kernel/invocation"
 )
 
 func TestNormalizeErrorClassifiesBoundedBackendErrors(t *testing.T) {
@@ -19,6 +20,8 @@ func TestNormalizeErrorClassifiesBoundedBackendErrors(t *testing.T) {
 		want   error
 	}{
 		{name: "no rows", err: pgx.ErrNoRows, want: db.ErrNotFound},
+		{name: "Data not found", err: db.ErrNotFound, want: db.ErrNotFound},
+		{name: "confirmed commit rollback", err: pgx.ErrTxCommitRollback, commit: true, want: db.ErrBackend},
 		{name: "unique conflict", err: postgresError("23505"), want: db.ErrConflict},
 		{name: "exclusion conflict", err: postgresError("23P01"), want: db.ErrConflict},
 		{name: "foreign key", err: postgresError("23503"), want: db.ErrForeignKey},
@@ -40,6 +43,12 @@ func TestNormalizeErrorClassifiesBoundedBackendErrors(t *testing.T) {
 				t.Fatalf("normalizeError(%v) = %v, want %v", test.err, got, test.want)
 			}
 			assertNoBackendDetails(t, got)
+			if errors.Is(got, db.ErrResultUnknown) {
+				var marker *invocation.ResultUnknownError
+				if !errors.As(got, &marker) || invocation.NewSemanticError("storage_failed", got).Completion() != invocation.CompletionResultUnknown {
+					t.Fatal("runtime uncertainty lost through semantic translation")
+				}
+			}
 		})
 	}
 }
@@ -98,6 +107,9 @@ func TestNormalizeErrorPreservesContextAndCommitUncertainty(t *testing.T) {
 				t.Fatalf("normalized error leaked driver details: %v", got)
 			}
 			assertNoBackendDetails(t, got)
+			if test.commit && invocation.NewSemanticError("storage_failed", got).Completion() != invocation.CompletionResultUnknown {
+				t.Fatal("commit uncertainty lost through semantic translation")
+			}
 		})
 	}
 }
