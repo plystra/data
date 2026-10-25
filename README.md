@@ -55,15 +55,39 @@ affected-row count, and there is no typed row mapping. The initial validated
 access scalar subset is `bool`, `[]byte`, `float64`, `int64`, and `string`.
 Every parameter of a directly callable query must be used by an assignment,
 predicate, or grouped `HAVING` expression; unused request fields fail analysis.
-The first callable atomic plan method accepts one local, parameter-free,
-`exactly_one` SELECT statement with complete `PlanOutput` mappings to an
-exported result struct. Its signature is
-`Method(context.Context, EmptyRequest) (Result, error)`, where `EmptyRequest`
-is an exported named empty struct. Unsupported signatures and other callable
-plan shapes fail analysis. Accepted query and plan method type identities are
-bound to the analyze result. PostgreSQL provider generation now supports the
-directly callable SELECT subset described below; callable mutation and plan
-providers and Project installation remain incomplete.
+Callable atomic plans accept 1-64 ordered local SELECT, INSERT, UPDATE, or
+DELETE query references. `Plan.Parameters []Parameter` declares typed inputs;
+each callable plan parameter maps to a unique exported request `GoField`.
+Every query parameter must be used by its query and bound exactly once through
+`PlanStatement.Bindings []PlanBinding`. A binding names its target `Parameter`
+and supplies either `FromParameter`, or both `FromStatement` and `FromResult`.
+All plan parameters must be used, and source and target scalar types must
+match exactly. A result binding must name a non-null result from a strictly
+earlier `exactly_one` statement. Missing, duplicate, mixed, forward, self,
+nullable, and type-mismatched bindings fail normalization. Literal values stay
+in query `Value` declarations; imported plan query references are unsupported.
+Normalization sorts plan parameters and bindings while preserving statement
+and output order; the logical digest binds the complete parameter/binding model.
+
+Each SELECT statement requires explicit row cardinality and no affected-row
+assertion; callable SELECTs also require explicit projections and complete
+typed results. Every mutation requires an explicit `Affected` interval with
+`Set: true`. A mutation with `RETURNING` additionally requires row cardinality;
+without `RETURNING`, its cardinality is `none`. Callable plan methods have the
+exact signature `Method(context.Context, Request) (Result, error)`, with
+exported named non-generic structs. Request fields exactly match plan parameter
+`GoField` mappings. `PlanOutput` mappings may select a subset of typed results
+across named `exactly_one` statements into unique result fields; nullable
+outputs use `*T`. Zero outputs require an empty named result struct. Unsupported
+signatures and field mappings fail analysis. Accepted query and plan method
+type identities are bound to the analyze result.
+
+This declaration/analyzer acceptance is broader than the current
+`postgres/compiler.CompilePlans` subset, which still accepts only local,
+parameter-free SELECT statements. Lowering parameterized or mutation plans
+remains incomplete. PostgreSQL provider generation supports the directly
+callable SELECT subset described below; callable mutation and plan providers
+and Project installation remain incomplete.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
@@ -217,7 +241,11 @@ validates discovered Resource or `NoAccess` types, decodes and normalizes the
 complete member model, validates imported member targets, reference kinds, and
 acyclic member imports, and checks explicit `SELECT` result scalar types and
 nullability against local and imported projections, including `LEFT JOIN`
-outputs. It returns bounded structured diagnostics. It does not
+outputs. For callable plans, it decodes parameters and statement bindings,
+validates binding sources and assertions, and matches request fields and
+outputs against the authored method's named structs. Output types are resolved
+by both statement and result identity, so different statements may reuse a
+result name. It returns bounded structured diagnostics. It does not
 read the host filesystem, import the Core CLI, or write generated
 artifacts. The packages are Data-owned and have no dependency on Core CLI
 implementation packages.
