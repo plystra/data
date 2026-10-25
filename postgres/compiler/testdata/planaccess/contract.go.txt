@@ -1,0 +1,30 @@
+package contract
+
+import "context"
+
+//plystra:resource accounts.access/v1
+type Resource interface {
+	Register(context.Context, Request) (Result, error)
+	Clear(context.Context, Empty) (Empty, error)
+}
+
+type Empty struct{}
+
+type Request struct {
+	AccountID int64
+	SessionID int64
+	Email string
+	Digest []byte
+	Active bool
+	Score float64
+}
+
+type Result struct {
+	AccountID int64
+	SessionID int64
+	Email string
+	Digest []byte
+	Active bool
+	Score float64
+	Note *string
+}

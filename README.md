@@ -84,8 +84,8 @@ type identities are bound to the analyze result.
 
 `postgres/compiler.CompilePlans` lowers these bindings and assertions into
 typed atomic plan templates. PostgreSQL provider generation supports the
-directly callable SELECT subset described below; callable mutation and plan
-providers and Project installation remain incomplete.
+directly callable SELECTs and callable atomic plans described below. Directly
+callable mutation queries and Project installation remain incomplete.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
@@ -204,7 +204,8 @@ The artifact digest binds the complete normalized declaration and runtime
 template, including request fields, output mappings, bindings and assertions.
 Compilation validates templates with temporary typed probes but returns no
 invented input values. Callers must bind every request input before execution.
-Generated plan methods and Data-owned artifact installation remain incomplete.
+Generated plan methods bind these templates through authored access contracts.
+Data-owned artifact installation remains incomplete.
 
 The runtime `database.Plan` can bind an argument to a prior result with
 `database.ResultArgument(kind, statementID, zeroBasedColumn)`. Validation
@@ -216,8 +217,8 @@ SERIALIZABLE transaction. A row-producing mutation may also carry its explicit
 affected-row assertion; both returned-row cardinality and the backend command
 count must pass before commit. Any downstream statement, decode, assertion or
 cancellation failure rolls back all prior effects and publishes no result.
-This runtime capability does not supply generated plan methods, cross-member
-composition or Project installation.
+This runtime capability does not supply cross-member composition or Project
+installation.
 Named request values can be bound with `database.InputArgument(kind, inputID)`
 and `Plan.Inputs`. Every supplied input must be a closed, non-null scalar of the
 expected kind and be referenced; missing, unused, nested, mixed-source or excess
@@ -361,7 +362,7 @@ owning member, and byte digest. Every provider includes a compile-time
 assignment to its authored access Resource and an ordinary directive-bound
 `New(database database.Resource) (*Provider, error)` constructor. It borrows
 the existing Resource without acquiring a pool or owning lifecycle hooks.
-Generated methods submit single-statement `database.Plan` values with literal
+Generated query methods submit single-statement `database.Plan` values with literal
 compiled SQL, parameters in normalized PostgreSQL placeholder order, complete
 result-column contracts, and explicit cardinality. They preserve backend
 errors and decode fields by projection source and explicit `GoField`, checking
@@ -372,8 +373,18 @@ publishing typed results. Byte parameters and results are copied; zero-length
 The supported generated methods are parameterized or parameter-free SELECTs
 with `exactly_one`, `zero_or_one`, or `many` cardinality and the five validated
 access scalars (`bool`, `[]byte`, `float64`, `int64`, `string`), including `*T`
-nullable results. A Resource containing an unsupported callable mutation or
-plan, or incomplete accepted method metadata, rejects the whole emit result;
+nullable results. Callable plan methods submit every ordered SELECT/mutation
+statement in one `Exec`, binding copied request inputs and earlier results.
+They preserve all cardinality, typed-column and independent affected-row
+assertions, decode named outputs across statements (including nullable and
+byte results), and support named empty result structs for no-output plans.
+Backend failures, including indeterminate commits, propagate without partial
+typed output or retries. Provider-side validation rejects malformed result
+inventories; the PostgreSQL Resource enforces result/assertion contracts before
+commit. Named generated-public-contract tests run normal/race, and disposable
+PostgreSQL tests exercise generated plan commit and later-conflict rollback.
+A Resource containing an unsupported directly callable mutation query
+or incomplete accepted method metadata rejects the whole emit result;
 generation never silently omits a method. Emit validates generated source
 against accepted intent even when a changed artifact, manifest, and response
 are rehashed consistently.

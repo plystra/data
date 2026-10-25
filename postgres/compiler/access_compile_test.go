@@ -78,7 +78,7 @@ func TestCompileAccessProvidersRejectIncompleteResources(t *testing.T) {
 		{"unsupported plan method", func(_ *postgres.SchemaMember, root *analyzer.Root) {
 			root.PlanMethods = []analyzer.PlanMethod{{Name: "Snapshot"}}
 		}},
-		{"unsupported callable plan", func(member *postgres.SchemaMember, root *analyzer.Root) {
+		{"plan result private package", func(member *postgres.SchemaMember, root *analyzer.Root) {
 			query := &member.Model.Queries[0]
 			query.Parameters, query.Predicate = nil, declaration.Predicate{}
 			plan := declaration.Plan{ID: "snapshot", Method: "Snapshot", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: query.ID}, Cardinality: declaration.CardinalityExactlyOne}}}
@@ -87,7 +87,7 @@ func TestCompileAccessProvidersRejectIncompleteResources(t *testing.T) {
 			}
 			member.Model.Plans = []declaration.Plan{plan}
 			root.Model = member.Model
-			root.PlanMethods = []analyzer.PlanMethod{{Name: "Snapshot", RequestPackage: root.AccessPackage, RequestType: "Request", ResultPackage: root.AccessPackage, ResultType: "Row"}}
+			root.PlanMethods = []analyzer.PlanMethod{{Name: "Snapshot", RequestPackage: root.AccessPackage, RequestType: "Request", ResultPackage: "example.com/accessfixture/internal/contract", ResultType: "Row"}}
 		}},
 		{"changed accepted model", func(member *postgres.SchemaMember, _ *analyzer.Root) { member.Model.Namespace = "changed" }},
 		{"unsupported returning mutation", func(member *postgres.SchemaMember, root *analyzer.Root) {
