@@ -323,8 +323,8 @@ stdout. The distribution contract is recorded in
 `plystra-data-compiler.json`.
 
 The command also implements `plystra.data-emit/v1` for the currently supported
-PostgreSQL schema, query, and migration SQL and bounded typed SELECT access
-providers. An emit request carries the accepted
+PostgreSQL schema, query, and migration SQL and bounded typed SELECT and atomic
+plan access providers. An emit request carries the accepted
 analyze-result digest, the frozen Data generation-input digest, and explicit active
 member assignments to selected `data.database/v1` Resource instances and
 `postgres/v1` backends. Optional `migration_history` entries bind retained
