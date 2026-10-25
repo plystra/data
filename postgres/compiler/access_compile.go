@@ -26,7 +26,7 @@ type AccessArtifact struct {
 }
 
 // CompileAccessProviders consumes accepted analyzer type identities alongside
-// the assigned models. This first subset supports callable SELECT queries;
+// the assigned models. It supports callable SELECT queries and atomic plans;
 // any unsupported callable method rejects the entire output.
 func CompileAccessProviders(members []SchemaMember, roots []analyzer.Root) ([]AccessArtifact, error) {
 	normalized, _, err := normalizeQueryMembers(members)
@@ -40,6 +40,14 @@ func CompileAccessProviders(members []SchemaMember, roots []analyzer.Root) ([]Ac
 	byPath := make(map[string]QueryArtifact, len(queries))
 	for _, query := range queries {
 		byPath[query.Path] = query
+	}
+	plans, err := CompilePlans(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrAccessCompilation, err)
+	}
+	byPlan := make(map[string]PlanArtifact, len(plans))
+	for _, plan := range plans {
+		byPlan[plan.Path] = plan
 	}
 	byRoot := make(map[string]analyzer.Root, len(roots))
 	for _, root := range roots {
@@ -68,7 +76,7 @@ func CompileAccessProviders(members []SchemaMember, roots []analyzer.Root) ([]Ac
 		if root.MigrationOnly {
 			continue
 		}
-		source, err := compileAccessProvider(member, root, byPath)
+		source, err := compileAccessProvider(member, root, byPath, byPlan)
 		if err != nil {
 			return nil, fmt.Errorf("%w: member %s: %v", ErrAccessCompilation, member.MemberID, err)
 		}
@@ -85,18 +93,19 @@ func validateAccessRoot(root analyzer.Root) error {
 			queries[query.Method] = query
 		}
 	}
+	plans := make(map[string]declaration.Plan)
 	for _, plan := range root.Model.Plans {
 		if plan.Method != "" {
-			return fmt.Errorf("callable plans are unsupported")
+			plans[plan.Method] = plan
 		}
 	}
 	if root.MigrationOnly {
-		if len(queries) != 0 || len(root.QueryMethods) != 0 || len(root.PlanMethods) != 0 || root.AccessID != "" || root.AccessType != "NoAccess" || root.AccessPackage != "github.com/plystra/data/declaration" {
+		if len(queries)+len(plans) != 0 || len(root.QueryMethods) != 0 || len(root.PlanMethods) != 0 || root.AccessID != "" || root.AccessType != "NoAccess" || root.AccessPackage != "github.com/plystra/data/declaration" {
 			return fmt.Errorf("NoAccess member carries an access contract")
 		}
 		return nil
 	}
-	if !declaration.ValidMemberID(root.AccessID) || !validAccessName(root.AccessType) || !validAccessPackage(root.AccessPackage) || len(queries) == 0 || len(root.QueryMethods) != len(queries) || len(root.PlanMethods) != 0 {
+	if !declaration.ValidMemberID(root.AccessID) || !validAccessName(root.AccessType) || !validAccessPackage(root.AccessPackage) || len(queries)+len(plans) == 0 || len(root.QueryMethods) != len(queries) || len(root.PlanMethods) != len(plans) {
 		return fmt.Errorf("incomplete access contract")
 	}
 	if !portableAccessPackage(root.AccessPackage) {
@@ -133,6 +142,22 @@ func validateAccessRoot(root analyzer.Root) error {
 			}
 		}
 	}
+	for _, method := range root.PlanMethods {
+		plan, ok := plans[method.Name]
+		if !ok || seen[method.Name] || !validAccessName(method.Name) ||
+			!validAccessName(method.RequestType) || !validAccessPackage(method.RequestPackage) || !validAccessName(method.ResultType) || !validAccessPackage(method.ResultPackage) {
+			return fmt.Errorf("invalid plan method inventory")
+		}
+		if !portableAccessPackage(method.RequestPackage) || !portableAccessPackage(method.ResultPackage) {
+			return fmt.Errorf("method %s requires public request and result packages without internal or vendor segments", method.Name)
+		}
+		seen[method.Name] = true
+		for _, parameter := range plan.Parameters {
+			if _, ok := databaseValueKind(parameter.Type); !ok || !validAccessName(parameter.GoField) {
+				return fmt.Errorf("unsupported plan parameter codec")
+			}
+		}
+	}
 	return nil
 }
 
@@ -161,11 +186,15 @@ func portableAccessPackage(name string) bool {
 	return true
 }
 
-func compileAccessProvider(member SchemaMember, root analyzer.Root, byPath map[string]QueryArtifact) (string, error) {
+func compileAccessProvider(member SchemaMember, root analyzer.Root, byPath map[string]QueryArtifact, byPlan map[string]PlanArtifact) (string, error) {
 	packages := map[string]string{root.AccessPackage: ""}
 	for _, method := range root.QueryMethods {
 		packages[method.RequestPackage] = ""
 		packages[method.RowPackage] = ""
+	}
+	for _, method := range root.PlanMethods {
+		packages[method.RequestPackage] = ""
+		packages[method.ResultPackage] = ""
 	}
 	paths := make([]string, 0, len(packages))
 	for path := range packages {
@@ -202,6 +231,24 @@ func compileAccessProvider(member SchemaMember, root analyzer.Root, byPath map[s
 			return "", fmt.Errorf("missing compiled query")
 		}
 		emitAccessMethod(&source, method, query, artifact.SQL, packages)
+	}
+	planMethods := append([]analyzer.PlanMethod(nil), root.PlanMethods...)
+	sort.Slice(planMethods, func(i, j int) bool { return planMethods[i].Name < planMethods[j].Name })
+	for _, method := range planMethods {
+		var selected declaration.Plan
+		for _, plan := range member.Model.Plans {
+			if plan.Method == method.Name {
+				selected = plan
+				break
+			}
+		}
+		artifact, ok := byPlan["plans/"+member.MemberID+"/"+selected.ID+".json"]
+		if !ok {
+			return "", fmt.Errorf("missing compiled plan")
+		}
+		if err := emitPlanMethod(&source, method, artifact, member.Model.Queries, packages); err != nil {
+			return "", err
+		}
 	}
 	formatted, err := format.Source([]byte(source.String()))
 	if err != nil {

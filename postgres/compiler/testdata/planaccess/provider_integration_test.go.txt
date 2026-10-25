@@ -1,0 +1,84 @@
+//go:build integration
+
+package access_test
+
+import (
+	"context"
+	"crypto/rand"
+	_ "embed"
+	"encoding/hex"
+	"errors"
+	"net/url"
+	"os"
+	"testing"
+	"time"
+
+	"example.com/planfixture/contract"
+	access "example.com/planfixture/providers/accounts.user/v1"
+	"github.com/jackc/pgx/v5"
+	"github.com/plystra/data/database"
+	"github.com/plystra/data/postgres"
+	"github.com/plystra/kernel/configuration"
+)
+
+//go:embed schema.sql
+var schema string
+
+func TestGeneratedPlanProviderPostgres(t *testing.T) {
+	if os.Getenv("PLYSTRA_RUN_POSTGRES_INTEGRATION") != "1" { t.Skip("requires disposable PostgreSQL") }
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseURL := os.Getenv("PLYSTRA_TEST_DATABASE_URL")
+	if baseURL == "" { t.Fatal("PLYSTRA_TEST_DATABASE_URL required") }
+	admin, err := pgx.Connect(ctx, baseURL)
+	if err != nil { t.Fatal(err) }
+	defer admin.Close(context.Background())
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil { t.Fatal(err) }
+	name := "plystra_plan_"+hex.EncodeToString(random[:])
+	identifier := pgx.Identifier{name}.Sanitize()
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+identifier); err != nil { t.Fatal(err) }
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := admin.Exec(cleanup, "DROP DATABASE "+identifier); err != nil { t.Errorf("test database cleanup: %v", err) }
+	}()
+	target, err := url.Parse(baseURL)
+	if err != nil { t.Fatal("invalid test database URL") }
+	target.Path = "/"+name
+	query := target.Query(); query.Del("dbname"); target.RawQuery = query.Encode()
+	t.Setenv("PLYSTRA_PLAN_DATABASE_URL", target.String())
+	resolver, err := configuration.NewResolver(configuration.ResolverOptions{MaximumValueBytes: 4096})
+	if err != nil { t.Fatal(err) }
+	reference, err := configuration.NewEnvironmentReference("PLYSTRA_PLAN_DATABASE_URL")
+	if err != nil { t.Fatal(err) }
+	secret, err := resolver.Resolve(ctx, reference)
+	if err != nil { t.Fatal(err) }
+	backend, err := postgres.New(postgres.Config{URL: secret, MaxConnections: 2, HealthTimeout: 5*time.Second})
+	if err != nil { t.Fatal(err) }
+	if err := backend.Start(ctx); err != nil { t.Fatal(err) }
+	defer backend.Stop(context.Background())
+	if _, err := backend.Exec(ctx, database.Plan{Statements: []database.Statement{{ID: "schema", SQL: schema, Affected: database.AtLeastAffectedRows(0)}}}); err != nil { t.Fatal(err) }
+	provider, err := access.New(backend)
+	if err != nil { t.Fatal(err) }
+	var resource contract.Resource = provider
+	request := contract.Request{AccountID: 11, SessionID: 12, Email: "' OR true; --", Digest: []byte{}, Active: true, Score: 1.5}
+	output, err := resource.Register(ctx, request)
+	if err != nil || output.AccountID != 11 || output.SessionID != 12 || output.Email != request.Email || !output.Active || output.Score != 1.5 || output.Note != nil || output.Digest == nil || len(output.Digest) != 0 {
+		t.Fatalf("generated plan did not commit typed values: %#v, %v", output, err)
+	}
+	// The second insert conflicts after the new account insert. Both must roll back.
+	request.AccountID = 21
+	if output, err := resource.Register(ctx, request); !errors.Is(err, database.ErrConflict) || output.AccountID != 0 {
+		t.Fatal("later conflict did not reject generated plan", err)
+	}
+	conn, err := pgx.Connect(ctx, target.String())
+	if err != nil { t.Fatal(err) }
+	defer conn.Close(context.Background())
+	var count int
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM accounts.accounts`).Scan(&count); err != nil || count != 1 {
+		t.Fatal("generated plan left a partial account", err)
+	}
+	if _, err := resource.Clear(ctx, contract.Empty{}); err != nil { t.Fatal(err) }
+	if err := conn.QueryRow(ctx, `SELECT count(*) FROM accounts.accounts`).Scan(&count); err != nil || count != 0 { t.Fatal("empty-result plan did not clear records", err) }
+}
