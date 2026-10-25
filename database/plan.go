@@ -52,6 +52,16 @@ type Argument struct {
 	Float64 float64
 	Bool    bool
 	Bytes   []byte
+	// FromResult replaces the literal payload with one earlier typed result.
+	// A reference argument carries its expected Kind and no literal payload.
+	FromResult *ResultReference `json:"from_result,omitempty"`
+}
+
+// ResultReference selects a non-null column from an earlier exactly-one
+// row-producing statement in the same plan. Column is zero-based.
+type ResultReference struct {
+	Statement string
+	Column    uint32
 }
 
 func StringArgument(value string) Argument   { return Argument{Kind: ValueString, String: value} }
@@ -62,6 +72,12 @@ func BytesArgument(value []byte) Argument {
 	return Argument{Kind: ValueBytes, Bytes: append([]byte{}, value...)}
 }
 func NullArgument() Argument { return Argument{Kind: ValueNull} }
+
+// ResultArgument binds an argument to an earlier statement result. Plan.Validate
+// checks its order, cardinality, column, type and complete closed shape.
+func ResultArgument(kind ValueKind, statement string, column uint32) Argument {
+	return Argument{Kind: kind, FromResult: &ResultReference{Statement: statement, Column: column}}
+}
 
 // Value is one typed scalar returned by a generated query.
 type Value = Argument
@@ -127,10 +143,19 @@ func (p Plan) Validate() error {
 		return fmt.Errorf("%w: statement count", ErrInvalidPlan)
 	}
 	seen := make(map[string]struct{}, len(p.Statements))
+	previous := make(map[string]Statement, len(p.Statements))
 	for index, statement := range p.Statements {
 		if err := validateStatement(index, statement, seen); err != nil {
 			return err
 		}
+		for _, argument := range statement.Args {
+			if argument.FromResult != nil {
+				if err := validateResultReference(argument, previous); err != nil {
+					return err
+				}
+			}
+		}
+		previous[statement.ID] = statement
 	}
 	return nil
 }
@@ -157,7 +182,7 @@ func validateStatement(index int, statement Statement, seen map[string]struct{})
 		default:
 			return fmt.Errorf("%w: statement %s query cardinality", ErrInvalidPlan, statement.ID)
 		}
-		if statement.Affected != (AffectedRows{}) {
+		if statement.Affected != (AffectedRows{}) && !statement.Affected.valid() {
 			return fmt.Errorf("%w: statement %s query assertion", ErrInvalidPlan, statement.ID)
 		}
 		for _, column := range statement.ResultColumns {
@@ -169,6 +194,22 @@ func validateStatement(index int, statement Statement, seen map[string]struct{})
 	}
 	if !cardinalityNone(statement.Cardinality) || !statement.Affected.valid() || len(statement.ResultColumns) != 0 {
 		return fmt.Errorf("%w: statement %s mutation assertion", ErrInvalidPlan, statement.ID)
+	}
+	return nil
+}
+
+func validateResultReference(argument Argument, previous map[string]Statement) error {
+	if !validValueKind(argument.Kind) || argument.String != "" || argument.Int64 != 0 || argument.Float64 != 0 || argument.Bool || argument.Bytes != nil {
+		return fmt.Errorf("%w: result reference carries a literal or invalid type", ErrInvalidPlan)
+	}
+	reference := argument.FromResult
+	statement, exists := previous[reference.Statement]
+	if !exists || !statement.ReturnsRows || statement.Cardinality != CardinalityExactlyOne || uint64(reference.Column) >= uint64(len(statement.ResultColumns)) {
+		return fmt.Errorf("%w: result reference requires an earlier exactly-one typed result", ErrInvalidPlan)
+	}
+	column := statement.ResultColumns[reference.Column]
+	if column.Nullable || column.Kind != argument.Kind {
+		return fmt.Errorf("%w: result reference type or nullability", ErrInvalidPlan)
 	}
 	return nil
 }
