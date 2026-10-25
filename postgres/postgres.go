@@ -164,7 +164,7 @@ func (provider *Database) Exec(ctx context.Context, plan db.Plan) (db.Result, er
 	result := db.Result{Statements: make([]db.StatementResult, 0, len(plan.Statements))}
 	previous := make(map[string]db.StatementResult, len(plan.Statements))
 	for _, statement := range plan.Statements {
-		arguments, err := resolveArguments(statement.Args, previous)
+		arguments, err := resolveArguments(statement.Args, plan.Inputs, previous)
 		if err != nil {
 			return db.Result{}, err
 		}
@@ -234,9 +234,17 @@ func queryStatement(ctx context.Context, tx pgx.Tx, statement db.Statement) (db.
 	return result, nil
 }
 
-func resolveArguments(arguments []db.Argument, previous map[string]db.StatementResult) ([]db.Argument, error) {
+func resolveArguments(arguments []db.Argument, inputs map[string]db.Argument, previous map[string]db.StatementResult) ([]db.Argument, error) {
 	resolved := make([]db.Argument, len(arguments))
 	for index, argument := range arguments {
+		if argument.FromInput != nil {
+			value, exists := inputs[argument.FromInput.ID]
+			if !exists || value.Kind != argument.Kind || value.FromInput != nil || value.FromResult != nil {
+				return nil, fmt.Errorf("%w: unavailable plan input", db.ErrBackend)
+			}
+			resolved[index] = value
+			continue
+		}
 		if argument.FromResult == nil {
 			resolved[index] = argument
 			continue
@@ -247,7 +255,7 @@ func resolveArguments(arguments []db.Argument, previous map[string]db.StatementR
 			return nil, fmt.Errorf("%w: unavailable statement result", db.ErrBackend)
 		}
 		value := result.Rows[0][reference.Column]
-		if value.Kind != argument.Kind || value.FromResult != nil {
+		if value.Kind != argument.Kind || value.FromResult != nil || value.FromInput != nil {
 			return nil, fmt.Errorf("%w: statement result type", db.ErrBackend)
 		}
 		resolved[index] = value

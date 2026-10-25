@@ -12,6 +12,8 @@ const (
 	MaximumStatementBytes = 1 << 20
 	// MaximumStatementIDBytes bounds one member-local statement identity.
 	MaximumStatementIDBytes = 128
+	// MaximumInputs bounds one plan's bound input inventory.
+	MaximumInputs = 1024
 )
 
 // Cardinality is the closed row-cardinality assertion for a query statement.
@@ -52,6 +54,8 @@ type Argument struct {
 	Float64 float64
 	Bool    bool
 	Bytes   []byte
+	// FromInput replaces the literal payload with one named bound plan input.
+	FromInput *InputReference `json:"from_input,omitempty"`
 	// FromResult replaces the literal payload with one earlier typed result.
 	// A reference argument carries its expected Kind and no literal payload.
 	FromResult *ResultReference `json:"from_result,omitempty"`
@@ -62,6 +66,11 @@ type Argument struct {
 type ResultReference struct {
 	Statement string
 	Column    uint32
+}
+
+// InputReference identifies one required bound scalar in the same plan.
+type InputReference struct {
+	ID string
 }
 
 func StringArgument(value string) Argument   { return Argument{Kind: ValueString, String: value} }
@@ -77,6 +86,11 @@ func NullArgument() Argument { return Argument{Kind: ValueNull} }
 // checks its order, cardinality, column, type and complete closed shape.
 func ResultArgument(kind ValueKind, statement string, column uint32) Argument {
 	return Argument{Kind: kind, FromResult: &ResultReference{Statement: statement, Column: column}}
+}
+
+// InputArgument refers to a required non-null scalar in Plan.Inputs.
+func InputArgument(kind ValueKind, input string) Argument {
+	return Argument{Kind: kind, FromInput: &InputReference{ID: input}}
 }
 
 // Value is one typed scalar returned by a generated query.
@@ -135,6 +149,7 @@ type Result struct {
 // Plan is one finite ordered atomic database operation.
 type Plan struct {
 	Statements []Statement
+	Inputs     map[string]Argument `json:"inputs,omitempty"`
 }
 
 // Validate checks all structural plan constraints before a transaction begins.
@@ -142,6 +157,15 @@ func (p Plan) Validate() error {
 	if len(p.Statements) == 0 || len(p.Statements) > MaximumStatements {
 		return fmt.Errorf("%w: statement count", ErrInvalidPlan)
 	}
+	if len(p.Inputs) > MaximumInputs {
+		return fmt.Errorf("%w: input count", ErrInvalidPlan)
+	}
+	for id, input := range p.Inputs {
+		if id == "" || len(id) > MaximumStatementIDBytes || strings.TrimSpace(id) != id || !validLiteral(input) {
+			return fmt.Errorf("%w: input identity or scalar", ErrInvalidPlan)
+		}
+	}
+	usedInputs := make(map[string]bool, len(p.Inputs))
 	seen := make(map[string]struct{}, len(p.Statements))
 	previous := make(map[string]Statement, len(p.Statements))
 	for index, statement := range p.Statements {
@@ -149,6 +173,13 @@ func (p Plan) Validate() error {
 			return err
 		}
 		for _, argument := range statement.Args {
+			if argument.FromInput != nil {
+				input, exists := p.Inputs[argument.FromInput.ID]
+				if !exists || !validValueKind(argument.Kind) || input.Kind != argument.Kind || argument.FromResult != nil || !emptyPayload(argument) {
+					return fmt.Errorf("%w: input reference", ErrInvalidPlan)
+				}
+				usedInputs[argument.FromInput.ID] = true
+			}
 			if argument.FromResult != nil {
 				if err := validateResultReference(argument, previous); err != nil {
 					return err
@@ -157,7 +188,33 @@ func (p Plan) Validate() error {
 		}
 		previous[statement.ID] = statement
 	}
+	if len(usedInputs) != len(p.Inputs) {
+		return fmt.Errorf("%w: unused input", ErrInvalidPlan)
+	}
 	return nil
+}
+
+func emptyPayload(argument Argument) bool {
+	return argument.String == "" && argument.Int64 == 0 && argument.Float64 == 0 && !argument.Bool && argument.Bytes == nil
+}
+
+func validLiteral(argument Argument) bool {
+	if !validValueKind(argument.Kind) || argument.FromResult != nil || argument.FromInput != nil {
+		return false
+	}
+	switch argument.Kind {
+	case ValueString:
+		argument.String = ""
+	case ValueInt64:
+		argument.Int64 = 0
+	case ValueFloat64:
+		argument.Float64 = 0
+	case ValueBool:
+		argument.Bool = false
+	case ValueBytes:
+		argument.Bytes = nil
+	}
+	return emptyPayload(argument)
 }
 
 func validateStatement(index int, statement Statement, seen map[string]struct{}) error {
@@ -199,7 +256,7 @@ func validateStatement(index int, statement Statement, seen map[string]struct{})
 }
 
 func validateResultReference(argument Argument, previous map[string]Statement) error {
-	if !validValueKind(argument.Kind) || argument.String != "" || argument.Int64 != 0 || argument.Float64 != 0 || argument.Bool || argument.Bytes != nil {
+	if !validValueKind(argument.Kind) || argument.FromInput != nil || !emptyPayload(argument) {
 		return fmt.Errorf("%w: result reference carries a literal or invalid type", ErrInvalidPlan)
 	}
 	reference := argument.FromResult
