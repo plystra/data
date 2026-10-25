@@ -962,6 +962,12 @@ func (d modelDecoder) plans(value ast.Expr) ([]declaration.Plan, error) {
 				return nil, err
 			}
 		}
+		if field, ok := fields["Parameters"]; ok {
+			plan.Parameters, err = d.parameters(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		if field, ok := fields["Statements"]; ok {
 			plan.Statements, err = d.planStatements(field)
 			if err != nil {
@@ -1049,7 +1055,44 @@ func (d modelDecoder) planStatements(value ast.Expr) ([]declaration.PlanStatemen
 				return nil, err
 			}
 		}
+		if field, ok := fields["Bindings"]; ok {
+			statement.Bindings, err = d.planBindings(field)
+			if err != nil {
+				return nil, err
+			}
+		}
 		result[index] = statement
+	}
+	return result, nil
+}
+
+func (d modelDecoder) planBindings(value ast.Expr) ([]declaration.PlanBinding, error) {
+	elements, err := d.slice(value)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]declaration.PlanBinding, len(elements))
+	for index, element := range elements {
+		fields, err := d.fieldsExpr(element)
+		if err != nil {
+			return nil, err
+		}
+		for _, field := range []struct {
+			name   string
+			target *string
+		}{
+			{"Parameter", &result[index].Parameter},
+			{"FromParameter", &result[index].FromParameter},
+			{"FromStatement", &result[index].FromStatement},
+			{"FromResult", &result[index].FromResult},
+		} {
+			if expression, ok := fields[field.name]; ok {
+				*field.target, err = d.string(expression)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
 	}
 	return result, nil
 }
