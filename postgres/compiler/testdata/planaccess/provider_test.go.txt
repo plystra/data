@@ -1,0 +1,102 @@
+package access_test
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+
+	"example.com/planfixture/contract"
+	access "example.com/planfixture/providers/accounts.user/v1"
+	"github.com/plystra/data/database"
+)
+
+type recorder struct {
+	plan database.Plan
+	ctx context.Context
+	result database.Result
+	err error
+	calls int
+}
+
+func (backend *recorder) Health(context.Context) error { return nil }
+func (backend *recorder) Exec(ctx context.Context, plan database.Plan) (database.Result, error) {
+	backend.ctx, backend.plan = ctx, plan
+	backend.calls++
+	return backend.result, backend.err
+}
+
+func validResult() database.Result {
+	return database.Result{Statements: []database.StatementResult{
+		{Rows: [][]database.Value{{database.StringArgument("a@example.test"), database.Int64Argument(11), database.BoolArgument(true), database.Float64Argument(1.5), database.NullArgument()}}, AffectedRows: 1},
+		{Rows: [][]database.Value{{database.Int64Argument(12), database.BytesArgument([]byte("digest"))}}, AffectedRows: 1},
+		{AffectedRows: 1},
+	}}
+}
+
+func TestGeneratedPlanProviderContract(t *testing.T) {
+	backend := &recorder{result: validResult()}
+	provider, err := access.New(backend)
+	if err != nil { t.Fatal(err) }
+	var resource contract.Resource = provider
+	request := contract.Request{AccountID: 11, SessionID: 12, Email: "a@example.test", Digest: []byte("digest"), Active: true, Score: 1.5}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	output, err := resource.Register(ctx, request)
+	if err != nil || output.AccountID != 11 || output.SessionID != 12 || output.Email != request.Email || !output.Active || output.Score != 1.5 || output.Note != nil || string(output.Digest) != "digest" {
+		t.Fatalf("typed plan result = %#v, %v", output, err)
+	}
+	if backend.calls != 1 || backend.ctx != ctx || len(backend.plan.Statements) != 3 || backend.plan.Validate() != nil || len(backend.plan.Inputs) != 6 {
+		t.Fatal("plan was split, lost context or lost request bindings")
+	}
+	if ref := backend.plan.Statements[1].Args[2].FromResult; ref == nil || ref.Statement != "account" || ref.Column != 1 {
+		t.Fatal("earlier result binding was lost")
+	}
+	for _, statement := range backend.plan.Statements {
+		if strings.Contains(statement.SQL, request.Email) { t.Fatal("request value was interpolated into SQL") }
+	}
+	request.Digest[0] = 'X'
+	backend.result.Statements[1].Rows[0][1].Bytes[0] = 'X'
+	if string(backend.plan.Inputs["digest"].Bytes) != "digest" || string(output.Digest) != "digest" {
+		t.Fatal("request or result bytes alias backend storage")
+	}
+	backend.result = validResult()
+	backend.result.Statements[0].Rows[0][4] = database.StringArgument("")
+	output, err = resource.Register(ctx, request)
+	if err != nil || output.Note == nil || *output.Note != "" { t.Fatal("nullable value lost presence", err) }
+	for _, test := range []struct {
+		edit func(*database.Result)
+		want error
+	}{
+		{func(result *database.Result) { result.Statements = nil }, database.ErrBackend},
+		{func(result *database.Result) { result.Statements[0].Rows = nil }, database.ErrNotFound},
+		{func(result *database.Result) { result.Statements[0].Rows = append(result.Statements[0].Rows, result.Statements[0].Rows[0]) }, database.ErrBackend},
+		{func(result *database.Result) { result.Statements[0].Rows[0] = result.Statements[0].Rows[0][:4] }, database.ErrBackend},
+		{func(result *database.Result) { result.Statements[0].Rows[0][2] = database.StringArgument("true") }, database.ErrBackend},
+		{func(result *database.Result) { result.Statements[1].Rows[0][1] = database.NullArgument() }, database.ErrBackend},
+		{func(result *database.Result) { result.Statements[0].AffectedRows = 0 }, database.ErrBackend},
+		{func(result *database.Result) { result.Statements[2].AffectedRows = 2 }, database.ErrBackend},
+		{func(result *database.Result) { result.Statements[2].Rows = [][]database.Value{{database.Int64Argument(1)}} }, database.ErrBackend},
+	} {
+		backend.result = validResult()
+		test.edit(&backend.result)
+		if output, err := resource.Register(ctx, request); !errors.Is(err, test.want) || !reflect.DeepEqual(output, contract.Result{}) {
+			t.Fatal("malformed plan result published partial output", err)
+		}
+	}
+	for _, failure := range []error{database.ErrConflict, database.ErrConcurrent, database.ErrResultUnknown, context.Canceled} {
+		backend.result, backend.err = validResult(), failure
+		if output, err := resource.Register(ctx, request); err != failure || !reflect.DeepEqual(output, contract.Result{}) {
+			t.Fatal("backend failure/unknown outcome changed or leaked output", err)
+		}
+	}
+	backend.err = nil
+	backend.result = database.Result{Statements: []database.StatementResult{{AffectedRows: 2}, {AffectedRows: 3}}}
+	if _, err := resource.Clear(ctx, contract.Empty{}); err != nil || len(backend.plan.Inputs) != 0 || len(backend.plan.Statements) != 2 || backend.plan.Validate() != nil {
+		t.Fatal("empty-result mutation plan failed", err)
+	}
+	if _, err := access.New(nil); !errors.Is(err, database.ErrUnavailable) { t.Fatal("nil backend accepted") }
+	var absent *access.Provider
+	if _, err := absent.Register(ctx, request); !errors.Is(err, database.ErrUnavailable) { t.Fatal("nil provider accepted") }
+}
