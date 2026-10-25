@@ -1229,7 +1229,8 @@ func TestValidateEmitResponseRejectsDiagnosticBounds(t *testing.T) {
 
 func validEmitRequest(t *testing.T) protocol.EmitRequest {
 	t.Helper()
-	model := normalized(t, declaration.Member[struct{}]{Namespace: "accounts", Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "pk-accounts", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}}, Migrations: []declaration.Migration{{ID: "create-accounts", Version: 1, Operations: []declaration.MigrationOperation{{Kind: declaration.MigrationCreateTable, Table: declaration.Ref{Symbol: "accounts"}}}}}})
+	table := declaration.Table{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "pk-accounts", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}
+	model := normalized(t, declaration.Member[struct{}]{Namespace: "accounts", Tables: []declaration.Table{table}, Migrations: []declaration.Migration{{ID: "create-accounts", Version: 1, Snapshot: []declaration.MigrationSchema{{Namespace: "accounts", Tables: []declaration.Table{table}}}, Operations: []declaration.MigrationOperation{{Kind: declaration.MigrationCreateTable, Table: declaration.Ref{Symbol: "accounts"}}}}}})
 	roots := []analyzer.Root{{MemberID: "accounts.user/v1", Model: model, MigrationOnly: true, AccessPackage: "github.com/plystra/data/declaration", AccessType: "NoAccess"}}
 	resultDigest, err := analyzer.ResultDigest(roots, nil, false)
 	if err != nil {

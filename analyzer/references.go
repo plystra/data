@@ -222,9 +222,8 @@ func (a *analysis) validateMemberReferences(root Root, symbols map[string]member
 		for _, predecessor := range migration.Predecessors {
 			a.resolveKind(root, predecessor, "migration", symbols)
 		}
-		for _, operation := range migration.Operations {
-			a.resolveKind(root, operation.Table, "table", symbols)
-		}
+		// Snapshot references were validated within the migration's closed schema
+		// during normalization. Historical tables need not exist in today's model.
 	}
 }
 

@@ -9,8 +9,16 @@ import (
 
 // Artifact pairs one immutable migration definition with its PostgreSQL SQL.
 type Artifact struct {
-	Definition migration.Definition
-	SQL        string
+	Definition migration.Definition `json:"definition"`
+	SQL        string               `json:"sql"`
+}
+
+// MigrationHistory supplies retained exact artifacts and the observed applied
+// prefix. Every applied identity must have retained evidence; compilation never
+// reconstructs a missing applied artifact from source.
+type MigrationHistory struct {
+	Artifacts []Artifact               `json:"artifacts"`
+	Applied   []migration.HistoryEntry `json:"applied"`
 }
 
 // DigestSQL binds exact SQL bytes to their immutable artifact definition.

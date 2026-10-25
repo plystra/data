@@ -40,7 +40,7 @@ func TestNormalizeSortsAndDigestsTheLogicalModel(t *testing.T) {
 		},
 		Queries:    []declaration.Query{{ID: "find-account", Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"}}},
 		Plans:      []declaration.Plan{{ID: "create-account", Statements: []declaration.PlanStatement{{ID: "read", Query: declaration.Ref{Symbol: "find-account"}, Cardinality: declaration.CardinalityMany}}}},
-		Migrations: []declaration.Migration{{ID: "create-accounts", Version: 1, Operations: []declaration.MigrationOperation{{Kind: declaration.MigrationCreateTable, Table: declaration.Ref{Symbol: "accounts"}}}}},
+		Migrations: []declaration.Migration{{ID: "create-accounts", Version: 1, Snapshot: []declaration.MigrationSchema{{Namespace: "authn", Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeUUID}}}}}}, Operations: []declaration.MigrationOperation{{Kind: declaration.MigrationCreateTable, Table: declaration.Ref{Symbol: "accounts"}}}}},
 	}
 	model, err := member.Normalize()
 	if err != nil {

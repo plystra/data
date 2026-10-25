@@ -34,17 +34,25 @@ type EmitAssignment struct {
 // EmitRequest contains only accepted pre-Freeze analysis and frozen inputs.
 // No source snapshot or application graph mutation is accepted in this phase.
 type EmitRequest struct {
-	Schema            string           `json:"schema"`
-	Phase             string           `json:"phase"`
-	RequestID         string           `json:"request_id"`
-	Compiler          CompilerIdentity `json:"compiler"`
-	Build             BuildContext     `json:"build"`
-	Limits            analyzer.Limits  `json:"limits"`
-	InputDigest       string           `json:"input_digest"`
-	Analyze           AnalyzeOutput    `json:"analyze"`
-	AnalyzeDigest     string           `json:"analyze_digest"`
-	FrozenModelDigest string           `json:"frozen_model_digest"`
-	Assignments       []EmitAssignment `json:"assignments"`
+	Schema            string                 `json:"schema"`
+	Phase             string                 `json:"phase"`
+	RequestID         string                 `json:"request_id"`
+	Compiler          CompilerIdentity       `json:"compiler"`
+	Build             BuildContext           `json:"build"`
+	Limits            analyzer.Limits        `json:"limits"`
+	InputDigest       string                 `json:"input_digest"`
+	Analyze           AnalyzeOutput          `json:"analyze"`
+	AnalyzeDigest     string                 `json:"analyze_digest"`
+	FrozenModelDigest string                 `json:"frozen_model_digest"`
+	Assignments       []EmitAssignment       `json:"assignments"`
+	MigrationHistory  []EmitMigrationHistory `json:"migration_history,omitempty"`
+}
+
+// EmitMigrationHistory binds retained evidence and an observed prefix to one
+// selected Resource. The caller reads history; the pure emit phase does no I/O.
+type EmitMigrationHistory struct {
+	Resource string                    `json:"resource"`
+	History  postgres.MigrationHistory `json:"history"`
 }
 
 // StagedArtifact is an in-memory Data installation candidate. The compiler never
@@ -136,14 +144,29 @@ func EmitInputDigest(request EmitRequest) (string, error) {
 	build := request.Build
 	build.BuildTags = append([]string(nil), build.BuildTags...)
 	sort.Strings(build.BuildTags)
+	histories := append([]EmitMigrationHistory(nil), request.MigrationHistory...)
+	for i := range histories {
+		artifacts := append([]postgres.Artifact(nil), histories[i].History.Artifacts...)
+		for j := range artifacts {
+			predecessors := append([]migration.Identity(nil), artifacts[j].Definition.Predecessors...)
+			sort.Slice(predecessors, func(a, b int) bool { return predecessors[a].String() < predecessors[b].String() })
+			artifacts[j].Definition.Predecessors = predecessors
+		}
+		sort.Slice(artifacts, func(a, b int) bool {
+			return artifacts[a].Definition.Identity.String() < artifacts[b].Definition.Identity.String()
+		})
+		histories[i].History.Artifacts = artifacts
+	}
+	sort.Slice(histories, func(i, j int) bool { return histories[i].Resource < histories[j].Resource })
 	payload, err := json.Marshal(struct {
-		Compiler          CompilerIdentity `json:"compiler"`
-		Build             BuildContext     `json:"build"`
-		Limits            analyzer.Limits  `json:"limits"`
-		AnalyzeDigest     string           `json:"analyze_digest"`
-		FrozenModelDigest string           `json:"frozen_model_digest"`
-		Assignments       []EmitAssignment `json:"assignments"`
-	}{request.Compiler, build, request.Limits, request.AnalyzeDigest, request.FrozenModelDigest, assignments})
+		Compiler          CompilerIdentity       `json:"compiler"`
+		Build             BuildContext           `json:"build"`
+		Limits            analyzer.Limits        `json:"limits"`
+		AnalyzeDigest     string                 `json:"analyze_digest"`
+		FrozenModelDigest string                 `json:"frozen_model_digest"`
+		Assignments       []EmitAssignment       `json:"assignments"`
+		MigrationHistory  []EmitMigrationHistory `json:"migration_history,omitempty"`
+	}{request.Compiler, build, request.Limits, request.AnalyzeDigest, request.FrozenModelDigest, assignments, histories})
 	if err != nil {
 		return "", err
 	}
@@ -178,6 +201,9 @@ func ValidateEmitRequest(request EmitRequest) error {
 		if !declaration.ValidMemberID(assignment.MemberID) {
 			return fmt.Errorf("invalid Data member assignment ID")
 		}
+	}
+	if err := validateEmitMigrationHistory(request); err != nil {
+		return err
 	}
 	expected, err := EmitInputDigest(request)
 	if err != nil || request.InputDigest != expected {
@@ -527,10 +553,11 @@ func expectedMigrationDefinitions(request EmitRequest) (map[string]migration.Def
 	definitions := map[string]migration.Definition{}
 	compiler := compilerDigest(request.Compiler)
 	for resource, members := range membersByResource {
-		if !hasMigrations(members) {
+		history := emitHistory(request, resource)
+		if !hasMigrations(members) && len(history.Artifacts) == 0 && len(history.Applied) == 0 {
 			continue
 		}
-		compiled, err := postgres.CompileMigrations(members, compiler)
+		compiled, err := postgres.CompileMigrations(members, compiler, history)
 		if err != nil {
 			return nil, fmt.Errorf("Resource %s: %w", resource, err)
 		}
@@ -754,7 +781,7 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 			artifact.Plan = &metadata
 			artifacts = append(artifacts, artifact)
 		}
-		migrations, err := postgres.CompileMigrations(item.members, compiler)
+		migrations, err := postgres.CompileMigrations(item.members, compiler, emitHistory(request, resource))
 		if err != nil {
 			return nil, analyzer.CodeEmitBackend, err
 		}

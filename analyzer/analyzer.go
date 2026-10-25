@@ -979,7 +979,7 @@ func allowedElementType(value types.Type) bool {
 
 func allowedDeclarationName(name string) bool {
 	switch name {
-	case "Member", "Table", "Column", "Constraint", "Index", "Query", "Conflict", "Join", "JoinCondition", "ColumnRef", "Parameter", "Assignment", "Projection", "ResultField", "Predicate", "Ordering", "Plan", "PlanStatement", "PlanOutput", "AffectedRows", "Migration", "MigrationOperation", "Ref", "Value", "AggregateKind", "ConflictAction":
+	case "Member", "Table", "Column", "Constraint", "Index", "Query", "Conflict", "Join", "JoinCondition", "ColumnRef", "Parameter", "Assignment", "Projection", "ResultField", "Predicate", "Ordering", "Plan", "PlanStatement", "PlanOutput", "AffectedRows", "Migration", "MigrationSchema", "MigrationOperation", "Ref", "Value", "AggregateKind", "ConflictAction":
 		return true
 	default:
 		return false

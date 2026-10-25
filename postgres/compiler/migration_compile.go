@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -13,8 +14,9 @@ import (
 )
 
 // CompileMigrations lowers immutable Data migration intent into PostgreSQL
-// artifacts accepted by MigrationPlan and ApplyMigrations.
-func CompileMigrations(members []SchemaMember, compiler string) ([]Artifact, error) {
+// artifacts accepted by MigrationPlan and ApplyMigrations. Applied artifacts
+// are verified and reused from history, including their original compiler.
+func CompileMigrations(members []SchemaMember, compiler string, history MigrationHistory) ([]Artifact, error) {
 	if strings.TrimSpace(compiler) == "" {
 		return nil, fmt.Errorf("%w: compiler identity is required", ErrSchemaCompilation)
 	}
@@ -43,6 +45,19 @@ func CompileMigrations(members []SchemaMember, compiler string) ([]Artifact, err
 		byID[member.MemberID] = member
 	}
 	sort.Slice(normalized, func(i, j int) bool { return normalized[i].MemberID < normalized[j].MemberID })
+	retained := make(map[migration.Identity]Artifact, len(history.Artifacts))
+	for _, artifact := range history.Artifacts {
+		identity := artifact.Definition.Identity
+		if _, duplicate := retained[identity]; duplicate || strings.TrimSpace(artifact.SQL) == "" || artifact.Definition.ArtifactDigest != DigestSQL(artifact.SQL) {
+			return nil, fmt.Errorf("%w: retained artifact %s is duplicate or corrupt", migration.ErrHistoryDrift, identity)
+		}
+		retained[identity] = artifact
+	}
+	for _, entry := range history.Applied {
+		if _, exists := retained[entry.Identity]; !exists {
+			return nil, fmt.Errorf("%w: applied artifact %s was not retained", migration.ErrHistoryDrift, entry.Identity)
+		}
+	}
 
 	type pending struct {
 		member    SchemaMember
@@ -67,7 +82,11 @@ func CompileMigrations(members []SchemaMember, compiler string) ([]Artifact, err
 
 	artifacts := make([]Artifact, 0, len(pendingMigrations))
 	for _, item := range pendingMigrations {
-		sql, predecessors, err := compileMigrationSQL(item.member, item.migration, byID)
+		predecessors, err := migrationPredecessors(item.member, item.migration, byID)
+		if err != nil {
+			return nil, err
+		}
+		snapshotMember, snapshotMembers, err := migrationSnapshot(item.member, item.migration, byID)
 		if err != nil {
 			return nil, err
 		}
@@ -76,29 +95,50 @@ func CompileMigrations(members []SchemaMember, compiler string) ([]Artifact, err
 			return nil, fmt.Errorf("%w: migration %s logical digest: %v", ErrSchemaCompilation, item.migration.ID, err)
 		}
 		definition := migration.Definition{
-			Identity:       migration.Identity{Member: item.member.MemberID, Name: item.migration.ID},
-			Version:        item.migration.Version,
-			Predecessors:   predecessors,
-			LogicalDigest:  logicalDigest,
-			ArtifactDigest: DigestSQL(sql),
-			Compiler:       compiler,
-			Backend:        "postgres/v1",
+			Identity:      migration.Identity{Member: item.member.MemberID, Name: item.migration.ID},
+			Version:       item.migration.Version,
+			Predecessors:  predecessors,
+			LogicalDigest: logicalDigest,
+			Compiler:      compiler,
+			Backend:       "postgres/v1",
 		}
+		if artifact, exists := retained[definition.Identity]; exists {
+			original := artifact.Definition
+			original.Predecessors = slices.Clone(original.Predecessors)
+			sort.Slice(original.Predecessors, func(i, j int) bool { return original.Predecessors[i].String() < original.Predecessors[j].String() })
+			if original.Version != definition.Version || original.LogicalDigest != definition.LogicalDigest || original.Backend != definition.Backend || strings.TrimSpace(original.Compiler) == "" || !slices.Equal(original.Predecessors, definition.Predecessors) {
+				return nil, fmt.Errorf("%w: retained artifact %s declaration changed", migration.ErrHistoryDrift, definition.Identity)
+			}
+			artifacts = append(artifacts, Artifact{Definition: original, SQL: artifact.SQL})
+			delete(retained, definition.Identity)
+			continue
+		}
+		sql, err := compileMigrationSQL(snapshotMember, item.migration, snapshotMembers)
+		if err != nil {
+			return nil, err
+		}
+		definition.ArtifactDigest = DigestSQL(sql)
 		artifacts = append(artifacts, Artifact{Definition: definition, SQL: sql})
+	}
+	if len(retained) != 0 {
+		return nil, fmt.Errorf("%w: retained artifact has no authored migration", migration.ErrHistoryDrift)
 	}
 	definitions := make([]migration.Definition, len(artifacts))
 	for index, artifact := range artifacts {
 		definitions[index] = artifact.Definition
 	}
 	if _, err := migration.Build(migration.Request{
-		Target: "postgres:compiler-validation", Backend: "postgres/v1", Compiler: compiler, Definitions: definitions,
+		Target: "postgres:compiler-validation", Backend: "postgres/v1", Compiler: compiler, Definitions: definitions, History: history.Applied,
 	}); err != nil {
 		return nil, fmt.Errorf("%w: migration catalog: %w", ErrSchemaCompilation, err)
 	}
 	return artifacts, nil
 }
 
-func compileMigrationSQL(member SchemaMember, item declaration.Migration, byID map[string]SchemaMember) (string, []migration.Identity, error) {
+func migrationPredecessors(member SchemaMember, item declaration.Migration, byID map[string]SchemaMember) ([]migration.Identity, error) {
+	if len(item.Predecessors) == 0 {
+		return nil, nil
+	}
 	predecessors := make([]migration.Identity, len(item.Predecessors))
 	for index, predecessor := range item.Predecessors {
 		targetMember := member
@@ -106,19 +146,46 @@ func compileMigrationSQL(member SchemaMember, item declaration.Migration, byID m
 			var exists bool
 			targetMember, exists = byID[predecessor.Member]
 			if !exists {
-				return "", nil, fmt.Errorf("%w: migration %s predecessor member %s is not present", ErrSchemaCompilation, item.ID, predecessor.Member)
+				return nil, fmt.Errorf("%w: migration %s predecessor member %s is not present", ErrSchemaCompilation, item.ID, predecessor.Member)
 			}
 			if targetMember.Resource != member.Resource {
-				return "", nil, fmt.Errorf("%w: migration %s predecessor %s", ErrCrossResourceReference, item.ID, predecessor.Member)
+				return nil, fmt.Errorf("%w: migration %s predecessor %s", ErrCrossResourceReference, item.ID, predecessor.Member)
 			}
 		}
 		if !hasMigration(targetMember.Model, predecessor.Symbol) {
-			return "", nil, fmt.Errorf("%w: migration %s predecessor %s is not present", ErrSchemaCompilation, item.ID, predecessor.Symbol)
+			return nil, fmt.Errorf("%w: migration %s predecessor %s is not present", ErrSchemaCompilation, item.ID, predecessor.Symbol)
 		}
 		predecessors[index] = migration.Identity{Member: targetMember.MemberID, Name: predecessor.Symbol}
 	}
 	sort.Slice(predecessors, func(i, j int) bool { return predecessors[i].String() < predecessors[j].String() })
+	return predecessors, nil
+}
 
+func migrationSnapshot(member SchemaMember, item declaration.Migration, byID map[string]SchemaMember) (SchemaMember, map[string]SchemaMember, error) {
+	snapshots := make(map[string]SchemaMember, len(item.Snapshot))
+	for _, schema := range item.Snapshot {
+		id := schema.Member
+		if id == "" {
+			id = member.MemberID
+		}
+		if _, duplicate := snapshots[id]; duplicate || schema.Member == member.MemberID {
+			return SchemaMember{}, nil, fmt.Errorf("%w: duplicate or self-imported migration snapshot %s", ErrSchemaCompilation, id)
+		}
+		target, exists := byID[id]
+		if !exists {
+			return SchemaMember{}, nil, fmt.Errorf("%w: migration snapshot member %s is not active", ErrSchemaCompilation, id)
+		}
+		if target.Resource != member.Resource {
+			return SchemaMember{}, nil, fmt.Errorf("%w: migration snapshot %s", ErrCrossResourceReference, id)
+		}
+		snapshots[id] = SchemaMember{MemberID: id, Resource: member.Resource, Model: declaration.Model{Namespace: schema.Namespace, Tables: schema.Tables}}
+	}
+	owner := snapshots[member.MemberID]
+	owner.MemberID, owner.Resource = member.MemberID, member.Resource
+	return owner, snapshots, nil
+}
+
+func compileMigrationSQL(member SchemaMember, item declaration.Migration, byID map[string]SchemaMember) (string, error) {
 	var sql strings.Builder
 	fmt.Fprintf(&sql, "-- plystra.data.postgres-migration/v1 %s#%s\n", member.MemberID, item.ID)
 	for _, operation := range item.Operations {
@@ -126,43 +193,46 @@ func compileMigrationSQL(member SchemaMember, item declaration.Migration, byID m
 		case declaration.MigrationCreateTable:
 			targetMember, table, err := resolveSchemaTable(member, operation.Table, byID)
 			if err != nil {
-				return "", nil, fmt.Errorf("%w: migration %s create table: %v", ErrSchemaCompilation, item.ID, err)
+				return "", fmt.Errorf("%w: migration %s create table: %v", ErrSchemaCompilation, item.ID, err)
 			}
 			fmt.Fprintf(&sql, "CREATE SCHEMA IF NOT EXISTS %s;\n", quoteIdentifier(targetMember.Model.Namespace))
 			if err := writeTable(&sql, targetMember, table); err != nil {
-				return "", nil, err
+				return "", err
 			}
 			for _, constraint := range table.Constraints {
 				if constraint.Kind == declaration.ConstraintForeignKey {
 					if err := writeForeignKey(&sql, targetMember, table, constraint, byID); err != nil {
-						return "", nil, err
+						return "", err
 					}
 				}
+			}
+			for _, index := range table.Indexes {
+				writeIndex(&sql, targetMember, table, index)
 			}
 		case declaration.MigrationAddColumn:
 			targetMember, table, err := resolveSchemaTable(member, operation.Table, byID)
 			if err != nil {
-				return "", nil, fmt.Errorf("%w: migration %s add column: %v", ErrSchemaCompilation, item.ID, err)
+				return "", fmt.Errorf("%w: migration %s add column: %v", ErrSchemaCompilation, item.ID, err)
 			}
 			column, err := columnDefinition(operation.Column)
 			if err != nil {
-				return "", nil, fmt.Errorf("%w: migration %s add column: %v", ErrSchemaCompilation, item.ID, err)
+				return "", fmt.Errorf("%w: migration %s add column: %v", ErrSchemaCompilation, item.ID, err)
 			}
 			fmt.Fprintf(&sql, "ALTER TABLE %s.%s ADD COLUMN %s;\n", quoteIdentifier(targetMember.Model.Namespace), quoteIdentifier(table.ID), column)
 		case declaration.MigrationCreateIndex:
 			targetMember, table, err := resolveSchemaTable(member, operation.Table, byID)
 			if err != nil {
-				return "", nil, fmt.Errorf("%w: migration %s create index: %v", ErrSchemaCompilation, item.ID, err)
+				return "", fmt.Errorf("%w: migration %s create index: %v", ErrSchemaCompilation, item.ID, err)
 			}
 			if err := validateIndexColumns(table, operation.Index); err != nil {
-				return "", nil, fmt.Errorf("%w: migration %s create index: %v", ErrSchemaCompilation, item.ID, err)
+				return "", fmt.Errorf("%w: migration %s create index: %v", ErrSchemaCompilation, item.ID, err)
 			}
 			writeIndex(&sql, targetMember, table, operation.Index)
 		default:
-			return "", nil, fmt.Errorf("%w: migration %s operation %q", ErrSchemaCompilation, item.ID, operation.Kind)
+			return "", fmt.Errorf("%w: migration %s operation %q", ErrSchemaCompilation, item.ID, operation.Kind)
 		}
 	}
-	return sql.String(), predecessors, nil
+	return sql.String(), nil
 }
 
 func columnDefinition(column declaration.Column) (string, error) {

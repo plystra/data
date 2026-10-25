@@ -142,9 +142,33 @@ empty input (or no non-null values) produces SQL NULL. Other aggregate functions
 remain unsupported. `COUNT(*)` cannot name a table; count an
 introduced column to exclude unmatched LEFT JOIN rows. Queries without joins
 retain their existing SQL bytes.
-`postgres/compiler.CompileMigrations` lowers immutable migration operations into
-planner-validated SQL artifacts with logical and compiled digests, predecessor
-identity, compiler identity, and PostgreSQL backend identity.
+`postgres/compiler.CompileMigrations(members, compiler, history)` lowers
+immutable migration operations into planner-validated SQL artifacts with logical
+and compiled digests, predecessor identity, compiler identity, and PostgreSQL
+backend identity. Every authored migration requires its own `Snapshot` of
+`MigrationSchema` values: the namespace and table definitions used by that
+migration, including referenced foreign-key tables. Empty `Member` names the
+owning member; other members must be explicit imports assigned to the same
+database Resource. These definitions are independent of today's `Model.Tables`
+and namespace. A later column addition cannot change an earlier CREATE TABLE.
+Create-table includes the snapshot table's constraints and indexes; add-column
+uses a snapshot of the table before that addition; create-index validates its
+columns against that migration's snapshot. Operations execute in authored order.
+Snapshot tables, namespaces, imported references, and operation fields are
+validated and included in the immutable logical migration digest.
+
+`compiler.MigrationHistory` carries retained exact SQL artifacts and the observed
+applied prefix. Use an empty value only for a target with no observed history.
+Each applied identity requires a retained artifact; missing, corrupt, duplicate,
+deleted, or changed historical evidence blocks compilation. Retained definitions
+must match the authored identity, version, predecessors, and logical snapshot
+digest, and their SQL must match the original artifact checksum. The compiler
+reuses their exact bytes and original compiler identity while compiling new
+migrations with the selected compiler. The planner compares each history entry
+with that artifact's original compiler, and approval still binds the currently
+selected compiler. Callers must read the target's current history and supply
+the retained artifacts; filesystem history storage and command orchestration
+remain incomplete. The backend re-reads current history under its apply lock.
 `postgres/compiler.CompilePlans` currently lowers the initial executable-plan
 subset: local, parameter-free `SELECT` statements with explicit cardinality
 and typed projected results become ordered `database.Plan` statements. The
@@ -263,8 +287,11 @@ PostgreSQL schema, query, and migration SQL and bounded typed SELECT access
 providers. An emit request carries the accepted
 analyze-result digest, the frozen application-model digest, and explicit active
 member assignments to selected `data.database/v1` Resource instances and
-`postgres/v1` backends. The input digest binds these facts to the exact compiler
-identity and Go build context. For each selected instance, the compiler returns
+`postgres/v1` backends. Optional `migration_history` entries bind retained
+artifacts and observed history to one selected Resource. Their artifact
+inventory is canonicalized while applied-history order is preserved; both are
+bound into the input digest. The input digest binds these facts to the exact
+compiler identity and Go build context. For each selected instance, the compiler returns
 in-memory staged `schema/schema.sql`, query SQL, immutable migration SQL,
 `providers/<member-id>/provider.go` for each supported access Resource, and a
 `manifest.json` under its allowed `dataaccess/<instance>/` root. Every
@@ -275,7 +302,10 @@ predecessors, logical declaration digest, compiled artifact digest, compiler,
 and backend. The manifest binds logical member digests and the instance's
 artifact inventory, including each migration Definition. The response validator
 compares staged migration Definitions with the accepted analyzed member models
-and selected compiler, independently recompiles expected schema and query SQL
+and verified retained history, preserving historical SQL and compiler identity
+rather than recompiling it. The staging envelope records the current emit
+compiler separately from the migration Definition's original compiler. The
+validator independently recompiles expected schema and query SQL
 digests and generated provider source from those models, accepted access type
 identities, and active Resource assignments, requires migration
 SQL bytes to match their accepted compiled artifact digests, rejects migration

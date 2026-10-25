@@ -66,6 +66,31 @@ func TestBuildRetainsAppliedPrefixAndCopiesInputs(t *testing.T) {
 	}
 }
 
+func TestBuildPreservesOriginalCompilerAcrossUpgrade(t *testing.T) {
+	old := definition("tasks.data/v1", "create", 1, nil)
+	next := definition("tasks.data/v1", "email", 2, []migration.Identity{old.Identity})
+	next.Compiler = "compiler/v2"
+	history := []migration.HistoryEntry{{Identity: old.Identity, Version: old.Version, LogicalDigest: old.LogicalDigest, ArtifactDigest: old.ArtifactDigest, Compiler: old.Compiler, Backend: old.Backend}}
+	req := migration.Request{Target: "postgres:db-1", Backend: "postgres/v1", Compiler: "compiler/v2", Definitions: []migration.Definition{old, next}, History: history}
+	plan, err := migration.Build(req)
+	if err != nil || len(plan.Applied) != 1 || plan.Applied[0].Compiler != old.Compiler || len(plan.Pending) != 1 || plan.Pending[0].Compiler != next.Compiler {
+		t.Fatalf("upgrade = %#v, %v", plan, err)
+	}
+	req.Compiler = "compiler/v3"
+	changed, err := migration.Build(req)
+	if err != nil || changed.PlanDigest == plan.PlanDigest {
+		t.Fatalf("selected compiler did not bind approval = %#v, %v", changed, err)
+	}
+	req.Definitions[0].Compiler = "compiler/v2"
+	if _, err := migration.Build(req); !errors.Is(err, migration.ErrHistoryDrift) {
+		t.Fatalf("historical compiler relabel accepted: %v", err)
+	}
+	req.Definitions = []migration.Definition{next}
+	if _, err := migration.Build(req); err == nil {
+		t.Fatal("missing historical definition accepted")
+	}
+}
+
 func definition(member, name string, version uint64, predecessors []migration.Identity) migration.Definition {
 	return migration.Definition{Identity: migration.Identity{Member: member, Name: name}, Version: version, Predecessors: predecessors, LogicalDigest: "logical:" + name, ArtifactDigest: "artifact:" + name, Compiler: "compiler/v1", Backend: "postgres/v1"}
 }
