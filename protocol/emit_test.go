@@ -111,6 +111,112 @@ func TestEmitIncludesOwnedQueryArtifactAndManifestEntry(t *testing.T) {
 	}
 }
 
+func TestEmitTypedAccessProviderAndTamperValidation(t *testing.T) {
+	request := typedAccessEmitRequest(t)
+	var input, output bytes.Buffer
+	if err := protocol.WriteFrame(&input, request); err != nil {
+		t.Fatal(err)
+	}
+	if err := protocol.Run(&input, &output); err != nil {
+		t.Fatal(err)
+	}
+	var response protocol.EmitResponse
+	if err := protocol.ReadFrame(&output, &response); err != nil || output.Len() != 0 {
+		t.Fatalf("emit frame = %v, trailing bytes %d", err, output.Len())
+	}
+	if response.Status != protocol.StatusSucceeded || len(response.Output.Artifacts) != 5 {
+		t.Fatalf("response = %#v", response)
+	}
+	const providerPath = "dataaccess/database.primary/providers/accounts.user/v1/provider.go"
+	var provider protocol.StagedArtifact
+	for _, artifact := range response.Output.Artifacts {
+		if artifact.Path == providerPath {
+			provider = artifact
+		}
+	}
+	if provider.Path == "" || !bytes.Contains(provider.Bytes, []byte("//plystra:implements-resource accounts.access/v1")) || provider.Query != nil || provider.Plan != nil || provider.Migration != nil || !reflect.DeepEqual(provider.OwningMembers, []string{"accounts.user/v1"}) {
+		t.Fatalf("provider = %#v", provider)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil {
+		t.Fatal(err)
+	}
+	// Rehash both manifest and response; intent validation must still catch it.
+	originalDigest := provider.Digest
+	for index := range response.Output.Artifacts {
+		artifact := &response.Output.Artifacts[index]
+		if artifact.Path == providerPath {
+			artifact.Bytes = bytes.ReplaceAll(artifact.Bytes, []byte("return &Provider{database: database}, nil"), []byte("return nil, nil"))
+			artifact.Digest = postgres.DigestSQL(string(artifact.Bytes))
+			provider = *artifact
+		}
+	}
+	if provider.Digest == originalDigest {
+		t.Fatal("fixture did not alter source")
+	}
+	for index := range response.Output.Artifacts {
+		artifact := &response.Output.Artifacts[index]
+		if strings.HasSuffix(artifact.Path, "/manifest.json") {
+			var manifest map[string]json.RawMessage
+			if err := json.Unmarshal(artifact.Bytes, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			var entries []map[string]json.RawMessage
+			if err := json.Unmarshal(manifest["artifacts"], &entries); err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				var path string
+				_ = json.Unmarshal(entry["path"], &path)
+				if path == providerPath {
+					entry["digest"], _ = json.Marshal(provider.Digest)
+				}
+			}
+			manifest["artifacts"], _ = json.Marshal(entries)
+			artifact.Bytes, _ = json.Marshal(manifest)
+			artifact.Digest = postgres.DigestSQL(string(artifact.Bytes))
+		}
+	}
+	refreshEmitOutputDigest(t, &response)
+	if err := protocol.ValidateEmitResponse(request, response); err == nil {
+		t.Fatal("self-consistent provider source tamper accepted")
+	}
+}
+
+func TestEmitRejectsUnsupportedAccessResourceWithoutPartialArtifacts(t *testing.T) {
+	request := typedAccessEmitRequest(t)
+	root := &request.Analyze.Roots[0]
+	query := &root.Model.Queries[0]
+	query.Operation = declaration.OperationDelete
+	query.Returning, query.Projection = query.Projection, nil
+	root.Model = normalized(t, declaration.Member[struct{}]{Namespace: root.Model.Namespace, Tables: root.Model.Tables, Queries: root.Model.Queries, Migrations: root.Model.Migrations})
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	response := protocol.HandleEmit(request)
+	if response.Status != protocol.StatusRejected || len(response.Output.Artifacts) != 0 || len(response.Diagnostics) != 1 || response.Diagnostics[0].Code != analyzer.CodeEmitBackend {
+		t.Fatalf("partial unsupported provider: %#v", response)
+	}
+}
+
+func typedAccessEmitRequest(t *testing.T) protocol.EmitRequest {
+	t.Helper()
+	request := validEmitRequest(t)
+	root := &request.Analyze.Roots[0]
+	root.MigrationOnly = false
+	root.AccessID, root.AccessPackage, root.AccessType = "accounts.access/v1", "example.com/accounts", "Resource"
+	root.Model = normalized(t, declaration.Member[struct{}]{Namespace: root.Model.Namespace, Tables: root.Model.Tables, Migrations: root.Model.Migrations, Queries: []declaration.Query{{
+		ID: "get", Method: "Get", Cardinality: declaration.CardinalityExactlyOne, Operation: declaration.OperationSelect, Table: declaration.Ref{Symbol: "accounts"},
+		Parameters: []declaration.Parameter{{ID: "id", GoField: "Key", Type: declaration.TypeInt64}},
+		Predicate:  declaration.Predicate{Kind: declaration.PredicateEqual, Left: declaration.ColumnRef{Column: "id"}, Value: declaration.Value{Kind: declaration.TypeInt64, Set: true, Parameter: "id"}},
+		Projection: []declaration.Projection{{Column: "id"}}, Results: []declaration.ResultField{{ID: "id", GoField: "Key", Source: "id", Type: declaration.TypeInt64}},
+	}}})
+	root.QueryMethods = []analyzer.QueryMethod{{Name: "Get", Cardinality: declaration.CardinalityExactlyOne, RequestPackage: root.AccessPackage, RequestType: "Request", RowPackage: root.AccessPackage, RowType: "Row"}}
+	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
+	request.AnalyzeDigest = request.Analyze.Digest
+	refreshEmitDigest(t, &request)
+	return request
+}
+
 func TestEmitIncludesTypedMutationQueryArtifact(t *testing.T) {
 	request := validEmitRequest(t)
 	model := request.Analyze.Roots[0].Model
@@ -972,7 +1078,7 @@ func TestEmitRejectsUnsafeRootAndUnsupportedBackend(t *testing.T) {
 
 func TestEmitGroupsMembersByResourceAndRequiresExplicitImports(t *testing.T) {
 	request := validEmitRequest(t)
-	second := analyzer.Root{MemberID: "audit.events/v1", Model: normalized(t, declaration.Member[struct{}]{Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "pk-events", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}}}), MigrationOnly: true}
+	second := analyzer.Root{MemberID: "audit.events/v1", Model: normalized(t, declaration.Member[struct{}]{Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "pk-events", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}}}), MigrationOnly: true, AccessPackage: "github.com/plystra/data/declaration", AccessType: "NoAccess"}
 	request.Analyze.Roots = append(request.Analyze.Roots, second)
 	request.Analyze.Roots[0].Model.Imports = []string{second.MemberID}
 	request.Analyze.Roots[0].Model, _ = (declaration.Member[struct{}]{Namespace: request.Analyze.Roots[0].Model.Namespace, Imports: request.Analyze.Roots[0].Model.Imports, Tables: request.Analyze.Roots[0].Model.Tables, Migrations: request.Analyze.Roots[0].Model.Migrations}).Normalize()
@@ -998,7 +1104,7 @@ func TestEmitGroupsMembersByResourceAndRequiresExplicitImports(t *testing.T) {
 
 func TestEmitOutputIsDeterministicAcrossAssignmentOrder(t *testing.T) {
 	request := validEmitRequest(t)
-	second := analyzer.Root{MemberID: "audit.events/v1", Model: normalized(t, declaration.Member[struct{}]{Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}}}), MigrationOnly: true}
+	second := analyzer.Root{MemberID: "audit.events/v1", Model: normalized(t, declaration.Member[struct{}]{Namespace: "audit", Tables: []declaration.Table{{ID: "events", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}}}), MigrationOnly: true, AccessPackage: "github.com/plystra/data/declaration", AccessType: "NoAccess"}
 	request.Analyze.Roots = append(request.Analyze.Roots, second)
 	request.Analyze.Digest, _ = analyzer.ResultDigest(request.Analyze.Roots, nil, false)
 	request.AnalyzeDigest = request.Analyze.Digest
@@ -1124,7 +1230,7 @@ func TestValidateEmitResponseRejectsDiagnosticBounds(t *testing.T) {
 func validEmitRequest(t *testing.T) protocol.EmitRequest {
 	t.Helper()
 	model := normalized(t, declaration.Member[struct{}]{Namespace: "accounts", Tables: []declaration.Table{{ID: "accounts", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}, Constraints: []declaration.Constraint{{ID: "pk-accounts", Kind: declaration.ConstraintPrimaryKey, Columns: []string{"id"}}}}}, Migrations: []declaration.Migration{{ID: "create-accounts", Version: 1, Operations: []declaration.MigrationOperation{{Kind: declaration.MigrationCreateTable, Table: declaration.Ref{Symbol: "accounts"}}}}}})
-	roots := []analyzer.Root{{MemberID: "accounts.user/v1", Model: model, MigrationOnly: true}}
+	roots := []analyzer.Root{{MemberID: "accounts.user/v1", Model: model, MigrationOnly: true, AccessPackage: "github.com/plystra/data/declaration", AccessType: "NoAccess"}}
 	resultDigest, err := analyzer.ResultDigest(roots, nil, false)
 	if err != nil {
 		t.Fatal(err)

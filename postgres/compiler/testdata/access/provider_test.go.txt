@@ -1,0 +1,135 @@
+package access_test
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"strings"
+	"testing"
+
+	"example.com/accessfixture/contract"
+	access "example.com/accessfixture/providers/accounts.user/v1"
+	"github.com/plystra/data/database"
+)
+
+type recorder struct {
+	plan   database.Plan
+	ctx    context.Context
+	result database.Result
+	err    error
+}
+
+func (r *recorder) Health(context.Context) error { return nil }
+func (r *recorder) Exec(ctx context.Context, plan database.Plan) (database.Result, error) {
+	r.ctx, r.plan = ctx, plan
+	return r.result, r.err
+}
+
+func values() []database.Value {
+	return []database.Value{
+		database.Float64Argument(2.5), database.BytesArgument([]byte("optional")), database.BoolArgument(false), database.StringArgument(""), database.Int64Argument(0),
+		database.Float64Argument(1.5), database.BytesArgument([]byte("token")), database.BoolArgument(true), database.StringArgument("text"), database.Int64Argument(7),
+	}
+}
+
+func TestGeneratedProviderContract(t *testing.T) {
+	request := contract.Request{Key: 7, Text: "text", Active: true, Token: []byte("token"), Score: 1.5}
+	backend := &recorder{result: database.Result{Statements: []database.StatementResult{{Rows: [][]database.Value{values()}}}}}
+	provider, err := access.New(backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resource contract.Resource = provider
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	row, err := resource.Get(ctx, request)
+	if err != nil || row.Key != 7 || row.Text != "text" || !row.Active || row.Score != 1.5 || string(row.Token) != "token" || row.OptionalKey == nil || *row.OptionalKey != 0 || row.OptionalText == nil || *row.OptionalText != "" || row.OptionalActive == nil || *row.OptionalActive || row.OptionalToken == nil || string(*row.OptionalToken) != "optional" || row.OptionalScore == nil || *row.OptionalScore != 2.5 {
+		t.Fatalf("row = %#v, %v", row, err)
+	}
+	if backend.ctx != ctx || backend.plan.Validate() != nil || len(backend.plan.Statements) != 1 {
+		t.Fatal("context/normalized plan lost")
+	}
+	statement := backend.plan.Statements[0]
+	wantArgs := []database.Argument{database.StringArgument("text"), database.BoolArgument(true), database.BytesArgument([]byte("token")), database.Float64Argument(1.5), database.Int64Argument(7)}
+	if !reflect.DeepEqual(statement.Args, wantArgs) || statement.Cardinality != database.CardinalityExactlyOne || !statement.ReturnsRows || len(statement.ResultColumns) != 10 || !statement.ResultColumns[0].Nullable || statement.ResultColumns[9].Kind != database.ValueInt64 || !strings.Contains(statement.SQL, `"id" = $5`) || !strings.Contains(statement.SQL, `"text" = $1`) {
+		t.Fatalf("statement = %#v", statement)
+	}
+	// Input and returned bytes must not alias request or backend storage.
+	request.Token[0] = 'X'
+	backend.result.Statements[0].Rows[0][6].Bytes[0] = 'X'
+	backend.result.Statements[0].Rows[0][1].Bytes[0] = 'X'
+	if string(statement.Args[2].Bytes) != "token" || string(row.Token) != "token" || string(*row.OptionalToken) != "optional" {
+		t.Fatal("byte storage aliases")
+	}
+	backend.result.Statements[0].Rows = [][]database.Value{values(), values()}
+	many, err := resource.List(ctx, request)
+	if err != nil || len(many) != 2 || backend.plan.Statements[0].Cardinality != database.CardinalityMany {
+		t.Fatalf("many = %#v, %v", many, err)
+	}
+	*many[0].OptionalKey = 99
+	if *many[1].OptionalKey != 0 {
+		t.Fatal("nullable pointers alias across rows")
+	}
+	if row, err := resource.Find(ctx, request); row != nil || !errors.Is(err, database.ErrBackend) {
+		t.Fatal("zero-or-one accepted extra rows")
+	}
+	if row, err := resource.Get(ctx, request); row.Key != 0 || !errors.Is(err, database.ErrBackend) {
+		t.Fatal("exactly-one accepted extra rows")
+	}
+	backend.result.Statements[0].Rows = nil
+	if row, err := resource.Get(ctx, request); row.Key != 0 || !errors.Is(err, database.ErrNotFound) {
+		t.Fatal("exactly-one lost not-found")
+	}
+	if row, err := resource.Find(ctx, request); row != nil || err != nil || backend.plan.Statements[0].Cardinality != database.CardinalityZeroOrOne {
+		t.Fatal("optional empty result")
+	}
+	if rows, err := resource.List(ctx, request); len(rows) != 0 || err != nil {
+		t.Fatal("many empty result")
+	}
+	nulls := values()
+	for index := range 5 {
+		nulls[index] = database.NullArgument()
+	}
+	backend.result.Statements[0].Rows = [][]database.Value{nulls}
+	optional, err := resource.Find(ctx, request)
+	if err != nil || optional == nil || optional.OptionalKey != nil || optional.OptionalText != nil || optional.OptionalActive != nil || optional.OptionalToken != nil || optional.OptionalScore != nil {
+		t.Fatal("nullable codecs did not preserve NULL")
+	}
+	for _, malformed := range []database.Result{
+		{}, {Statements: []database.StatementResult{{}, {}}},
+		{Statements: []database.StatementResult{{Rows: [][]database.Value{values()}, AffectedRows: 1}}},
+		{Statements: []database.StatementResult{{Rows: [][]database.Value{{database.Int64Argument(1)}}}}},
+	} {
+		backend.result = malformed
+		if row, err := resource.Find(ctx, request); row != nil || !errors.Is(err, database.ErrBackend) {
+			t.Fatal("malformed result accepted")
+		}
+	}
+	for index := range 10 {
+		bad := values()
+		bad[index] = database.Argument{Kind: "unknown"}
+		backend.result = database.Result{Statements: []database.StatementResult{{Rows: [][]database.Value{values(), bad}}}}
+		if rows, err := resource.List(ctx, request); rows != nil || !errors.Is(err, database.ErrBackend) {
+			t.Fatal("partial rows or unknown kind accepted")
+		}
+		if index >= 5 {
+			bad[index] = database.NullArgument()
+			if rows, err := resource.List(ctx, request); rows != nil || !errors.Is(err, database.ErrBackend) {
+				t.Fatal("non-null codec accepted NULL")
+			}
+		}
+	}
+	for _, cause := range []error{database.ErrNotFound, database.ErrResultUnknown, context.Canceled} {
+		backend.err = cause
+		if rows, err := resource.List(ctx, request); rows != nil || err != cause {
+			t.Fatal("backend error identity changed")
+		}
+	}
+	if provider, err := access.New(nil); provider != nil || !errors.Is(err, database.ErrUnavailable) {
+		t.Fatal("nil dependency accepted")
+	}
+	var absent *access.Provider
+	if _, err := absent.Get(ctx, request); !errors.Is(err, database.ErrUnavailable) {
+		t.Fatal("nil provider did not fail safely")
+	}
+}

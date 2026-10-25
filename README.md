@@ -61,8 +61,9 @@ exported result struct. Its signature is
 `Method(context.Context, EmptyRequest) (Result, error)`, where `EmptyRequest`
 is an exported named empty struct. Unsupported signatures and other callable
 plan shapes fail analysis. Accepted query and plan method type identities are
-bound to the analyze result, but provider generation and installation are not
-yet present.
+bound to the analyze result. PostgreSQL provider generation now supports the
+directly callable SELECT subset described below; callable mutation and plan
+providers and Project installation remain incomplete.
 The `postgres/compiler.CompileSchema` lowerer turns normalized models assigned to one
 database Resource into deterministic PostgreSQL schema DDL, including scalar
 types, defaults, constraints, indexes, and same-Resource foreign keys; it
@@ -149,15 +150,15 @@ subset: local, parameter-free `SELECT` statements with explicit cardinality
 and typed projected results become ordered `database.Plan` statements. The
 database contract carries result width, scalar kind, and nullability into the
 PostgreSQL transaction, which validates those facts before commit. Joins,
-parameters, imported queries, mutation plans, generated access method bodies,
+parameters, imported queries, mutation plans, generated plan access bodies,
 and Data-owned artifact installation remain separate integration boundaries.
 Mutation queries may additionally declare explicit `Returning` projections and
 typed `Results` mappings. Data analysis validates returned columns and result
 scalar types and nullability, including imported tables. The lowerer emits
 deterministic PostgreSQL `RETURNING` clauses and rejects result sources whose
 scalar type or nullability does not match the selected table column. Result
-mappings are compiler metadata; typed access provider and codec generation
-remains a later integration boundary.
+mappings are compiler metadata; mutation access providers and their codecs
+remain a later integration boundary.
 Staged query artifacts and their manifest entries include the declaring query
 operation, group-by, optional HAVING, and projection aggregate descriptors,
 parameters in PostgreSQL positional order, and typed result metadata.
@@ -236,20 +237,23 @@ Project module graph with
 `GOWORK=off`, sends one bounded analyze frame, validates the response, and
 rechecks compiler selection and source inputs before returning. It does not
 compile authored packages or install Project artifacts. Authored access
-Resource members can now be analyzed, but Data-owned provider generation and
-installation remain incomplete.
+Resource members can now be analyzed. The separate emit phase stages supported
+SELECT providers; Project orchestration and transactional installation remain
+incomplete.
 
 The compiler command writes no generated files and emits no non-protocol
 stdout. The distribution contract is recorded in
 `plystra-data-compiler.json`.
 
 The command also implements `plystra.data-emit/v1` for the currently supported
-PostgreSQL schema, query, and migration SQL. An emit request carries the accepted
+PostgreSQL schema, query, and migration SQL and bounded typed SELECT access
+providers. An emit request carries the accepted
 analyze-result digest, the frozen application-model digest, and explicit active
 member assignments to selected `data.database/v1` Resource instances and
 `postgres/v1` backends. The input digest binds these facts to the exact compiler
 identity and Go build context. For each selected instance, the compiler returns
-in-memory staged `schema/schema.sql`, query SQL, immutable migration SQL, and a
+in-memory staged `schema/schema.sql`, query SQL, immutable migration SQL,
+`providers/<member-id>/provider.go` for each supported access Resource, and a
 `manifest.json` under its allowed `dataaccess/<instance>/` root. Every
 artifact includes mode, bytes, SHA-256 digest, owning members, Resource,
 provider, backend, compiler, and frozen-model provenance. Each migration SQL
@@ -259,7 +263,8 @@ and backend. The manifest binds logical member digests and the instance's
 artifact inventory, including each migration Definition. The response validator
 compares staged migration Definitions with the accepted analyzed member models
 and selected compiler, independently recompiles expected schema and query SQL
-digests from those models and active Resource assignments, requires migration
+digests and generated provider source from those models, accepted access type
+identities, and active Resource assignments, requires migration
 SQL bytes to match their accepted compiled artifact digests, rejects migration
 metadata on other artifacts, and checks identity, output digest, paths,
 ownership, byte digests, and manifest consistency before any caller installs
@@ -268,10 +273,34 @@ output. Frames are limited to
 artifact path. The compiler does not read source files or write generated files
 during emit.
 
-This emit phase does not yet generate typed access providers or codecs, or
-install staged files in an application. Data-specific activation, generated
-access, transactional installation, and drift checks belong outside the
-generic Core CLI and remain separate unfinished integration work.
+`postgres/compiler.CompileAccessProviders(members, acceptedRoots)` is the pure
+Go provider generator used by emit. It returns deterministic source, path,
+owning member, and byte digest. Every provider includes a compile-time
+assignment to its authored access Resource and an ordinary directive-bound
+`New(database database.Resource) (*Provider, error)` constructor. It borrows
+the existing Resource without acquiring a pool or owning lifecycle hooks.
+Generated methods submit single-statement `database.Plan` values with literal
+compiled SQL, parameters in normalized PostgreSQL placeholder order, complete
+result-column contracts, and explicit cardinality. They preserve backend
+errors and decode fields by projection source and explicit `GoField`, checking
+statement count, row width, scalar kinds, nullability, and cardinality before
+publishing typed results. Byte parameters and results are copied; zero-length
+`ValueBytes` is non-null bytea, while SQL NULL requires `ValueNull`.
+
+The supported generated methods are parameterized or parameter-free SELECTs
+with `exactly_one`, `zero_or_one`, or `many` cardinality and the five validated
+access scalars (`bool`, `[]byte`, `float64`, `int64`, `string`), including `*T`
+nullable results. A Resource containing an unsupported callable mutation or
+plan, or incomplete accepted method metadata, rejects the whole emit result;
+generation never silently omits a method. Emit validates generated source
+against accepted intent even when a changed artifact, manifest, and response
+are rehashed consistently.
+
+Emit still does not install staged files in an application. Data-specific
+Project generation orchestration, transactional installation, and drift checks
+belong outside the generic Core CLI and remain separate unfinished work. This
+bounded provider subset does not complete AuthN/AuthZ persistence or their
+cross-member atomic integration plans.
 
 The independent `plystra-data inspect compiler --project DIR` command selects
 the exact `github.com/plystra/data` version from the Project's Go module graph

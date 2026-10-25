@@ -59,3 +59,18 @@ func TestPlanValidateAcceptsClosedArgumentKinds(t *testing.T) {
 		}
 	}
 }
+
+func TestBytesArgumentOwnsNonNullScalar(t *testing.T) {
+	for _, value := range [][]byte{nil, {}} {
+		argument := database.BytesArgument(value)
+		if argument.Kind != database.ValueBytes || argument.Bytes == nil || len(argument.Bytes) != 0 {
+			t.Fatal("empty bytes must remain distinct from explicit NULL")
+		}
+	}
+	value := []byte("original")
+	argument := database.BytesArgument(value)
+	value[0] = 'X'
+	if string(argument.Bytes) != "original" {
+		t.Fatal("argument aliases caller bytes")
+	}
+}
