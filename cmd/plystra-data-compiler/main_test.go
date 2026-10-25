@@ -67,7 +67,7 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	roots := []analyzer.Root{{MemberID: "accounts.user/v1", Model: model, MigrationOnly: true}}
+	roots := []analyzer.Root{{MemberID: "accounts.user/v1", Model: model, MigrationOnly: true, AccessPackage: "github.com/plystra/data/declaration", AccessType: "NoAccess"}}
 	analyzeDigest, err := analyzer.ResultDigest(roots, nil, false)
 	if err != nil {
 		t.Fatal(err)
@@ -156,6 +156,59 @@ func TestCompilerCommandEmitsOnlyOneStagedFrame(t *testing.T) {
 	}
 }
 
+func TestCompilerCommandEmitsTypedAccessProvider(t *testing.T) {
+	model, err := (declaration.Member[struct{}]{Namespace: "accounts", Tables: []declaration.Table{{ID: "users", Columns: []declaration.Column{{ID: "id", Type: declaration.TypeInt64}}}}, Queries: []declaration.Query{{
+		ID: "get", Method: "Get", Operation: declaration.OperationSelect, Cardinality: declaration.CardinalityExactlyOne, Table: declaration.Ref{Symbol: "users"},
+		Projection: []declaration.Projection{{Column: "id"}}, Results: []declaration.ResultField{{ID: "id", GoField: "Key", Source: "id", Type: declaration.TypeInt64}},
+	}}}).Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := []analyzer.Root{{MemberID: "accounts.user/v1", Model: model, AccessID: "accounts.access/v1", AccessPackage: "example.com/accounts", AccessType: "Resource", QueryMethods: []analyzer.QueryMethod{{Name: "Get", Cardinality: declaration.CardinalityExactlyOne, RequestPackage: "example.com/accounts", RequestType: "Request", RowPackage: "example.com/accounts", RowType: "Row"}}}}
+	analyzeDigest, err := analyzer.ResultDigest(roots, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := protocol.EmitRequest{
+		Schema: protocol.EmitSchema, Phase: protocol.EmitPhase, RequestID: "typed-command",
+		Compiler: protocol.CompilerIdentity{ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestDigest: "sha256:" + strings.Repeat("2", 64), CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26"},
+		Build:    protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"}, Analyze: protocol.AnalyzeOutput{Roots: roots, Digest: analyzeDigest, Valid: true}, AnalyzeDigest: analyzeDigest, FrozenModelDigest: "sha256:" + strings.Repeat("3", 64),
+		Assignments: []protocol.EmitAssignment{{MemberID: roots[0].MemberID, Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "dataaccess/database.primary"}},
+	}
+	request.InputDigest, err = protocol.EmitInputDigest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input, stdout, stderr bytes.Buffer
+	if err := protocol.WriteFrame(&input, request); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "go", "run", ".")
+	command.Env = append(os.Environ(), "GOWORK=off", "GOPROXY=off")
+	command.Stdin, command.Stdout, command.Stderr = &input, &stdout, &stderr
+	if err := command.Run(); err != nil || stderr.Len() != 0 {
+		t.Fatalf("compiler command = %v, stderr=%s", err, stderr.String())
+	}
+	var response protocol.EmitResponse
+	if err := protocol.ReadFrame(&stdout, &response); err != nil {
+		t.Fatal(err)
+	}
+	if err := protocol.ValidateEmitResponse(request, response); err != nil || response.Status != protocol.StatusSucceeded || stdout.Len() != 0 {
+		t.Fatalf("invalid typed emit: %v, %#v", err, response)
+	}
+	found := false
+	for _, artifact := range response.Output.Artifacts {
+		if strings.HasSuffix(artifact.Path, "/provider.go") {
+			found = bytes.Contains(artifact.Bytes, []byte("func New(database db.Resource)"))
+		}
+	}
+	if !found {
+		t.Fatal("command omitted the typed provider")
+	}
+}
+
 func TestCompilerCommandRequiresCompleteSelectResults(t *testing.T) {
 	users := declaration.Ref{Symbol: "users"}
 	teams := declaration.Ref{Symbol: "teams"}
@@ -190,7 +243,7 @@ func TestCompilerCommandRequiresCompleteSelectResults(t *testing.T) {
 		Schema: protocol.EmitSchema, Phase: protocol.EmitPhase, RequestID: "select-results",
 		Compiler:          protocol.CompilerIdentity{ModulePath: protocol.ModulePath, ModuleVersion: "v0.0.0-test", ModuleChecksum: "h1:" + base64.StdEncoding.EncodeToString(make([]byte, 32)), ManifestDigest: "sha256:" + strings.Repeat("2", 64), CommandImportPath: protocol.CommandImportPath, AnalyzeProtocol: protocol.AnalyzeSchema, EmitProtocol: protocol.EmitSchema, DeclarationLanguage: protocol.DeclarationLanguage, GoToolchain: "go1.26"},
 		Build:             protocol.BuildContext{GOOS: "windows", GOARCH: "amd64"},
-		Analyze:           protocol.AnalyzeOutput{Roots: []analyzer.Root{{MemberID: "accounts.user/v1", Model: owner, MigrationOnly: true}, {MemberID: "geo.region/v1", Model: remote, MigrationOnly: true}}, Valid: true},
+		Analyze:           protocol.AnalyzeOutput{Roots: []analyzer.Root{{MemberID: "accounts.user/v1", Model: owner, MigrationOnly: true, AccessPackage: "github.com/plystra/data/declaration", AccessType: "NoAccess"}, {MemberID: "geo.region/v1", Model: remote, MigrationOnly: true, AccessPackage: "github.com/plystra/data/declaration", AccessType: "NoAccess"}}, Valid: true},
 		FrozenModelDigest: "sha256:" + strings.Repeat("3", 64),
 		Assignments: []protocol.EmitAssignment{
 			{MemberID: "accounts.user/v1", Resource: "database.primary", ResourceContract: "data.database/v1", Provider: "github.com/plystra/data/postgres.New", Backend: "postgres/v1", AllowedRoot: "dataaccess/database.primary"},

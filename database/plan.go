@@ -59,7 +59,7 @@ func Int64Argument(value int64) Argument     { return Argument{Kind: ValueInt64,
 func Float64Argument(value float64) Argument { return Argument{Kind: ValueFloat64, Float64: value} }
 func BoolArgument(value bool) Argument       { return Argument{Kind: ValueBool, Bool: value} }
 func BytesArgument(value []byte) Argument {
-	return Argument{Kind: ValueBytes, Bytes: append([]byte(nil), value...)}
+	return Argument{Kind: ValueBytes, Bytes: append([]byte{}, value...)}
 }
 func NullArgument() Argument { return Argument{Kind: ValueNull} }
 

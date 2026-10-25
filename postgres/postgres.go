@@ -279,6 +279,9 @@ func driverArguments(arguments []db.Argument) []any {
 			values[index] = argument.Bool
 		case db.ValueBytes:
 			values[index] = argument.Bytes
+			if argument.Bytes == nil {
+				values[index] = []byte{}
+			}
 		}
 	}
 	return values

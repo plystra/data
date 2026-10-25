@@ -245,9 +245,9 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 	if err != nil {
 		return fmt.Errorf("accepted migration definitions are invalid: %w", err)
 	}
-	expectedSQL, err := expectedSQLDigests(request)
+	expectedContent, err := expectedContentDigests(request)
 	if err != nil {
-		return fmt.Errorf("accepted SQL artifacts are invalid: %w", err)
+		return fmt.Errorf("accepted SQL or access artifacts are invalid: %w", err)
 	}
 	seen := map[string]struct{}{}
 	previous := ""
@@ -255,8 +255,8 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 		if len(artifact.Path) > MaxArtifactPathBytes || !safePath(artifact.Path) || len(artifact.Bytes) == 0 || len(artifact.Bytes) > MaxArtifactBytes || artifact.Mode != 0644 || artifact.Digest != postgres.DigestSQL(string(artifact.Bytes)) {
 			return fmt.Errorf("invalid staged artifact path, mode, bytes, or digest")
 		}
-		if expectedDigest, isSQL := expectedSQL[artifact.Path]; isSQL && artifact.Digest != expectedDigest {
-			return fmt.Errorf("staged SQL does not match accepted Data intent")
+		if expectedDigest, compiled := expectedContent[artifact.Path]; compiled && artifact.Digest != expectedDigest {
+			return fmt.Errorf("staged content does not match accepted Data intent")
 		}
 		if previous != "" && artifact.Path <= previous {
 			return fmt.Errorf("staged artifacts are not in canonical path order")
@@ -307,7 +307,7 @@ func ValidateEmitResponse(request EmitRequest, response EmitResponse) error {
 	return nil
 }
 
-func expectedSQLDigests(request EmitRequest) (map[string]string, error) {
+func expectedContentDigests(request EmitRequest) (map[string]string, error) {
 	membersByResource := make(map[string][]postgres.SchemaMember)
 	for _, assignment := range request.Assignments {
 		root, exists := findRoot(request.Analyze.Roots, assignment.MemberID)
@@ -332,6 +332,13 @@ func expectedSQLDigests(request EmitRequest) (map[string]string, error) {
 		}
 		for _, query := range queries {
 			expected[root+query.Path] = query.Digest
+		}
+		providers, err := postgres.CompileAccessProviders(members, request.Analyze.Roots)
+		if err != nil {
+			return nil, fmt.Errorf("Resource %s access: %w", resource, err)
+		}
+		for _, provider := range providers {
+			expected[root+provider.Path] = provider.Digest
 		}
 	}
 	return expected, nil
@@ -389,6 +396,7 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact, migratio
 	}
 	expected := map[string]map[string]struct{}{}
 	queryOwners := map[string]string{}
+	accessOwners := map[string]string{}
 	queryMetadata := map[string]QueryMetadata{}
 	planOwners := map[string]string{}
 	planMetadata, err := expectedPlanMetadata(request)
@@ -405,6 +413,11 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact, migratio
 			}
 		}
 		owners[resource] = append(owners[resource], assignment.MemberID)
+		if !roots[assignment.MemberID].MigrationOnly {
+			accessPath := "dataaccess/" + resource + "/providers/" + assignment.MemberID + "/provider.go"
+			expected[resource][accessPath] = struct{}{}
+			accessOwners[accessPath] = assignment.MemberID
+		}
 		for _, query := range roots[assignment.MemberID].Model.Queries {
 			queryPath := "dataaccess/" + resource + "/queries/" + assignment.MemberID + "/" + query.ID + ".sql"
 			expected[resource][queryPath] = struct{}{}
@@ -452,6 +465,10 @@ func validateManifests(request EmitRequest, artifacts []StagedArtifact, migratio
 				}
 				if !exists || len(artifact.OwningMembers) != 1 || artifact.OwningMembers[0] != owner || artifact.Migration != nil || artifact.Query != nil || artifact.Plan == nil || !reflect.DeepEqual(*artifact.Plan, metadata) || !reflect.DeepEqual(encoded, metadata) {
 					return fmt.Errorf("Resource %s has invalid plan artifact ownership or metadata", resource)
+				}
+			} else if owner, accessArtifact := accessOwners[artifact.Path]; accessArtifact {
+				if len(artifact.OwningMembers) != 1 || artifact.OwningMembers[0] != owner || artifact.Query != nil || artifact.Plan != nil || artifact.Migration != nil {
+					return fmt.Errorf("Resource %s has invalid access provider ownership or metadata", resource)
 				}
 			} else if artifact.Query != nil || artifact.Plan != nil {
 				return fmt.Errorf("Resource %s has unexpected query metadata", resource)
@@ -708,6 +725,13 @@ func compileEmit(request EmitRequest) ([]StagedArtifact, analyzer.DiagnosticCode
 			}
 			artifact.Query = &metadata
 			artifacts = append(artifacts, artifact)
+		}
+		providers, err := postgres.CompileAccessProviders(item.members, request.Analyze.Roots)
+		if err != nil {
+			return nil, analyzer.CodeEmitBackend, err
+		}
+		for _, provider := range providers {
+			artifacts = append(artifacts, stagedSQL(item.assignment, []string{provider.MemberID}, request, provider.Path, provider.Source, nil))
 		}
 		plans, err := postgres.CompilePlans(item.members)
 		if err != nil {

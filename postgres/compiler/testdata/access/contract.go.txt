@@ -1,0 +1,31 @@
+package contract
+
+import "context"
+
+//plystra:resource accounts.access/v1
+type Resource interface {
+	Get(context.Context, Request) (Row, error)
+	Find(context.Context, Request) (*Row, error)
+	List(context.Context, Request) ([]Row, error)
+}
+
+type Request struct {
+	Key    int64
+	Text   string
+	Active bool
+	Token  []byte
+	Score  float64
+}
+
+type Row struct {
+	Key            int64
+	Text           string
+	Active         bool
+	Token          []byte
+	Score          float64
+	OptionalKey    *int64
+	OptionalText   *string
+	OptionalActive *bool
+	OptionalToken  *[]byte
+	OptionalScore  *float64
+}
