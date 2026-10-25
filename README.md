@@ -296,6 +296,14 @@ generation never silently omits a method. Emit validates generated source
 against accepted intent even when a changed artifact, manifest, and response
 are rehashed consistently.
 
+Access contracts and their named request/row types must use public import
+paths. This portable-provider subset rejects an exact `internal` or `vendor`
+path segment before successful emit, even when that package is importable by
+the authored member. Emit has no consumer package identity and cannot assume
+that downstream `dataaccess/` output has the same visibility. Move these
+public types to an ordinary public package; similarly spelled public segments
+such as `internalized` remain supported.
+
 Emit still does not install staged files in an application. Data-specific
 Project generation orchestration, transactional installation, and drift checks
 belong outside the generic Core CLI and remain separate unfinished work. This

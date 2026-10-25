@@ -99,12 +99,18 @@ func validateAccessRoot(root analyzer.Root) error {
 	if !declaration.ValidMemberID(root.AccessID) || !validAccessName(root.AccessType) || !validAccessPackage(root.AccessPackage) || len(queries) == 0 || len(root.QueryMethods) != len(queries) || len(root.PlanMethods) != 0 {
 		return fmt.Errorf("incomplete access contract")
 	}
+	if !portableAccessPackage(root.AccessPackage) {
+		return fmt.Errorf("access contract requires a public package without internal or vendor segments")
+	}
 	seen := make(map[string]bool)
 	for _, method := range root.QueryMethods {
 		query, ok := queries[method.Name]
 		if !ok || seen[method.Name] || !validAccessName(method.Name) || method.Cardinality != query.Cardinality ||
 			!validAccessName(method.RequestType) || !validAccessPackage(method.RequestPackage) || !validAccessName(method.RowType) || !validAccessPackage(method.RowPackage) {
 			return fmt.Errorf("invalid query method inventory")
+		}
+		if !portableAccessPackage(method.RequestPackage) || !portableAccessPackage(method.RowPackage) {
+			return fmt.Errorf("method %s requires public request and row packages without internal or vendor segments", method.Name)
 		}
 		seen[method.Name] = true
 		if query.Operation != declaration.OperationSelect || len(query.Projection) == 0 {
@@ -138,6 +144,17 @@ func validAccessPackage(name string) bool {
 	}
 	for _, part := range strings.Split(name, "/") {
 		if part == "" || part == "." || part == ".." {
+			return false
+		}
+	}
+	return true
+}
+
+func portableAccessPackage(name string) bool {
+	// Emit has no consumer package identity. A path accessible to the authored
+	// model may still be inaccessible to the downstream generated provider.
+	for _, part := range strings.Split(name, "/") {
+		if part == "internal" || part == "vendor" {
 			return false
 		}
 	}
